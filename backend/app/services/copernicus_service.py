@@ -9,10 +9,11 @@ Purpose:
     Ecosystem API.
 
 Responsibilities:
-    - Authenticate with Copernicus
-    - Search Sentinel-2 products
-    - Download imagery
-    - Return metadata
+    - Authenticate with Copernicus.
+    - Search Sentinel-2 products.
+    - Retrieve the latest product.
+    - Download Sentinel imagery.
+    - Return product metadata.
 
 Author:
     Samuel Bikiloni
@@ -20,6 +21,9 @@ Author:
 Project:
     Web-Based Deforestation Detection and Alert System
     Using Sentinel-2 Imagery in the Copperbelt, Zambia
+
+Version:
+    1.0.0
 ===========================================================
 """
 
@@ -41,11 +45,57 @@ class CopernicusService:
     Copernicus Data Space Ecosystem.
     """
 
-    BASE_URL = "https://catalogue.dataspace.copernicus.eu/odata/v1"
+    BASE_URL = (
+        "https://catalogue.dataspace.copernicus.eu"
+        "/odata/v1"
+    )
+
+    TOKEN_URL = (
+        "https://identity.dataspace.copernicus.eu"
+        "/auth/realms/CDSE/protocol/openid-connect/token"
+    )
 
     def __init__(self) -> None:
+        """
+        Initialize the HTTP session.
+        """
+
         self.session = requests.Session()
 
+    # ---------------------------------------------------------
+    # Authentication
+    # ---------------------------------------------------------
+    def authenticate(self) -> str:
+        """
+        Authenticate with Copernicus
+        and return an access token.
+        """
+
+        response = requests.post(
+            self.TOKEN_URL,
+            data={
+                "grant_type": "client_credentials",
+                "client_id": settings.copernicus_client_id,
+                "client_secret": settings.copernicus_client_secret,
+            },
+            timeout=60,
+        )
+
+        response.raise_for_status()
+
+        token = response.json()["access_token"]
+
+        self.session.headers.update(
+            {
+                "Authorization": f"Bearer {token}",
+            }
+        )
+
+        return token
+
+    # ---------------------------------------------------------
+    # Search Products
+    # ---------------------------------------------------------
     def search_products(
         self,
         start_date: str,
@@ -53,17 +103,24 @@ class CopernicusService:
         cloud_cover: float,
     ) -> list[dict[str, Any]]:
         """
-        Search for Sentinel-2 products.
+        Search Sentinel-2 products.
 
         NOTE:
-        Geographic filtering (forest polygon or
-        bounding box) will be added later.
+        Geographic filtering will be added
+        once forest polygons are integrated.
         """
+
+        self.authenticate()
+
+        filter_query = (
+            "Collection/Name eq 'SENTINEL-2'"
+        )
 
         url = (
             f"{self.BASE_URL}/Products"
-            "?$filter="
-            "Collection/Name eq 'SENTINEL-2'"
+            f"?$filter={filter_query}"
+            "&$orderby=ContentDate/Start desc"
+            "&$top=20"
         )
 
         response = self.session.get(
@@ -73,8 +130,30 @@ class CopernicusService:
 
         response.raise_for_status()
 
-        return response.json().get("value", [])
+        return response.json().get(
+            "value",
+            [],
+        )
 
+    # ---------------------------------------------------------
+    # Latest Product
+    # ---------------------------------------------------------
+    def get_latest_product(
+        self,
+        products: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        """
+        Return the newest Sentinel-2 product.
+        """
+
+        if not products:
+            return None
+
+        return products[0]
+
+    # ---------------------------------------------------------
+    # Download File
+    # ---------------------------------------------------------
     def download_file(
         self,
         download_url: str,
@@ -102,64 +181,14 @@ class CopernicusService:
                 for chunk in response.iter_content(
                     chunk_size=8192,
                 ):
-
                     if chunk:
                         file.write(chunk)
 
         return destination
-        def authenticate(self) -> str:
-          """
-             Authenticate with the Copernicus Data Space
-        Ecosystem and return an access token.
 
-            Environment variables required:
-
-        COPERNICUS_CLIENT_ID
-        COPERNICUS_CLIENT_SECRET
-        """
-
-        token_url = (
-            "https://identity.dataspace.copernicus.eu"
-            "/auth/realms/CDSE/protocol/openid-connect/token"
-        )
-
-        response = requests.post(
-            token_url,
-            data={
-                "grant_type": "client_credentials",
-                "client_id": settings.copernicus_client_id,
-                "client_secret": settings.copernicus_client_secret,
-            },
-            timeout=60,
-        )
-
-        response.raise_for_status()
-
-        token = response.json()["access_token"]
-
-        self.session.headers.update(
-            {
-                "Authorization": f"Bearer {token}",
-            }
-        )
-
-        return token
-
-    def product_exists(
-        self,
-        product_id: str,
-        products: list[dict[str, Any]],
-    ) -> bool:
-        """
-        Check whether a product already exists
-        in the returned search results.
-        """
-
-        return any(
-            product.get("Id") == product_id
-            for product in products
-        )
-
+    # ---------------------------------------------------------
+    # Download Product
+    # ---------------------------------------------------------
     def download_product(
         self,
         product_id: str,
@@ -181,19 +210,24 @@ class CopernicusService:
             destination=destination,
         )
 
+    # ---------------------------------------------------------
+    # Download Latest Product
+    # ---------------------------------------------------------
     def download_latest_product(
         self,
         products: list[dict[str, Any]],
         destination_folder: Path,
     ) -> Path | None:
         """
-        Download the newest product from a search.
+        Download the newest Sentinel-2 product.
         """
 
-        if not products:
-            return None
+        latest = self.get_latest_product(
+            products,
+        )
 
-        latest = products[0]
+        if latest is None:
+            return None
 
         product_id = latest["Id"]
 
