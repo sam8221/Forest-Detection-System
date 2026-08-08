@@ -9,9 +9,11 @@ Purpose:
     Sentinel-2 platform.
 
 Responsibilities:
-    - Search Sentinel-2 imagery.
-    - Download image metadata.
-    - Save satellite images.
+    - Register Sentinel-2 image metadata.
+    - Check whether an image already exists.
+    - Retrieve the latest image.
+    - Retrieve the previous image.
+    - Mark images as processed.
     - Prepare imagery for NDVI analysis.
 
 Author:
@@ -20,6 +22,9 @@ Author:
 Project:
     Web-Based Deforestation Detection and Alert System
     Using Sentinel-2 Imagery in the Copperbelt, Zambia
+
+Version:
+    1.0.0
 ===========================================================
 """
 
@@ -29,16 +34,30 @@ from sqlalchemy.orm import Session
 
 from app.models.forest_area import ForestArea
 from app.models.satellite_image import SatelliteImage
+from app.repositories.satellite_image_repository import (
+    SatelliteImageRepository,
+)
 
 
 class SentinelService:
     """
-    Handles Sentinel-2 operations.
+    Handles Sentinel-2 image operations.
     """
 
-    def __init__(self, db: Session):
-        self.db = db
+    def __init__(
+        self,
+        db: Session,
+    ):
+        """
+        Initialize the Sentinel service.
+        """
 
+        self.db = db
+        self.repository = SatelliteImageRepository(db)
+
+    # ---------------------------------------------------------
+    # Register Satellite Image
+    # ---------------------------------------------------------
     def register_satellite_image(
         self,
         forest_area: ForestArea,
@@ -51,7 +70,7 @@ class SentinelService:
         file_size_mb: float,
     ) -> SatelliteImage:
         """
-        Register a downloaded Sentinel image.
+        Register a downloaded Sentinel-2 image.
         """
 
         image = SatelliteImage(
@@ -67,72 +86,69 @@ class SentinelService:
             is_processed=False,
         )
 
-        self.db.add(image)
-        self.db.commit()
-        self.db.refresh(image)
+        return self.repository.create(image)
 
-        return image
-        def image_exists(
+    # ---------------------------------------------------------
+    # Check Existing Image
+    # ---------------------------------------------------------
+    def image_exists(
         self,
         product_id: str,
     ) -> bool:
-           """
-          Check whether a Sentinel image has already
-        been registered.
+        """
+        Check whether a Sentinel image
+        has already been registered.
         """
 
         return (
-            self.db.query(SatelliteImage)
-            .filter(
-                SatelliteImage.product_id == product_id,
+            self.repository.get_by_product_id(
+                product_id,
             )
-            .first()
             is not None
         )
 
+    # ---------------------------------------------------------
+    # Mark as Processed
+    # ---------------------------------------------------------
     def mark_as_processed(
         self,
         image: SatelliteImage,
     ) -> SatelliteImage:
         """
-        Mark an image as processed.
+        Mark a satellite image as processed.
         """
 
         image.is_processed = True
 
-        self.db.commit()
-        self.db.refresh(image)
+        return self.repository.update(image)
 
-        return image
-
+    # ---------------------------------------------------------
+    # Get Latest Image
+    # ---------------------------------------------------------
     def get_latest_image(
         self,
         forest_area_id: int,
     ) -> SatelliteImage | None:
         """
-        Return the most recent processed image
+        Retrieve the latest downloaded image
         for a forest area.
         """
 
-        return (
-            self.db.query(SatelliteImage)
-            .filter(
-                SatelliteImage.forest_area_id == forest_area_id,
-                SatelliteImage.is_downloaded.is_(True),
-            )
-            .order_by(
-                SatelliteImage.acquisition_date.desc(),
-            )
-            .first()
+        return self.repository.get_latest_image(
+            forest_area_id,
         )
 
+    # ---------------------------------------------------------
+    # Get Previous Image
+    # ---------------------------------------------------------
     def get_previous_image(
         self,
         forest_area_id: int,
         latest_image_id: int,
     ) -> SatelliteImage | None:
         """
-        Return the previous image before the latest one.
+        Retrieve the previous downloaded image
+        before the latest one.
         """
 
         return (
