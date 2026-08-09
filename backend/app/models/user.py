@@ -25,14 +25,11 @@ Version:
     1.0.0
 ===========================================================
 """
-if TYPE_CHECKING:
-    from app.models.analysis_job import AnalysisJob
-    from app.models.detection import Detection
-    from app.models.forest_area import ForestArea
+
 from __future__ import annotations
-from typing import TYPE_CHECKING
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     Boolean,
@@ -41,18 +38,29 @@ from sqlalchemy import (
     Integer,
     String,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import (
+    Mapped,
+    mapped_column,
+    relationship,
+)
 
 from app.database.session import Base
 from app.models.base_model import AuditMixin
 from app.models.enums import UserRole
+
+if TYPE_CHECKING:
+    from app.models.alert_recipient import AlertRecipient
+    from app.models.analysis_job import AnalysisJob
+    from app.models.detection import Detection
+    from app.models.forest_area import ForestArea
 
 
 class User(AuditMixin, Base):
     """
     Represents a system user.
 
-    Users can be Administrators, Forestry Officers,
+    Users can be Administrators,
+    Forestry Officers,
     or Researchers.
     """
 
@@ -93,14 +101,14 @@ class User(AuditMixin, Base):
     password_hash: Mapped[str] = mapped_column(
         String(255),
         nullable=False,
-        comment="Encrypted user password.",
+        comment="Encrypted password.",
     )
 
     must_change_password: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
         nullable=False,
-        comment="Forces the user to change password after first login.",
+        comment="Force password change on first login.",
     )
 
     last_login: Mapped[datetime | None] = mapped_column(
@@ -116,7 +124,7 @@ class User(AuditMixin, Base):
         SqlEnum(UserRole),
         default=UserRole.FORESTRY_OFFICER,
         nullable=False,
-        comment="Role assigned to the user.",
+        comment="Assigned user role.",
     )
 
     # ---------------------------------------------------------
@@ -126,9 +134,9 @@ class User(AuditMixin, Base):
         Boolean,
         default=True,
         nullable=False,
-        comment="Indicates whether the account is active.",
+        comment="Account status.",
     )
-         # ---------------------------------------------------------
+        # ---------------------------------------------------------
     # Relationships
     # ---------------------------------------------------------
 
@@ -153,6 +161,7 @@ class User(AuditMixin, Base):
         foreign_keys="Detection.verified_by",
         lazy="selectin",
     )
+
     alert_recipients: Mapped[list["AlertRecipient"]] = relationship(
         "AlertRecipient",
         back_populates="user",
@@ -165,26 +174,13 @@ class User(AuditMixin, Base):
     # ---------------------------------------------------------
     def __repr__(self) -> str:
         """
-        Return a readable representation of the User.
+        Return a readable representation of the user.
         """
 
         return (
             f"User("
             f"id={self.id}, "
+            f"full_name='{self.full_name}', "
             f"email='{self.email}', "
             f"role='{self.role.value}')"
-        )
-        # ---------------------------------------------------------
-    # String Representation
-    # ---------------------------------------------------------
-    def __repr__(self) -> str:
-        """
-        Return a readable representation of the AlertRecipient.
-        """
-
-        return (
-            f"AlertRecipient("
-            f"id={self.id}, "
-            f"alert_id={self.alert_id}, "
-            f"user_id={self.user_id})"
         )

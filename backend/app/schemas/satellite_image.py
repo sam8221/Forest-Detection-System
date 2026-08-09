@@ -42,27 +42,57 @@ class SatelliteImageBase(BaseModel):
     Common satellite image fields.
     """
 
-    forest_area_id: int
+    forest_area_id: int = Field(
+        ...,
+        gt=0,
+        description="Forest area identifier.",
+    )
 
     product_id: str = Field(
         ...,
+        min_length=5,
         max_length=120,
+        description="Unique Sentinel-2 product ID.",
     )
 
     tile_id: str = Field(
         ...,
+        min_length=3,
         max_length=50,
+        description="Sentinel-2 tile identifier.",
     )
 
-    acquisition_date: date
+    acquisition_date: date = Field(
+        ...,
+        description="Date the satellite image was acquired.",
+    )
 
-    cloud_cover_percentage: float
+    cloud_cover_percentage: float = Field(
+        ...,
+        ge=0,
+        le=100,
+        description="Cloud cover percentage.",
+    )
 
-    file_name: str
+    file_name: str = Field(
+        ...,
+        min_length=3,
+        max_length=255,
+        description="Stored image filename.",
+    )
 
-    storage_path: str
+    storage_path: str = Field(
+        ...,
+        min_length=3,
+        max_length=500,
+        description="Storage location of the image.",
+    )
 
-    file_size_mb: float
+    file_size_mb: float = Field(
+        ...,
+        gt=0,
+        description="Image file size in megabytes.",
+    )
 
 
 # ---------------------------------------------------------
@@ -70,8 +100,8 @@ class SatelliteImageBase(BaseModel):
 # ---------------------------------------------------------
 class SatelliteImageCreate(SatelliteImageBase):
     """
-    Used when registering a downloaded
-    Sentinel-2 image.
+    Request schema used when registering
+    a downloaded Sentinel-2 image.
     """
 
     pass
@@ -82,12 +112,17 @@ class SatelliteImageCreate(SatelliteImageBase):
 # ---------------------------------------------------------
 class SatelliteImageUpdate(BaseModel):
     """
-    Used when updating image status.
+    Request schema used for updating
+    image processing status.
     """
 
-    is_downloaded: bool | None = None
+    is_downloaded: bool | None = Field(
+        default=None,
+    )
 
-    is_processed: bool | None = None
+    is_processed: bool | None = Field(
+        default=None,
+    )
 
 
 # ---------------------------------------------------------
@@ -120,7 +155,7 @@ class SatelliteImageResponse(
 # ---------------------------------------------------------
 class SatelliteImageSummary(BaseModel):
     """
-    Lightweight satellite image model.
+    Lightweight satellite image schema.
     """
 
     model_config = ConfigDict(
