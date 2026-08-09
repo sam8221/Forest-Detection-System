@@ -10,7 +10,7 @@ Purpose:
 Responsibilities:
     - Create alerts.
     - Assign recipients.
-    - Queue emails.
+    - Queue email notifications.
     - Resolve alerts.
     - Mark alerts as read.
 
@@ -20,8 +20,13 @@ Author:
 Project:
     Web-Based Deforestation Detection and Alert System
     Using Sentinel-2 Imagery in the Copperbelt, Zambia
+
+Version:
+    1.0.0
 ===========================================================
 """
+
+from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
@@ -36,6 +41,9 @@ from app.models.enums import (
     UserRole,
 )
 from app.models.user import User
+from app.repositories.alert_repository import (
+    AlertRepository,
+)
 
 
 class AlertService:
@@ -43,15 +51,28 @@ class AlertService:
     Handles alert creation and notification.
     """
 
-    def __init__(self, db: Session):
+    def __init__(
+        self,
+        db: Session,
+    ):
+        """
+        Initialize the alert service.
+        """
+
         self.db = db
 
+        self.repository = AlertRepository(db)
+
+    # ---------------------------------------------------------
+    # Create Alert
+    # ---------------------------------------------------------
     def create_alert(
         self,
         detection: Detection,
     ) -> Alert:
         """
-        Create a new alert from a detection.
+        Create a new alert
+        from a verified detection.
         """
 
         title = (
@@ -62,9 +83,9 @@ class AlertService:
         message = (
             f"Potential deforestation detected in "
             f"{detection.forest_area.name}.\n"
-            f"Estimated area affected: "
+            f"Estimated affected area: "
             f"{detection.detected_area_hectares:.2f} hectares.\n"
-            f"Confidence: "
+            f"Confidence Score: "
             f"{detection.confidence_score:.2f}%."
         )
 
@@ -77,19 +98,20 @@ class AlertService:
             status=AlertStatus.PENDING,
         )
 
-        self.db.add(alert)
-        self.db.commit()
-        self.db.refresh(alert)
+        return self.repository.create(
+            alert,
+        )
 
-        return alert
-
+    # ---------------------------------------------------------
+    # Create Alert Recipients
+    # ---------------------------------------------------------
     def create_alert_recipients(
         self,
         alert: Alert,
     ) -> None:
         """
-        Create recipients for every active
-        Forestry Officer.
+        Create recipients for every
+        active Forestry Officer.
         """
 
         officers = (
@@ -112,13 +134,16 @@ class AlertService:
 
         self.db.commit()
 
-        def queue_email_notifications(
+    # ---------------------------------------------------------
+    # Queue Email Notifications
+    # ---------------------------------------------------------
+    def queue_email_notifications(
         self,
         alert: Alert,
     ) -> None:
         """
-        Create email queue records for all
-        alert recipients.
+        Queue email notifications
+        for all recipients.
         """
 
         recipients = (
@@ -144,57 +169,121 @@ class AlertService:
             self.db.add(email)
 
         self.db.commit()
-
+            # ---------------------------------------------------------
+    # Mark Alert as Read
+    # ---------------------------------------------------------
     def mark_alert_as_read(
         self,
         recipient: AlertRecipient,
-    ) -> None:
+    ) -> AlertRecipient:
         """
-        Mark an alert as read.
+        Mark an alert as read by a recipient.
         """
-
-        from datetime import datetime, UTC
 
         recipient.is_read = True
-        recipient.read_at = datetime.now(UTC)
+
+        recipient.read_at = datetime.now(
+            UTC,
+        )
 
         self.db.commit()
+        self.db.refresh(recipient)
 
+        return recipient
+
+    # ---------------------------------------------------------
+    # Resolve Alert
+    # ---------------------------------------------------------
     def resolve_alert(
         self,
         alert: Alert,
         notes: str | None = None,
-    ) -> None:
+    ) -> Alert:
         """
-        Mark an alert as resolved.
+        Resolve an alert.
         """
-
-        from datetime import datetime, UTC
 
         alert.is_resolved = True
-        alert.resolution_notes = notes
+
         alert.status = AlertStatus.READ
-        alert.resolved_at = datetime.now(UTC)
 
-        self.db.commit()
+        alert.resolution_notes = notes
 
+        alert.resolved_at = datetime.now(
+            UTC,
+        )
+
+        alert = self.repository.update(
+            alert,
+        )
+
+        return alert
+
+    # ---------------------------------------------------------
+    # Process Detection
+    # ---------------------------------------------------------
     def process_detection(
         self,
         detection: Detection,
     ) -> Alert:
         """
-        Complete workflow after a verified
-        detection.
+        Execute the complete alert workflow.
 
-        1. Create Alert
-        2. Create Alert Recipients
-        3. Queue Email Notifications
+        Workflow
+        --------
+        1. Create alert.
+        2. Create recipients.
+        3. Queue email notifications.
         """
 
-        alert = self.create_alert(detection)
+        alert = self.create_alert(
+            detection,
+        )
 
-        self.create_alert_recipients(alert)
+        self.create_alert_recipients(
+            alert,
+        )
 
-        self.queue_email_notifications(alert)
+        self.queue_email_notifications(
+            alert,
+        )
 
         return alert
+
+    # ---------------------------------------------------------
+    # Mark Alert as Sent
+    # ---------------------------------------------------------
+    def mark_as_sent(
+        self,
+        alert: Alert,
+    ) -> Alert:
+        """
+        Mark an alert as successfully sent.
+        """
+
+        alert.status = AlertStatus.SENT
+
+        alert.sent_at = datetime.now(
+            UTC,
+        )
+
+        return self.repository.update(
+            alert,
+        )
+
+    # ---------------------------------------------------------
+    # Mark Alert as Failed
+    # ---------------------------------------------------------
+    def mark_as_failed(
+        self,
+        alert: Alert,
+    ) -> Alert:
+        """
+        Mark an alert as failed.
+        """
+
+        alert.status = AlertStatus.FAILED
+
+        return self.repository.update(
+            alert,
+        )

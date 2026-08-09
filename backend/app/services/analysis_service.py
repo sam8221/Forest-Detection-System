@@ -20,6 +20,9 @@ Author:
 Project:
     Web-Based Deforestation Detection and Alert System
     Using Sentinel-2 Imagery in the Copperbelt, Zambia
+
+Version:
+    1.0.0
 ===========================================================
 """
 
@@ -33,17 +36,31 @@ from app.models.enums import (
     AnalysisJobType,
 )
 from app.services.alert_service import AlertService
+from app.services.sentinel_service import SentinelService
 
 
 class AnalysisService:
     """
-    Handles the complete forest analysis process.
+    Coordinates the complete forest analysis workflow.
     """
 
-    def __init__(self, db: Session):
+    def __init__(
+        self,
+        db: Session,
+    ):
+        """
+        Initialize the analysis service.
+        """
+
         self.db = db
+
+        self.sentinel_service = SentinelService(db)
+
         self.alert_service = AlertService(db)
 
+    # ---------------------------------------------------------
+    # Create Analysis Job
+    # ---------------------------------------------------------
     def create_analysis_job(
         self,
         forest_area_id: int,
@@ -69,18 +86,25 @@ class AnalysisService:
 
         return job
 
+    # ---------------------------------------------------------
+    # Start Analysis
+    # ---------------------------------------------------------
     def start_analysis(
         self,
         job: AnalysisJob,
     ) -> None:
         """
-        Mark the analysis as running.
+        Mark an analysis job as running.
         """
 
         job.status = AnalysisJobStatus.RUNNING
         job.started_at = datetime.now(UTC)
 
         self.db.commit()
+
+    # ---------------------------------------------------------
+    # Complete Analysis
+    # ---------------------------------------------------------
     def complete_analysis(
         self,
         job: AnalysisJob,
@@ -89,7 +113,7 @@ class AnalysisService:
         ndvi_threshold: float,
     ) -> None:
         """
-        Mark an analysis job as successfully completed.
+        Mark an analysis job as completed.
         """
 
         completed_at = datetime.now(UTC)
@@ -98,18 +122,22 @@ class AnalysisService:
         job.status = AnalysisJobStatus.COMPLETED
 
         if job.started_at is not None:
-            duration = (
+
+            job.duration_seconds = (
                 completed_at - job.started_at
             ).total_seconds()
 
-            job.duration_seconds = duration
-
         job.cloud_cover_percentage = cloud_cover
-        job.vegetation_change_percentage = vegetation_change
+        job.vegetation_change_percentage = (
+            vegetation_change
+        )
         job.ndvi_threshold = ndvi_threshold
 
         self.db.commit()
 
+    # ---------------------------------------------------------
+    # Fail Analysis
+    # ---------------------------------------------------------
     def fail_analysis(
         self,
         job: AnalysisJob,
@@ -126,14 +154,16 @@ class AnalysisService:
         job.error_message = error_message
 
         if job.started_at is not None:
-            duration = (
+
+            job.duration_seconds = (
                 completed_at - job.started_at
             ).total_seconds()
 
-            job.duration_seconds = duration
-
         self.db.commit()
 
+    # ---------------------------------------------------------
+    # Execute Analysis
+    # ---------------------------------------------------------
     def execute(
         self,
         job: AnalysisJob,
@@ -141,23 +171,42 @@ class AnalysisService:
         """
         Execute the complete analysis workflow.
 
-        NOTE:
-        DetectionService will be connected here after
-        it is implemented.
+        Workflow:
+
+        1. Start analysis
+        2. Retrieve Sentinel-2 imagery
+        3. Perform NDVI analysis
+        4. Detect vegetation loss
+        5. Generate alerts
+        6. Complete analysis
         """
 
         try:
 
+            # -----------------------------------------
+            # Mark job as running
+            # -----------------------------------------
             self.start_analysis(job)
 
-            # ---------------------------------------
-            # TODO:
-            # Download Sentinel-2 image
-            # Calculate NDVI
-            # Compare previous image
-            # Create Detection
-            # Trigger AlertService
-            # ---------------------------------------
+            # -----------------------------------------
+            # Future Workflow
+            # -----------------------------------------
+            #
+            # latest_image =
+            # self.sentinel_service.get_latest_image(
+            #     job.forest_area_id,
+            # )
+            #
+            # NDVIService.calculate(...)
+            #
+            # DetectionService.detect(...)
+            #
+            # AlertService.send(...)
+            #
+            # These services will be connected
+            # in the next implementation phase.
+            #
+            # -----------------------------------------
 
             self.complete_analysis(
                 job=job,
@@ -169,8 +218,8 @@ class AnalysisService:
         except Exception as ex:
 
             self.fail_analysis(
-                job,
-                str(ex),
+                job=job,
+                error_message=str(ex),
             )
 
             raise

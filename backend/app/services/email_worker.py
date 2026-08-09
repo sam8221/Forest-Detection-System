@@ -19,6 +19,9 @@ Author:
 Project:
     Web-Based Deforestation Detection and Alert System
     Using Sentinel-2 Imagery in the Copperbelt, Zambia
+
+Version:
+    1.0.0
 ===========================================================
 """
 
@@ -33,22 +36,39 @@ from app.services.email_service import EmailService
 
 class EmailWorker:
     """
-    Processes pending emails.
+    Processes pending emails in the email queue.
     """
 
-    def __init__(self, db: Session):
+    def __init__(
+        self,
+        db: Session,
+    ):
+        """
+        Initialize the email worker.
+        """
+
         self.db = db
+
         self.email_service = EmailService()
 
-    def process_queue(self) -> None:
+    # ---------------------------------------------------------
+    # Process Email Queue
+    # ---------------------------------------------------------
+    def process_queue(
+        self,
+    ) -> None:
         """
-        Process every pending email.
+        Process all pending emails.
         """
 
         pending_emails = (
             self.db.query(EmailQueue)
             .filter(
-                EmailQueue.status == EmailQueueStatus.PENDING
+                EmailQueue.status ==
+                EmailQueueStatus.PENDING
+            )
+            .order_by(
+                EmailQueue.created_at.asc(),
             )
             .all()
         )
@@ -57,39 +77,65 @@ class EmailWorker:
 
             try:
 
+                # -------------------------------------
+                # Send Email
+                # -------------------------------------
                 self.email_service.send_email(
                     recipient_email=email.recipient_email,
                     subject=email.subject,
                     html_body=email.body,
                 )
 
+                # -------------------------------------
+                # Update Queue
+                # -------------------------------------
                 email.status = EmailQueueStatus.SENT
-                email.sent_at = datetime.now(UTC)
+
+                email.sent_at = datetime.now(
+                    UTC,
+                )
 
                 self.db.commit()
+
+                self.db.refresh(email)
 
             except Exception as ex:
 
+                # -------------------------------------
+                # Retry
+                # -------------------------------------
                 email.retry_count += 1
 
                 email.last_error = str(ex)
-                 if email.retry_count >= email.max_retries:
 
-                    email.status = EmailQueueStatus.FAILED
+                if (
+                    email.retry_count
+                    >= email.max_retries
+                ):
+
+                    email.status = (
+                        EmailQueueStatus.FAILED
+                    )
 
                 self.db.commit()
 
-        # Finished processing all pending emails.
+                self.db.refresh(email)
 
-    def run_once(self) -> None:
+    # ---------------------------------------------------------
+    # Run Worker Once
+    # ---------------------------------------------------------
+    def run_once(
+        self,
+    ) -> None:
         """
         Execute one email processing cycle.
 
-        This method can be called by:
-            - A scheduler
-            - FastAPI BackgroundTasks
-            - APScheduler
-            - Celery
+        Can be called by:
+
+        • APScheduler
+        • Celery
+        • FastAPI BackgroundTasks
+        • Cron Jobs
         """
 
-        self.process_queue()               
+        self.process_queue()

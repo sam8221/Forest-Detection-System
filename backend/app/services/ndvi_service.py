@@ -12,6 +12,7 @@ Responsibilities:
     - Calculate NDVI.
     - Save NDVI raster.
     - Compare NDVI images.
+    - Calculate NDVI statistics.
 
 Author:
     Samuel Bikiloni
@@ -19,6 +20,9 @@ Author:
 Project:
     Web-Based Deforestation Detection and Alert System
     Using Sentinel-2 Imagery in the Copperbelt, Zambia
+
+Version:
+    1.0.0
 ===========================================================
 """
 
@@ -36,12 +40,15 @@ class NDVIService:
     Sentinel-2 imagery.
     """
 
+    # ---------------------------------------------------------
+    # Read Raster Band
+    # ---------------------------------------------------------
     def read_band(
         self,
         band_path: Path,
     ) -> tuple[np.ndarray, dict]:
         """
-        Read a Sentinel-2 band.
+        Read a Sentinel-2 raster band.
 
         Returns
         -------
@@ -57,6 +64,9 @@ class NDVIService:
 
         return image, profile
 
+    # ---------------------------------------------------------
+    # Calculate NDVI
+    # ---------------------------------------------------------
     def calculate_ndvi(
         self,
         red_band: np.ndarray,
@@ -66,10 +76,16 @@ class NDVIService:
         Calculate NDVI.
 
         Formula:
-            (NIR - RED) / (NIR + RED)
+
+            (NIR - RED)
+            -----------
+            (NIR + RED)
         """
 
-        np.seterr(divide="ignore", invalid="ignore")
+        np.seterr(
+            divide="ignore",
+            invalid="ignore",
+        )
 
         denominator = nir_band + red_band
 
@@ -81,14 +97,19 @@ class NDVIService:
         )
 
         return ndvi
-        def save_ndvi(
+
+    # ---------------------------------------------------------
+    # Save NDVI
+    # ---------------------------------------------------------
+    def save_ndvi(
         self,
         ndvi: np.ndarray,
         profile: dict,
         output_path: Path,
     ) -> Path:
-          """
-        Save the NDVI raster as a GeoTIFF.
+        """
+        Save the NDVI raster
+        as a GeoTIFF.
         """
 
         output_path.parent.mkdir(
@@ -117,23 +138,30 @@ class NDVIService:
 
         return output_path
 
+    # ---------------------------------------------------------
+    # Calculate NDVI Change
+    # ---------------------------------------------------------
     def calculate_change(
         self,
         previous_ndvi: np.ndarray,
         current_ndvi: np.ndarray,
     ) -> np.ndarray:
         """
-        Calculate NDVI change between two dates.
+        Calculate NDVI change
+        between two dates.
         """
 
         return current_ndvi - previous_ndvi
 
+    # ---------------------------------------------------------
+    # Calculate Statistics
+    # ---------------------------------------------------------
     def calculate_statistics(
         self,
         ndvi: np.ndarray,
     ) -> dict[str, float]:
         """
-        Calculate summary statistics for an NDVI image.
+        Calculate summary statistics.
         """
 
         valid_pixels = ndvi[np.isfinite(ndvi)]
@@ -148,23 +176,40 @@ class NDVIService:
             }
 
         return {
-            "minimum": float(np.min(valid_pixels)),
-            "maximum": float(np.max(valid_pixels)),
-            "mean": float(np.mean(valid_pixels)),
-            "std": float(np.std(valid_pixels)),
+            "minimum": float(
+                np.min(valid_pixels)
+            ),
+            "maximum": float(
+                np.max(valid_pixels)
+            ),
+            "mean": float(
+                np.mean(valid_pixels)
+            ),
+            "std": float(
+                np.std(valid_pixels)
+            ),
         }
-        def process_ndvi(
+
+    # ---------------------------------------------------------
+    # Process NDVI
+    # ---------------------------------------------------------
+    def process_ndvi(
         self,
         red_band_path: Path,
         nir_band_path: Path,
         output_path: Path,
-    ) -> tuple[np.ndarray, dict[str, float], Path]:
-           """
+    ) -> tuple[
+        np.ndarray,
+        dict[str, float],
+        Path,
+    ]:
+        """
         Execute the complete NDVI workflow.
 
         Returns
         -------
         tuple
+
             (
                 ndvi_array,
                 statistics,
@@ -172,9 +217,9 @@ class NDVIService:
             )
         """
 
-        # --------------------------------------------
+        # ---------------------------------------------
         # Read Sentinel-2 bands
-        # --------------------------------------------
+        # ---------------------------------------------
         red_band, profile = self.read_band(
             red_band_path,
         )
@@ -183,26 +228,26 @@ class NDVIService:
             nir_band_path,
         )
 
-        # --------------------------------------------
+        # ---------------------------------------------
         # Calculate NDVI
-        # --------------------------------------------
+        # ---------------------------------------------
         ndvi = self.calculate_ndvi(
             red_band,
             nir_band,
         )
 
-        # --------------------------------------------
-        # Save NDVI raster
-        # --------------------------------------------
+        # ---------------------------------------------
+        # Save NDVI
+        # ---------------------------------------------
         output_file = self.save_ndvi(
             ndvi,
             profile,
             output_path,
         )
 
-        # --------------------------------------------
+        # ---------------------------------------------
         # Calculate statistics
-        # --------------------------------------------
+        # ---------------------------------------------
         statistics = self.calculate_statistics(
             ndvi,
         )
@@ -213,17 +258,24 @@ class NDVIService:
             output_file,
         )
 
+    # ---------------------------------------------------------
+    # Compare NDVI Images
+    # ---------------------------------------------------------
     def compare_ndvi(
         self,
         previous_ndvi: np.ndarray,
         current_ndvi: np.ndarray,
-    ) -> tuple[np.ndarray, dict[str, float]]:
+    ) -> tuple[
+        np.ndarray,
+        dict[str, float],
+    ]:
         """
         Compare two NDVI rasters.
 
         Returns
         -------
         tuple
+
             (
                 change_raster,
                 statistics

@@ -5,14 +5,15 @@ ForestWatch Zambia
 Module: Detection Service
 
 Purpose:
-    Performs forest change detection and creates
+    Performs forest change detection and manages
     detection records.
 
 Responsibilities:
-    - Execute NDVI-based analysis.
-    - Compare satellite imagery.
     - Create detections.
-    - Trigger alerts.
+    - Verify detections.
+    - Reject detections.
+    - Close detections.
+    - Execute the detection workflow.
 
 Author:
     Samuel Bikiloni
@@ -20,26 +21,47 @@ Author:
 Project:
     Web-Based Deforestation Detection and Alert System
     Using Sentinel-2 Imagery in the Copperbelt, Zambia
+
+Version:
+    1.0.0
 ===========================================================
 """
+
+from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
 from app.models.analysis_job import AnalysisJob
 from app.models.detection import Detection
 from app.models.enums import DetectionStatus
+from app.repositories.detection_repository import (
+    DetectionRepository,
+)
 from app.services.alert_service import AlertService
 
 
 class DetectionService:
     """
-    Handles deforestation detection.
+    Handles forest change detection.
     """
 
-    def __init__(self, db: Session):
+    def __init__(
+        self,
+        db: Session,
+    ):
+        """
+        Initialize the detection service.
+        """
+
         self.db = db
+
+        self.repository = DetectionRepository(db)
+
         self.alert_service = AlertService(db)
 
+    # ---------------------------------------------------------
+    # Create Detection
+    # ---------------------------------------------------------
     def create_detection(
         self,
         job: AnalysisJob,
@@ -65,35 +87,43 @@ class DetectionService:
             status=DetectionStatus.PENDING,
         )
 
-        self.db.add(detection)
-        self.db.commit()
-        self.db.refresh(detection)
+        return self.repository.create(
+            detection,
+        )
 
-        return detection
-
+    # ---------------------------------------------------------
+    # Verify Detection
+    # ---------------------------------------------------------
     def verify_detection(
         self,
         detection: Detection,
         verified_by: int,
     ) -> Detection:
-        
         """
         Verify a detection and trigger alerts.
         """
 
-        from datetime import UTC, datetime
-
         detection.status = DetectionStatus.VERIFIED
-        detection.verified_by = verified_by
-        detection.verified_at = datetime.now(UTC)
 
-        self.db.commit()
+        detection.verified_by = verified_by
+
+        detection.verified_at = datetime.now(
+            UTC,
+        )
+
+        detection = self.repository.update(
+            detection,
+        )
 
         self.alert_service.process_detection(
-            detection
+            detection,
         )
 
         return detection
+
+    # ---------------------------------------------------------
+    # Reject Detection
+    # ---------------------------------------------------------
     def reject_detection(
         self,
         detection: Detection,
@@ -104,17 +134,23 @@ class DetectionService:
         Reject a detection.
         """
 
-        from datetime import UTC, datetime
-
         detection.status = DetectionStatus.REJECTED
+
         detection.verified_by = verified_by
-        detection.verified_at = datetime.now(UTC)
+
+        detection.verified_at = datetime.now(
+            UTC,
+        )
+
         detection.verification_notes = notes
 
-        self.db.commit()
+        return self.repository.update(
+            detection,
+        )
 
-        return detection
-
+    # ---------------------------------------------------------
+    # Close Detection
+    # ---------------------------------------------------------
     def close_detection(
         self,
         detection: Detection,
@@ -127,12 +163,16 @@ class DetectionService:
         detection.status = DetectionStatus.CLOSED
 
         if notes:
+
             detection.verification_notes = notes
 
-        self.db.commit()
+        return self.repository.update(
+            detection,
+        )
 
-        return detection
-
+    # ---------------------------------------------------------
+    # Execute Detection
+    # ---------------------------------------------------------
     def execute_detection(
         self,
         job: AnalysisJob,
@@ -140,26 +180,31 @@ class DetectionService:
         """
         Execute the complete detection workflow.
 
-        NOTE:
-        This currently contains placeholder values.
-        Later it will call the NDVI engine and compare
-        Sentinel-2 imagery.
+        Future workflow:
+
+        1. Load latest Sentinel-2 image.
+        2. Load previous Sentinel-2 image.
+        3. Calculate NDVI.
+        4. Compare NDVI.
+        5. Measure vegetation loss.
+        6. Create detection.
+
+        Returns
+        -------
+        Detection | None
         """
 
         # -------------------------------------------------
-        # Future NDVI Processing
-        #
-        # 1. Load current Sentinel-2 image
-        # 2. Load previous image
-        # 3. Calculate NDVI
-        # 4. Detect vegetation change
+        # Placeholder values
+        # Replace with NDVI results later.
         # -------------------------------------------------
 
         vegetation_loss = 3.85
-        confidence = 97.4
 
-        # Ignore insignificant changes
+        confidence = 97.40
+
         if vegetation_loss < 0.50:
+
             return None
 
         detection = self.create_detection(
@@ -171,9 +216,12 @@ class DetectionService:
             vegetation_loss=48.15,
         )
 
-        self.verify_detection(
-            detection=detection,
-            verified_by=1,
-        )
+        # -------------------------------------------------
+        # Detection remains PENDING.
+        #
+        # A Forestry Officer will verify it using:
+        #
+        # PUT /detections/{id}/verify
+        # -------------------------------------------------
 
         return detection
