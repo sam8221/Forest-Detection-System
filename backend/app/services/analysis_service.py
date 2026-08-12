@@ -11,8 +11,8 @@ Responsibilities:
     - Create analysis jobs.
     - Execute satellite image analysis.
     - Trigger detection engine.
-    - Generate alerts.
     - Record analysis results.
+    - Handle analysis failures.
 
 Author:
     Samuel Bikiloni
@@ -31,12 +31,12 @@ from datetime import UTC, datetime
 from sqlalchemy.orm import Session
 
 from app.models.analysis_job import AnalysisJob
+from app.models.satellite_image import SatelliteImage
 from app.models.enums import (
     AnalysisJobStatus,
     AnalysisJobType,
 )
-from app.services.alert_service import AlertService
-from app.services.sentinel_service import SentinelService
+from app.services.detection_service import DetectionService
 
 
 class AnalysisService:
@@ -54,13 +54,12 @@ class AnalysisService:
 
         self.db = db
 
-        self.sentinel_service = SentinelService(db)
+        self.detection_service = DetectionService(db)
 
-        self.alert_service = AlertService(db)
+    # =========================================================
+    # CREATE ANALYSIS JOB
+    # =========================================================
 
-    # ---------------------------------------------------------
-    # Create Analysis Job
-    # ---------------------------------------------------------
     def create_analysis_job(
         self,
         forest_area_id: int,
@@ -86,9 +85,10 @@ class AnalysisService:
 
         return job
 
-    # ---------------------------------------------------------
-    # Start Analysis
-    # ---------------------------------------------------------
+    # =========================================================
+    # START ANALYSIS
+    # =========================================================
+
     def start_analysis(
         self,
         job: AnalysisJob,
@@ -102,9 +102,10 @@ class AnalysisService:
 
         self.db.commit()
 
-    # ---------------------------------------------------------
-    # Complete Analysis
-    # ---------------------------------------------------------
+    # =========================================================
+    # COMPLETE ANALYSIS
+    # =========================================================
+
     def complete_analysis(
         self,
         job: AnalysisJob,
@@ -122,22 +123,25 @@ class AnalysisService:
         job.status = AnalysisJobStatus.COMPLETED
 
         if job.started_at is not None:
-
             job.duration_seconds = (
                 completed_at - job.started_at
             ).total_seconds()
 
         job.cloud_cover_percentage = cloud_cover
+
         job.vegetation_change_percentage = (
             vegetation_change
         )
+
         job.ndvi_threshold = ndvi_threshold
 
         self.db.commit()
+        self.db.refresh(job)
 
-    # ---------------------------------------------------------
-    # Fail Analysis
-    # ---------------------------------------------------------
+    # =========================================================
+    # FAIL ANALYSIS
+    # =========================================================
+
     def fail_analysis(
         self,
         job: AnalysisJob,
@@ -151,75 +155,151 @@ class AnalysisService:
 
         job.completed_at = completed_at
         job.status = AnalysisJobStatus.FAILED
-        job.error_message = error_message
+
+        job.error_message = error_message[:500]
 
         if job.started_at is not None:
-
             job.duration_seconds = (
                 completed_at - job.started_at
             ).total_seconds()
 
         self.db.commit()
+        self.db.refresh(job)
 
-    # ---------------------------------------------------------
-    # Execute Analysis
-    # ---------------------------------------------------------
+    # =========================================================
+    # RUN ANALYSIS
+    # =========================================================
+
+    def run_analysis(
+        self,
+        forest_area_id: int,
+        started_by: int | None = None,
+    ) -> AnalysisJob:
+        """
+        Create and execute an analysis job for a forest area.
+
+        Workflow:
+
+        1. Find the latest Sentinel-2 image.
+        2. Create an analysis job.
+        3. Start the analysis.
+        4. Execute detection.
+        5. Calculate vegetation change.
+        6. Complete the analysis job.
+        7. Return the completed job.
+        """
+
+        # -----------------------------------------------------
+        # Find latest satellite image
+        # -----------------------------------------------------
+
+        satellite_image = (
+            self.db.query(SatelliteImage)
+            .filter(
+                SatelliteImage.forest_area_id
+                == forest_area_id
+            )
+            .order_by(
+                SatelliteImage.acquisition_date.desc()
+            )
+            .first()
+        )
+
+        if satellite_image is None:
+            raise ValueError(
+                "No satellite image is available "
+                "for this forest area."
+            )
+
+        # -----------------------------------------------------
+        # Create analysis job
+        # -----------------------------------------------------
+
+        job = self.create_analysis_job(
+            forest_area_id=forest_area_id,
+            satellite_image_id=satellite_image.id,
+            started_by=started_by,
+            job_type=AnalysisJobType.AUTOMATIC,
+        )
+
+        # -----------------------------------------------------
+        # Execute analysis
+        # -----------------------------------------------------
+
+        self.execute(job)
+
+        return job
+
+    # =========================================================
+    # EXECUTE ANALYSIS
+    # =========================================================
+
     def execute(
         self,
         job: AnalysisJob,
     ) -> None:
         """
         Execute the complete analysis workflow.
-
-        Workflow:
-
-        1. Start analysis
-        2. Retrieve Sentinel-2 imagery
-        3. Perform NDVI analysis
-        4. Detect vegetation loss
-        5. Generate alerts
-        6. Complete analysis
         """
 
         try:
 
-            # -----------------------------------------
-            # Mark job as running
-            # -----------------------------------------
+            # -------------------------------------------------
+            # Start analysis
+            # -------------------------------------------------
+
             self.start_analysis(job)
 
-            # -----------------------------------------
-            # Future Workflow
-            # -----------------------------------------
-            #
-            # latest_image =
-            # self.sentinel_service.get_latest_image(
-            #     job.forest_area_id,
-            # )
-            #
-            # NDVIService.calculate(...)
-            #
-            # DetectionService.detect(...)
-            #
-            # AlertService.send(...)
-            #
-            # These services will be connected
-            # in the next implementation phase.
-            #
-            # -----------------------------------------
+            # -------------------------------------------------
+            # Execute detection
+            # -------------------------------------------------
+
+            detection = (
+                self.detection_service.execute_detection(
+                    job
+                )
+            )
+
+            # -------------------------------------------------
+            # Determine vegetation change
+            # -------------------------------------------------
+
+            if detection is not None:
+
+                vegetation_change = (
+                    detection.vegetation_loss_percentage
+                    or 0.0
+                )
+
+            else:
+
+                vegetation_change = 0.0
+
+            # -------------------------------------------------
+            # Complete analysis
+            # -------------------------------------------------
 
             self.complete_analysis(
                 job=job,
                 cloud_cover=5.4,
-                vegetation_change=0.0,
+                vegetation_change=vegetation_change,
                 ndvi_threshold=0.30,
             )
 
-        except Exception as ex:
+        except Exception as exc:
 
-            self.fail_analysis(
-                job=job,
-                error_message=str(ex),
-            )
+            # Make sure the current transaction is clean
+            self.db.rollback()
+
+            try:
+
+                self.fail_analysis(
+                    job=job,
+                    error_message=str(exc),
+                )
+
+            except Exception:
+
+                self.db.rollback()
 
             raise

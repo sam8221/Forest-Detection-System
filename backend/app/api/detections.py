@@ -13,6 +13,7 @@ Responsibilities:
     - Verify detections.
     - Reject detections.
     - Close detections.
+    - Trigger alerts when detections are verified.
 
 Author:
     Samuel Bikiloni
@@ -20,13 +21,8 @@ Author:
 Project:
     Web-Based Deforestation Detection and Alert System
     Using Sentinel-2 Imagery in the Copperbelt, Zambia
-
-Version:
-    1.0.0
 ===========================================================
 """
-
-from datetime import UTC, datetime
 
 from fastapi import (
     APIRouter,
@@ -41,13 +37,29 @@ from app.api.deps import (
     get_current_active_user,
     get_forestry_officer,
 )
+
 from app.database.session import get_db
+
+from app.models.enums import DetectionStatus
 from app.models.user import User
-from app.repositories.detection_repository import DetectionRepository
+
+from app.repositories.detection_repository import (
+    DetectionRepository,
+)
+
 from app.schemas.detection import (
     DetectionResponse,
     DetectionVerification,
 )
+
+from app.services.detection_service import (
+    DetectionService,
+)
+
+
+# =========================================================
+# ROUTER
+# =========================================================
 
 router = APIRouter(
     prefix="/detections",
@@ -55,9 +67,10 @@ router = APIRouter(
 )
 
 
-# ---------------------------------------------------------
-# Get All Detections
-# ---------------------------------------------------------
+# =========================================================
+# GET ALL DETECTIONS
+# =========================================================
+
 @router.get(
     "",
     response_model=list[DetectionResponse],
@@ -75,9 +88,10 @@ def get_detections(
     return repository.get_all()
 
 
-# ---------------------------------------------------------
-# Get Pending Detections
-# ---------------------------------------------------------
+# =========================================================
+# GET PENDING DETECTIONS
+# =========================================================
+
 @router.get(
     "/pending",
     response_model=list[DetectionResponse],
@@ -95,9 +109,10 @@ def get_pending_detections(
     return repository.get_pending()
 
 
-# ---------------------------------------------------------
-# Get Verified Detections
-# ---------------------------------------------------------
+# =========================================================
+# GET VERIFIED DETECTIONS
+# =========================================================
+
 @router.get(
     "/verified",
     response_model=list[DetectionResponse],
@@ -115,9 +130,10 @@ def get_verified_detections(
     return repository.get_verified()
 
 
-# ---------------------------------------------------------
-# Get Forest Detections
-# ---------------------------------------------------------
+# =========================================================
+# GET FOREST DETECTIONS
+# =========================================================
+
 @router.get(
     "/forest/{forest_area_id}",
     response_model=list[DetectionResponse],
@@ -138,9 +154,10 @@ def get_forest_detections(
     )
 
 
-# ---------------------------------------------------------
-# Get Detection
-# ---------------------------------------------------------
+# =========================================================
+# GET ONE DETECTION
+# =========================================================
+
 @router.get(
     "/{detection_id}",
     response_model=DetectionResponse,
@@ -169,12 +186,14 @@ def get_detection(
     return detection
 
 
-# ---------------------------------------------------------
-# Verify Detection
-# ---------------------------------------------------------
+# =========================================================
+# VERIFY DETECTION
+# =========================================================
+
 @router.put(
     "/{detection_id}/verify",
     response_model=DetectionResponse,
+    status_code=status.HTTP_200_OK,
 )
 def verify_detection(
     detection_id: int,
@@ -183,7 +202,14 @@ def verify_detection(
     current_user: User = Depends(get_forestry_officer),
 ):
     """
-    Verify or reject a detection.
+    Verify a pending detection.
+
+    The status is ALWAYS changed to VERIFIED.
+    The status supplied by the client is ignored.
+
+    After verification, the DetectionService also
+    processes the detection and triggers the alert
+    workflow.
     """
 
     repository = DetectionRepository(db)
@@ -198,19 +224,167 @@ def verify_detection(
             detail="Detection not found.",
         )
 
-    detection.status = request.status
-    detection.verification_notes = request.verification_notes
-    detection.verified_by = current_user.id
-    detection.verified_at = datetime.now(UTC)
+    # -----------------------------------------------------
+    # Only pending detections can be verified
+    # -----------------------------------------------------
 
-    repository.update(detection)
+    if detection.status != DetectionStatus.PENDING:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Only pending detections can be verified. "
+                f"Current status: {detection.status.value}"
+            ),
+        )
+
+    # -----------------------------------------------------
+    # Use DetectionService
+    # -----------------------------------------------------
+
+    service = DetectionService(db)
+
+    detection = service.verify_detection(
+        detection=detection,
+        verified_by=current_user.id,
+    )
+
+    # -----------------------------------------------------
+    # Save verification notes
+    # -----------------------------------------------------
+
+    if request.verification_notes:
+        detection.verification_notes = (
+            request.verification_notes
+        )
+
+        detection = repository.update(
+            detection,
+        )
 
     return detection
 
 
-# ---------------------------------------------------------
-# Delete Detection
-# ---------------------------------------------------------
+# =========================================================
+# REJECT DETECTION
+# =========================================================
+
+@router.put(
+    "/{detection_id}/reject",
+    response_model=DetectionResponse,
+    status_code=status.HTTP_200_OK,
+)
+def reject_detection(
+    detection_id: int,
+    request: DetectionVerification,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_forestry_officer),
+):
+    """
+    Reject a pending detection.
+    """
+
+    repository = DetectionRepository(db)
+
+    detection = repository.get_by_id(
+        detection_id,
+    )
+
+    if detection is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Detection not found.",
+        )
+
+    # -----------------------------------------------------
+    # Only pending detections can be rejected
+    # -----------------------------------------------------
+
+    if detection.status != DetectionStatus.PENDING:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Only pending detections can be rejected. "
+                f"Current status: {detection.status.value}"
+            ),
+        )
+
+    # -----------------------------------------------------
+    # Use DetectionService
+    # -----------------------------------------------------
+
+    service = DetectionService(db)
+
+    detection = service.reject_detection(
+        detection=detection,
+        verified_by=current_user.id,
+        notes=request.verification_notes or "Detection rejected.",
+    )
+
+    return detection
+
+
+# =========================================================
+# CLOSE DETECTION
+# =========================================================
+
+@router.put(
+    "/{detection_id}/close",
+    response_model=DetectionResponse,
+    status_code=status.HTTP_200_OK,
+)
+def close_detection(
+    detection_id: int,
+    request: DetectionVerification,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_forestry_officer),
+):
+    """
+    Close a verified detection.
+    """
+
+    repository = DetectionRepository(db)
+
+    detection = repository.get_by_id(
+        detection_id,
+    )
+
+    if detection is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Detection not found.",
+        )
+
+    # -----------------------------------------------------
+    # Only verified detections can be closed
+    # -----------------------------------------------------
+
+    if detection.status != DetectionStatus.VERIFIED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Only verified detections can be closed. "
+                f"Current status: {detection.status.value}"
+            ),
+        )
+
+    # -----------------------------------------------------
+    # Use DetectionService
+    # -----------------------------------------------------
+
+    service = DetectionService(db)
+
+    detection = service.close_detection(
+        detection=detection,
+        notes=request.verification_notes,
+    )
+
+    return detection
+
+
+# =========================================================
+# DELETE DETECTION
+# =========================================================
+
 @router.delete(
     "/{detection_id}",
     status_code=status.HTTP_200_OK,
@@ -238,8 +412,10 @@ def delete_detection(
             detail="Detection not found.",
         )
 
-    repository.delete(detection)
+    repository.delete(
+        detection,
+    )
 
     return {
-        "message": "Detection deleted successfully."
+        "message": "Detection deleted successfully.",
     }

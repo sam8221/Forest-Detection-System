@@ -1,51 +1,51 @@
 """
-===========================================================
 ForestWatch Zambia
------------------------------------------------------------
+
 Module: API Dependencies
 
 Purpose:
-    Provides reusable authentication dependencies
-    for FastAPI endpoints.
+Provides reusable authentication dependencies for FastAPI endpoints.
 
 Responsibilities:
-    - Decode JWT tokens.
-    - Retrieve authenticated users.
-    - Enforce role-based access.
+- Decode JWT tokens.
+- Retrieve authenticated users.
+- Enforce role-based access.
 
 Author:
-    Samuel Bikiloni
+Samuel Bikiloni
 
 Project:
-    Web-Based Deforestation Detection and Alert System
-    Using Sentinel-2 Imagery in the Copperbelt, Zambia
-
-Version:
-    1.0.0
-===========================================================
+Web-Based Deforestation Detection and Alert System
+Using Sentinel-2 Imagery in the Copperbelt, Zambia
 """
-from app.models.enums import UserRole
-from fastapi import (
-    Depends,
-    HTTPException,
-    status,
-)
 
+from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.database.session import get_db
+from app.models.enums import UserRole
 from app.models.user import User
 from app.repositories.user_repository import UserRepository
 
+
 settings = get_settings()
+
+
+# =========================================================
+# OAuth2 configuration
+# =========================================================
 
 oauth2_scheme = OAuth2PasswordBearer(
     tokenUrl="/api/v1/auth/login",
 )
 
+
+# =========================================================
+# GET CURRENT USER
+# =========================================================
 
 def get_current_user(
     token: str = Depends(oauth2_scheme),
@@ -64,7 +64,6 @@ def get_current_user(
     )
 
     try:
-
         payload = jwt.decode(
             token,
             settings.secret_key,
@@ -87,6 +86,12 @@ def get_current_user(
         raise credentials_exception
 
     return user
+
+
+# =========================================================
+# GET CURRENT ACTIVE USER
+# =========================================================
+
 def get_current_active_user(
     current_user: User = Depends(get_current_user),
 ) -> User:
@@ -95,7 +100,6 @@ def get_current_active_user(
     """
 
     if not current_user.is_active:
-
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Inactive account.",
@@ -104,9 +108,13 @@ def get_current_active_user(
     return current_user
 
 
+# =========================================================
+# ADMIN USER
+# =========================================================
+
 def get_admin_user(
     current_user: User = Depends(
-        get_current_active_user,
+        get_current_active_user
     ),
 ) -> User:
     """
@@ -114,16 +122,21 @@ def get_admin_user(
     """
 
     if current_user.role != UserRole.ADMIN:
-
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Administrator privileges required.",
         )
 
     return current_user
+
+
+# =========================================================
+# FORESTRY OFFICER
+# =========================================================
+
 def get_forestry_officer(
     current_user: User = Depends(
-        get_current_active_user,
+        get_current_active_user
     ),
 ) -> User:
     """
@@ -135,7 +148,6 @@ def get_forestry_officer(
         UserRole.ADMIN,
         UserRole.FORESTRY_OFFICER,
     ):
-
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Forestry Officer privileges required.",

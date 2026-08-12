@@ -8,19 +8,12 @@ Purpose:
     Represents monitored forest areas (Areas of Interest)
     within the ForestWatch Zambia system.
 
-Responsibilities:
-    - Store forest boundaries.
-    - Store protection status.
-    - Configure monitoring settings.
-    - Link forests to satellite images,
-      analysis jobs and detections.
-
-Author:
-    Samuel Bikiloni
-
 Project:
     Web-Based Deforestation Detection and Alert System
     Using Sentinel-2 Imagery in the Copperbelt, Zambia
+
+Author:
+    Samuel Bikiloni
 
 Version:
     1.0.0
@@ -68,23 +61,22 @@ class ForestArea(AuditMixin, Base):
     Represents one monitored forest area (AOI).
     """
 
-    # ---------------------------------------------------------
-    # Database Table
-    # ---------------------------------------------------------
     __tablename__ = "forest_areas"
 
-    # ---------------------------------------------------------
-    # Primary Key
-    # ---------------------------------------------------------
+    # =========================================================
+    # PRIMARY KEY
+    # =========================================================
+
     id: Mapped[int] = mapped_column(
         Integer,
         primary_key=True,
         index=True,
     )
 
-    # ---------------------------------------------------------
-    # Forest Information
-    # ---------------------------------------------------------
+    # =========================================================
+    # FOREST INFORMATION
+    # =========================================================
+
     forest_code: Mapped[str] = mapped_column(
         String(20),
         unique=True,
@@ -108,16 +100,17 @@ class ForestArea(AuditMixin, Base):
         nullable=True,
     )
 
-    # ---------------------------------------------------------
-    # Location
-    # ---------------------------------------------------------
+    # =========================================================
+    # LOCATION
+    # =========================================================
+
     district_id: Mapped[int] = mapped_column(
         ForeignKey("districts.id"),
         nullable=False,
         index=True,
     )
 
-    geometry: Mapped[str] = mapped_column(
+    geometry: Mapped[object] = mapped_column(
         Geometry(
             geometry_type="POLYGON",
             srid=4326,
@@ -130,9 +123,10 @@ class ForestArea(AuditMixin, Base):
         nullable=False,
     )
 
-    # ---------------------------------------------------------
-    # Monitoring Configuration
-    # ---------------------------------------------------------
+    # =========================================================
+    # MONITORING CONFIGURATION
+    # =========================================================
+
     protected_status: Mapped[ProtectedStatus] = mapped_column(
         SqlEnum(ProtectedStatus),
         default=ProtectedStatus.PROTECTED_FOREST,
@@ -163,17 +157,19 @@ class ForestArea(AuditMixin, Base):
         nullable=False,
     )
 
-    # ---------------------------------------------------------
-    # Audit
-    # ---------------------------------------------------------
+    # =========================================================
+    # AUDIT
+    # =========================================================
+
     created_by: Mapped[int] = mapped_column(
         ForeignKey("users.id"),
         nullable=False,
     )
 
-    # ---------------------------------------------------------
-    # Relationships
-    # ---------------------------------------------------------
+    # =========================================================
+    # RELATIONSHIPS
+    # =========================================================
+
     district: Mapped["District"] = relationship(
         "District",
         back_populates="forest_areas",
@@ -208,14 +204,11 @@ class ForestArea(AuditMixin, Base):
         lazy="selectin",
     )
 
-    # ---------------------------------------------------------
-    # String Representation
-    # ---------------------------------------------------------
-    def __repr__(self) -> str:
-        """
-        Return a readable representation of the forest area.
-        """
+    # =========================================================
+    # STRING REPRESENTATION
+    # =========================================================
 
+    def __repr__(self) -> str:
         return (
             f"ForestArea("
             f"id={self.id}, "

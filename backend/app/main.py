@@ -1,28 +1,23 @@
 """
-===========================================================
 ForestWatch Zambia
------------------------------------------------------------
+
 Module: Application Entry Point
 
 Purpose:
-    Creates and configures the FastAPI application.
+Creates and configures the FastAPI application.
 
 Responsibilities:
-    - Configure FastAPI.
-    - Register middleware.
-    - Register API routers.
-    - Load application settings.
+- Configure FastAPI.
+- Register middleware.
+- Register API routers.
+- Load application settings.
 
 Author:
-    Samuel Bikiloni
+Samuel Bikiloni
 
 Project:
-    Web-Based Deforestation Detection and Alert System
-    Using Sentinel-2 Imagery in the Copperbelt, Zambia
-
-Version:
-    1.0.0
-===========================================================
+Web-Based Deforestation Detection and Alert System
+Using Sentinel-2 Imagery in the Copperbelt, Zambia
 """
 
 from fastapi import FastAPI
@@ -37,6 +32,7 @@ from app.api.forest_areas import router as forest_areas_router
 from app.api.health import router as health_router
 from app.api.satellite_images import router as satellite_images_router
 from app.api.users import router as users_router
+
 from app.core.config import get_settings
 
 
@@ -74,6 +70,7 @@ def create_application() -> FastAPI:
     # ---------------------------------------------------------
     # API Routers
     # ---------------------------------------------------------
+
     app.include_router(
         health_router,
         prefix=settings.api_v1_prefix,

@@ -5,8 +5,8 @@ ForestWatch Zambia
 Module: Dashboard API
 
 Purpose:
-    Provides dashboard statistics and summary
-    information for the ForestWatch Zambia system.
+    Provides dashboard statistics and summary information
+    for the ForestWatch Zambia system.
 
 Responsibilities:
     - Forest statistics
@@ -22,29 +22,21 @@ Author:
 Project:
     Web-Based Deforestation Detection and Alert System
     Using Sentinel-2 Imagery in the Copperbelt, Zambia
-
-Version:
-    1.0.0
 ===========================================================
 """
 
-from fastapi import (
-    APIRouter,
-    Depends,
-)
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_active_user
 from app.database.session import get_db
+
 from app.models.user import User
-from app.repositories.alert_repository import AlertRepository
-from app.repositories.detection_repository import DetectionRepository
-from app.repositories.forest_area_repository import (
-    ForestAreaRepository,
-)
-from app.repositories.satellite_image_repository import (
-    SatelliteImageRepository,
-)
+from app.models.forest_area import ForestArea
+from app.models.detection import Detection
+from app.models.alert import Alert
+from app.models.satellite_image import SatelliteImage
+
 from app.schemas.dashboard import (
     AlertStatistics,
     DashboardResponse,
@@ -56,15 +48,21 @@ from app.schemas.dashboard import (
     SatelliteStatistics,
 )
 
+
+# =========================================================
+# ROUTER
+# =========================================================
+
 router = APIRouter(
     prefix="/dashboard",
     tags=["Dashboard"],
 )
 
 
-# ---------------------------------------------------------
-# Dashboard Summary
-# ---------------------------------------------------------
+# =========================================================
+# GET DASHBOARD
+# =========================================================
+
 @router.get(
     "",
     response_model=DashboardResponse,
@@ -77,102 +75,243 @@ def get_dashboard(
     Return dashboard summary statistics.
     """
 
-    forest_repo = ForestAreaRepository(db)
+    # =====================================================
+    # FOREST STATISTICS
+    # =====================================================
 
-    detection_repo = DetectionRepository(db)
+    total_forests = (
+        db.query(ForestArea)
+        .count()
+    )
 
-    alert_repo = AlertRepository(db)
+    monitored_forests = (
+        db.query(ForestArea)
+        .filter(
+            ForestArea.is_active.is_(True)
+        )
+        .count()
+    )
 
-    satellite_repo = SatelliteImageRepository(db)
+    protected_forests = (
+        db.query(ForestArea)
+        .filter(
+            ForestArea.protected_status.isnot(None)
+        )
+        .count()
+    )
+
+    # =====================================================
+    # DETECTION STATISTICS
+    # =====================================================
+
+    total_detections = (
+        db.query(Detection)
+        .count()
+    )
+
+    pending_detections = (
+        db.query(Detection)
+        .filter(
+            Detection.status == "PENDING"
+        )
+        .count()
+    )
+
+    verified_detections = (
+        db.query(Detection)
+        .filter(
+            Detection.status == "VERIFIED"
+        )
+        .count()
+    )
+
+    rejected_detections = (
+        db.query(Detection)
+        .filter(
+            Detection.status == "REJECTED"
+        )
+        .count()
+    )
+
+    # =====================================================
+    # ALERT STATISTICS
+    # =====================================================
+
+    total_alerts = (
+        db.query(Alert)
+        .count()
+    )
+
+    pending_alerts = (
+        db.query(Alert)
+        .filter(
+            Alert.status == "PENDING"
+        )
+        .count()
+    )
+
+    sent_alerts = (
+        db.query(Alert)
+        .filter(
+            Alert.status == "SENT"
+        )
+        .count()
+    )
+
+    failed_alerts = (
+        db.query(Alert)
+        .filter(
+            Alert.status == "FAILED"
+        )
+        .count()
+    )
+
+    read_alerts = (
+        db.query(Alert)
+        .filter(
+            Alert.status == "READ"
+        )
+        .count()
+    )
+
+    resolved_alerts = (
+        db.query(Alert)
+        .filter(
+            Alert.is_resolved.is_(True)
+        )
+        .count()
+    )
+
+    # =====================================================
+    # SATELLITE IMAGE STATISTICS
+    # =====================================================
+
+    total_images = (
+        db.query(SatelliteImage)
+        .count()
+    )
+
+    processed_images = (
+        db.query(SatelliteImage)
+        .filter(
+            SatelliteImage.is_processed.is_(True)
+        )
+        .count()
+    )
+
+    unprocessed_images = (
+        db.query(SatelliteImage)
+        .filter(
+            SatelliteImage.is_processed.is_(False)
+        )
+        .count()
+    )
+
+    # =====================================================
+    # BUILD STATISTICS
+    # =====================================================
 
     statistics = DashboardStatistics(
-
         forests=ForestStatistics(
-
-            total_forests=forest_repo.count(),
-
-            monitored_forests=forest_repo.count_monitored(),
-
-            protected_forests=forest_repo.count_protected(),
+            total_forests=total_forests,
+            monitored_forests=monitored_forests,
+            protected_forests=protected_forests,
         ),
 
         detections=DetectionStatistics(
-
-            total_detections=detection_repo.count(),
-
-            pending_detections=detection_repo.count_pending(),
-
-            verified_detections=detection_repo.count_verified(),
-
-            rejected_detections=detection_repo.count_rejected(),
+            total_detections=total_detections,
+            pending_detections=pending_detections,
+            verified_detections=verified_detections,
+            rejected_detections=rejected_detections,
         ),
 
         alerts=AlertStatistics(
-
-            total_alerts=alert_repo.count(),
-
-            pending_alerts=alert_repo.count_pending(),
-
-            sent_alerts=alert_repo.count_sent(),
-
-            failed_alerts=alert_repo.count_failed(),
-
-            read_alerts=alert_repo.count_read(),
+            total_alerts=total_alerts,
+            pending_alerts=pending_alerts,
+            sent_alerts=sent_alerts,
+            failed_alerts=failed_alerts,
+            read_alerts=read_alerts,
+            resolved_alerts=resolved_alerts,
         ),
 
         satellite_images=SatelliteStatistics(
-
-            total_images=satellite_repo.count(),
-
-            processed_images=satellite_repo.count_processed(),
-
-            unprocessed_images=satellite_repo.count_unprocessed(),
+            total_images=total_images,
+            processed_images=processed_images,
+            unprocessed_images=unprocessed_images,
         ),
     )
 
-    recent_detections = [
+    # =====================================================
+    # RECENT DETECTIONS
+    # =====================================================
 
-        RecentDetection(
+    recent_detection_records = (
+        db.query(Detection)
+        .order_by(
+            Detection.created_at.desc()
+        )
+        .limit(5)
+        .all()
+    )
 
-            id=item.id,
+    recent_detections = []
 
-            forest_name=item.forest_area.name,
+    for item in recent_detection_records:
 
-            detected_area_hectares=item.detected_area_hectares,
+        recent_detections.append(
+            RecentDetection(
+                id=item.id,
 
-            confidence_score=item.confidence_score,
+                forest_name=(
+                    item.forest_area.name
+                    if item.forest_area
+                    else "Unknown Forest"
+                ),
 
-            status=item.status.value,
+                detected_area_hectares=(
+                    item.detected_area_hectares
+                ),
 
+                confidence_score=(
+                    item.confidence_score
+                ),
+
+                status=item.status.value,
+            )
         )
 
-        for item in detection_repo.get_recent()
+    # =====================================================
+    # RECENT ALERTS
+    # =====================================================
 
-    ]
+    recent_alert_records = (
+        db.query(Alert)
+        .order_by(
+            Alert.created_at.desc()
+        )
+        .limit(5)
+        .all()
+    )
 
-    recent_alerts = [
+    recent_alerts = []
 
-        RecentAlert(
+    for item in recent_alert_records:
 
-            id=item.id,
-
-            title=item.title,
-
-            priority=item.priority.value,
-
-            status=item.status.value,
-
+        recent_alerts.append(
+            RecentAlert(
+                id=item.id,
+                title=item.title,
+                priority=item.priority.value,
+                status=item.status.value,
+            )
         )
 
-        for item in alert_repo.get_recent()
-
-    ]
+    # =====================================================
+    # RETURN DASHBOARD
+    # =====================================================
 
     return DashboardResponse(
-
         statistics=statistics,
-
         recent_detections=recent_detections,
-
         recent_alerts=recent_alerts,
     )

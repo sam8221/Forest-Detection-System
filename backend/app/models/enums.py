@@ -1,34 +1,29 @@
 """
-===========================================================
 ForestWatch Zambia
------------------------------------------------------------
+
 Module: System Enumerations
 
 Purpose:
-    Defines all enumerations used throughout the
-    ForestWatch Zambia application.
+Defines all enumerations used throughout the
+ForestWatch Zambia application.
 
 Responsibilities:
-    - User roles
-    - Forest protection status
-    - Monitoring frequency
-    - Priority levels
-    - Analysis job status
-    - Detection status
-    - Alert types
-    - Alert status
-    - Generated file types
+- User roles
+- Forest protection status
+- Monitoring frequency
+- Priority levels
+- Analysis job status
+- Detection status
+- Alert types
+- Alert status
+- Generated file types
 
 Author:
-    Samuel Bikiloni
+Samuel Bikiloni
 
 Project:
-    Web-Based Deforestation Detection and Alert System
-    Using Sentinel-2 Imagery in the Copperbelt, Zambia
-
-Version:
-    1.0.0
-===========================================================
+Web-Based Deforestation Detection and Alert System
+Using Sentinel-2 Imagery in the Copperbelt, Zambia
 """
 
 from enum import Enum
@@ -37,6 +32,7 @@ from enum import Enum
 # =========================================================
 # User Roles
 # =========================================================
+
 class UserRole(str, Enum):
     """System user roles."""
 
@@ -48,6 +44,7 @@ class UserRole(str, Enum):
 # =========================================================
 # Protected Status
 # =========================================================
+
 class ProtectedStatus(str, Enum):
     """Forest protection categories."""
 
@@ -61,6 +58,7 @@ class ProtectedStatus(str, Enum):
 # =========================================================
 # Monitoring Frequency
 # =========================================================
+
 class MonitoringFrequency(str, Enum):
     """Automatic monitoring frequency."""
 
@@ -73,6 +71,7 @@ class MonitoringFrequency(str, Enum):
 # =========================================================
 # Priority Level
 # =========================================================
+
 class PriorityLevel(str, Enum):
     """Monitoring priority."""
 
@@ -85,6 +84,7 @@ class PriorityLevel(str, Enum):
 # =========================================================
 # Analysis Job Type
 # =========================================================
+
 class AnalysisJobType(str, Enum):
     """Analysis execution type."""
 
@@ -95,6 +95,7 @@ class AnalysisJobType(str, Enum):
 # =========================================================
 # Analysis Job Status
 # =========================================================
+
 class AnalysisJobStatus(str, Enum):
     """Analysis job status."""
 
@@ -108,6 +109,7 @@ class AnalysisJobStatus(str, Enum):
 # =========================================================
 # Detection Status
 # =========================================================
+
 class DetectionStatus(str, Enum):
     """Detection verification status."""
 
@@ -120,6 +122,7 @@ class DetectionStatus(str, Enum):
 # =========================================================
 # Alert Type
 # =========================================================
+
 class AlertType(str, Enum):
     """Alert delivery channel."""
 
@@ -130,18 +133,21 @@ class AlertType(str, Enum):
 # =========================================================
 # Alert Status
 # =========================================================
+
 class AlertStatus(str, Enum):
-    """Alert processing status."""
+    """Alert processing and resolution status."""
 
     PENDING = "PENDING"
     SENT = "SENT"
     FAILED = "FAILED"
     READ = "READ"
+    RESOLVED = "RESOLVED"
 
 
 # =========================================================
 # Email Queue Status
 # =========================================================
+
 class EmailQueueStatus(str, Enum):
     """Email queue processing status."""
 
@@ -154,6 +160,7 @@ class EmailQueueStatus(str, Enum):
 # =========================================================
 # Generated File Type
 # =========================================================
+
 class GeneratedFileType(str, Enum):
     """Supported generated file types."""
 
@@ -166,6 +173,7 @@ class GeneratedFileType(str, Enum):
 # =========================================================
 # Monitoring Trigger
 # =========================================================
+
 class MonitoringTrigger(str, Enum):
     """How monitoring was initiated."""
 

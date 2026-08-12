@@ -1,27 +1,18 @@
 """
-===========================================================
 ForestWatch Zambia
------------------------------------------------------------
+
 Module: Forest Area Schemas
 
 Purpose:
-    Defines Pydantic schemas for Forest Areas.
+Defines Pydantic schemas for Forest Areas.
 
 Responsibilities:
-    - Validate forest area requests.
-    - Serialize forest area responses.
-    - Support CRUD operations.
+- Validate forest area requests.
+- Serialize forest area responses.
+- Support CRUD operations.
 
 Author:
-    Samuel Bikiloni
-
-Project:
-    Web-Based Deforestation Detection and Alert System
-    Using Sentinel-2 Imagery in the Copperbelt, Zambia
-
-Version:
-    1.0.0
-===========================================================
+Samuel Bikiloni
 """
 
 from datetime import datetime
@@ -30,7 +21,11 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    field_validator,
 )
+
+from geoalchemy2.elements import WKBElement
+from geoalchemy2.shape import to_shape
 
 from app.models.enums import (
     MonitoringFrequency,
@@ -39,9 +34,10 @@ from app.models.enums import (
 )
 
 
-# ---------------------------------------------------------
+# =========================================================
 # Base Schema
-# ---------------------------------------------------------
+# =========================================================
+
 class ForestAreaBase(BaseModel):
     """
     Common Forest Area fields.
@@ -61,6 +57,14 @@ class ForestAreaBase(BaseModel):
 
     district_id: int
 
+    geometry: str = Field(
+        ...,
+        description=(
+            "Forest boundary as WKT POLYGON using "
+            "WGS84 coordinates (SRID 4326)."
+        ),
+    )
+
     protected_status: ProtectedStatus
 
     monitoring_frequency: MonitoringFrequency
@@ -72,9 +76,10 @@ class ForestAreaBase(BaseModel):
     description: str | None = None
 
 
-# ---------------------------------------------------------
+# =========================================================
 # Create Schema
-# ---------------------------------------------------------
+# =========================================================
+
 class ForestAreaCreate(ForestAreaBase):
     """
     Used when creating a Forest Area.
@@ -83,15 +88,24 @@ class ForestAreaCreate(ForestAreaBase):
     pass
 
 
-# ---------------------------------------------------------
+# =========================================================
 # Update Schema
-# ---------------------------------------------------------
+# =========================================================
+
 class ForestAreaUpdate(BaseModel):
     """
     Used when updating a Forest Area.
     """
 
     name: str | None = None
+
+    geometry: str | None = Field(
+        default=None,
+        description=(
+            "Forest boundary as WKT POLYGON using "
+            "WGS84 coordinates (SRID 4326)."
+        ),
+    )
 
     protected_status: ProtectedStatus | None = None
 
@@ -106,9 +120,10 @@ class ForestAreaUpdate(BaseModel):
     is_active: bool | None = None
 
 
-# ---------------------------------------------------------
+# =========================================================
 # Response Schema
-# ---------------------------------------------------------
+# =========================================================
+
 class ForestAreaResponse(ForestAreaBase):
     """
     Returned by the API.
@@ -127,3 +142,23 @@ class ForestAreaResponse(ForestAreaBase):
     created_at: datetime
 
     updated_at: datetime
+
+    # =====================================================
+    # Convert PostGIS Geometry to WKT
+    # =====================================================
+
+    @field_validator("geometry", mode="before")
+    @classmethod
+    def convert_geometry_to_wkt(cls, value):
+        """
+        Convert GeoAlchemy/PostGIS WKBElement
+        into a WKT string before Pydantic validation.
+        """
+
+        if isinstance(value, WKBElement):
+            return to_shape(value).wkt
+
+        if isinstance(value, str):
+            return value
+
+        return str(value)

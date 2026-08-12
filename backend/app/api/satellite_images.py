@@ -41,6 +41,9 @@ from app.api.deps import (
 )
 from app.database.session import get_db
 from app.models.user import User
+from app.repositories.forest_area_repository import (
+    ForestAreaRepository,
+)
 from app.repositories.satellite_image_repository import (
     SatelliteImageRepository,
 )
@@ -48,7 +51,9 @@ from app.schemas.satellite_image import (
     SatelliteImageCreate,
     SatelliteImageResponse,
 )
-from app.services.sentinel_service import SentinelService
+from app.services.sentinel_service import (
+    SentinelService,
+)
 
 router = APIRouter(
     prefix="/satellite-images",
@@ -67,7 +72,7 @@ def get_satellite_images(
     _: User = Depends(get_current_active_user),
 ):
     """
-    Return all satellite images.
+    Return all registered satellite images.
     """
 
     repository = SatelliteImageRepository(db)
@@ -76,7 +81,7 @@ def get_satellite_images(
 
 
 # ---------------------------------------------------------
-# Get Image by ID
+# Get Image By ID
 # ---------------------------------------------------------
 @router.get(
     "/{image_id}",
@@ -108,27 +113,73 @@ def get_satellite_image(
 
 
 # ---------------------------------------------------------
-# Get Images for Forest Area
+# Get Images By Forest Area
 # ---------------------------------------------------------
 @router.get(
     "/forest/{forest_area_id}",
     response_model=list[SatelliteImageResponse],
 )
-def get_forest_images(
+def get_images_by_forest_area(
     forest_area_id: int,
     db: Session = Depends(get_db),
     _: User = Depends(get_current_active_user),
 ):
     """
-    Return all satellite images
-    belonging to one forest area.
+    Return all images belonging to
+    a forest area.
     """
+
+    forest_repository = ForestAreaRepository(db)
+
+    forest = forest_repository.get_by_id(
+        forest_area_id,
+    )
+
+    if forest is None:
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Forest area not found.",
+        )
 
     repository = SatelliteImageRepository(db)
 
     return repository.get_by_forest_area(
         forest_area_id,
     )
+
+
+# ---------------------------------------------------------
+# Get Latest Image
+# ---------------------------------------------------------
+@router.get(
+    "/forest/{forest_area_id}/latest",
+    response_model=SatelliteImageResponse,
+)
+def get_latest_image(
+    forest_area_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_active_user),
+):
+    """
+    Return the newest satellite image
+    for a forest area.
+    """
+
+    repository = SatelliteImageRepository(db)
+
+    image = repository.get_latest_image(
+        forest_area_id,
+    )
+
+    if image is None:
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No satellite images found.",
+        )
+
+    return image
 # ---------------------------------------------------------
 # Register Satellite Image
 # ---------------------------------------------------------
@@ -143,8 +194,21 @@ def register_satellite_image(
     _: User = Depends(get_current_active_user),
 ):
     """
-    Register a downloaded Sentinel-2 image.
+    Register a Sentinel-2 satellite image.
     """
+
+    forest_repository = ForestAreaRepository(db)
+
+    forest = forest_repository.get_by_id(
+        request.forest_area_id,
+    )
+
+    if forest is None:
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Forest area not found.",
+        )
 
     repository = SatelliteImageRepository(db)
 
@@ -162,7 +226,7 @@ def register_satellite_image(
     service = SentinelService(db)
 
     image = service.register_satellite_image(
-        forest_area=request.forest_area,
+        forest_area_id=request.forest_area_id,
         product_id=request.product_id,
         tile_id=request.tile_id,
         acquisition_date=request.acquisition_date,
@@ -249,7 +313,37 @@ def delete_satellite_image(
     )
 
     return {
-        "message": (
-            "Satellite image deleted successfully."
-        )
+        "message": "Satellite image deleted successfully."
     }
+
+
+# ---------------------------------------------------------
+# Get Image by Product ID
+# ---------------------------------------------------------
+@router.get(
+    "/product/{product_id}",
+    response_model=SatelliteImageResponse,
+)
+def get_image_by_product_id(
+    product_id: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_active_user),
+):
+    """
+    Retrieve a satellite image by Sentinel product ID.
+    """
+
+    repository = SatelliteImageRepository(db)
+
+    image = repository.get_by_product_id(
+        product_id,
+    )
+
+    if image is None:
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Satellite image not found.",
+        )
+
+    return image

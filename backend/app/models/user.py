@@ -1,29 +1,24 @@
 """
-===========================================================
 ForestWatch Zambia
------------------------------------------------------------
+
 Module: User Model
 
 Purpose:
-    Defines the User entity responsible for
-    authentication and authorization.
+Defines the User entity responsible for
+authentication and authorization.
 
 Responsibilities:
-    - Store user account information.
-    - Support Role-Based Access Control (RBAC).
-    - Track account status.
-    - Maintain relationships with other entities.
+- Store user account information.
+- Support Role-Based Access Control (RBAC).
+- Track account status.
+- Maintain relationships with other entities.
 
 Author:
-    Samuel Bikiloni
+Samuel Bikiloni
 
 Project:
-    Web-Based Deforestation Detection and Alert System
-    Using Sentinel-2 Imagery in the Copperbelt, Zambia
-
-Version:
-    1.0.0
-===========================================================
+Web-Based Deforestation Detection and Alert System
+Using Sentinel-2 Imagery in the Copperbelt, Zambia
 """
 
 from __future__ import annotations
@@ -38,6 +33,7 @@ from sqlalchemy import (
     Integer,
     String,
 )
+
 from sqlalchemy.orm import (
     Mapped,
     mapped_column,
@@ -47,6 +43,7 @@ from sqlalchemy.orm import (
 from app.database.session import Base
 from app.models.base_model import AuditMixin
 from app.models.enums import UserRole
+
 
 if TYPE_CHECKING:
     from app.models.alert_recipient import AlertRecipient
@@ -60,27 +57,29 @@ class User(AuditMixin, Base):
     Represents a system user.
 
     Users can be Administrators,
-    Forestry Officers,
-    or Researchers.
+    Forestry Officers, or Researchers.
     """
 
-    # ---------------------------------------------------------
-    # Database Table
-    # ---------------------------------------------------------
+    # =========================================================
+    # DATABASE TABLE
+    # =========================================================
+
     __tablename__ = "users"
 
-    # ---------------------------------------------------------
-    # Primary Key
-    # ---------------------------------------------------------
+    # =========================================================
+    # PRIMARY KEY
+    # =========================================================
+
     id: Mapped[int] = mapped_column(
         Integer,
         primary_key=True,
         index=True,
     )
 
-    # ---------------------------------------------------------
-    # Personal Information
-    # ---------------------------------------------------------
+    # =========================================================
+    # PERSONAL INFORMATION
+    # =========================================================
+
     full_name: Mapped[str] = mapped_column(
         String(150),
         nullable=False,
@@ -95,9 +94,10 @@ class User(AuditMixin, Base):
         comment="User email address.",
     )
 
-    # ---------------------------------------------------------
-    # Authentication
-    # ---------------------------------------------------------
+    # =========================================================
+    # AUTHENTICATION
+    # =========================================================
+
     password_hash: Mapped[str] = mapped_column(
         String(255),
         nullable=False,
@@ -117,9 +117,10 @@ class User(AuditMixin, Base):
         comment="Last successful login.",
     )
 
-    # ---------------------------------------------------------
-    # Authorization
-    # ---------------------------------------------------------
+    # =========================================================
+    # AUTHORIZATION
+    # =========================================================
+
     role: Mapped[UserRole] = mapped_column(
         SqlEnum(UserRole),
         default=UserRole.FORESTRY_OFFICER,
@@ -127,51 +128,54 @@ class User(AuditMixin, Base):
         comment="Assigned user role.",
     )
 
-    # ---------------------------------------------------------
-    # Status
-    # ---------------------------------------------------------
+    # =========================================================
+    # STATUS
+    # =========================================================
+
     is_active: Mapped[bool] = mapped_column(
         Boolean,
         default=True,
         nullable=False,
         comment="Account status.",
     )
-        # ---------------------------------------------------------
-    # Relationships
-    # ---------------------------------------------------------
+
+    # =========================================================
+    # RELATIONSHIPS
+    # =========================================================
 
     forest_areas: Mapped[list["ForestArea"]] = relationship(
         "ForestArea",
         back_populates="creator",
         foreign_keys="ForestArea.created_by",
         cascade="all, delete-orphan",
-        lazy="selectin",
+        lazy="select",
     )
 
     analysis_jobs: Mapped[list["AnalysisJob"]] = relationship(
         "AnalysisJob",
         back_populates="started_by_user",
         foreign_keys="AnalysisJob.started_by",
-        lazy="selectin",
+        lazy="select",
     )
 
     verified_detections: Mapped[list["Detection"]] = relationship(
         "Detection",
         back_populates="verified_by_user",
         foreign_keys="Detection.verified_by",
-        lazy="selectin",
+        lazy="select",
     )
 
     alert_recipients: Mapped[list["AlertRecipient"]] = relationship(
         "AlertRecipient",
         back_populates="user",
         cascade="all, delete-orphan",
-        lazy="selectin",
+        lazy="select",
     )
 
-    # ---------------------------------------------------------
-    # String Representation
-    # ---------------------------------------------------------
+    # =========================================================
+    # STRING REPRESENTATION
+    # =========================================================
+
     def __repr__(self) -> str:
         """
         Return a readable representation of the user.
