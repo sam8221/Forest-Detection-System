@@ -1,21 +1,34 @@
 """
+===========================================================
 ForestWatch Zambia
-
+-----------------------------------------------------------
 Module: Forest Area Schemas
 
 Purpose:
-Defines Pydantic schemas for Forest Areas.
+    Defines Pydantic schemas for Forest Areas.
 
 Responsibilities:
-- Validate forest area requests.
-- Serialize forest area responses.
-- Support CRUD operations.
+    - Validate forest area requests.
+    - Serialize forest area responses.
+    - Support CRUD operations.
+    - Expose district information in API responses.
 
 Author:
-Samuel Bikiloni
+    Samuel Bikiloni
+
+Project:
+    Web-Based Deforestation Detection and Alert System
+    Using Sentinel-2 Imagery in the Copperbelt, Zambia
+
+Version:
+    1.0.0
+===========================================================
 """
 
 from datetime import datetime
+
+from geoalchemy2.elements import WKBElement
+from geoalchemy2.shape import to_shape
 
 from pydantic import (
     BaseModel,
@@ -23,9 +36,6 @@ from pydantic import (
     Field,
     field_validator,
 )
-
-from geoalchemy2.elements import WKBElement
-from geoalchemy2.shape import to_shape
 
 from app.models.enums import (
     MonitoringFrequency,
@@ -35,75 +45,104 @@ from app.models.enums import (
 
 
 # =========================================================
-# Base Schema
+# BASE SCHEMA
 # =========================================================
 
 class ForestAreaBase(BaseModel):
     """
-    Common Forest Area fields.
+    Defines the common fields shared by Forest Area
+    creation, update, and response schemas.
     """
 
     forest_code: str = Field(
         ...,
         min_length=3,
         max_length=30,
+        description="Unique Forest Area identification code.",
     )
 
     name: str = Field(
         ...,
         min_length=3,
         max_length=200,
+        description="Official name of the forest area.",
     )
 
-    district_id: int
+    district_id: int = Field(
+        ...,
+        description="Database identifier of the associated district.",
+    )
 
     geometry: str = Field(
         ...,
         description=(
-            "Forest boundary as WKT POLYGON using "
-            "WGS84 coordinates (SRID 4326)."
+            "Forest boundary represented as a WKT POLYGON "
+            "using WGS84 coordinates with SRID 4326."
         ),
     )
 
-    protected_status: ProtectedStatus
+    protected_status: ProtectedStatus = Field(
+        ...,
+        description="Protection classification of the forest area.",
+    )
 
-    monitoring_frequency: MonitoringFrequency
+    monitoring_frequency: MonitoringFrequency = Field(
+        ...,
+        description="Frequency at which the area is monitored.",
+    )
 
-    priority_level: PriorityLevel
+    priority_level: PriorityLevel = Field(
+        ...,
+        description="Monitoring priority assigned to the forest area.",
+    )
 
-    area_hectares: float
+    area_hectares: float = Field(
+        ...,
+        gt=0,
+        description="Forest area size in hectares.",
+    )
 
-    description: str | None = None
+    description: str | None = Field(
+        default=None,
+        description="Additional information about the forest area.",
+    )
 
 
 # =========================================================
-# Create Schema
+# CREATE SCHEMA
 # =========================================================
 
 class ForestAreaCreate(ForestAreaBase):
     """
-    Used when creating a Forest Area.
+    Defines the data required when creating a new
+    Forest Area.
     """
 
     pass
 
 
 # =========================================================
-# Update Schema
+# UPDATE SCHEMA
 # =========================================================
 
 class ForestAreaUpdate(BaseModel):
     """
-    Used when updating a Forest Area.
+    Defines the fields that can be modified for an
+    existing Forest Area.
     """
 
-    name: str | None = None
+    name: str | None = Field(
+        default=None,
+        min_length=3,
+        max_length=200,
+    )
 
     geometry: str | None = Field(
         default=None,
         description=(
-            "Forest boundary as WKT POLYGON using "
-            "WGS84 coordinates (SRID 4326)."
+            "Updated forest boundary represented as a "
+            "WKT POLYGON using WGS84 coordinates with "
+            "SRID 4326."
         ),
     )
 
@@ -113,7 +152,10 @@ class ForestAreaUpdate(BaseModel):
 
     priority_level: PriorityLevel | None = None
 
-    area_hectares: float | None = None
+    area_hectares: float | None = Field(
+        default=None,
+        gt=0,
+    )
 
     description: str | None = None
 
@@ -121,12 +163,13 @@ class ForestAreaUpdate(BaseModel):
 
 
 # =========================================================
-# Response Schema
+# RESPONSE SCHEMA
 # =========================================================
 
 class ForestAreaResponse(ForestAreaBase):
     """
-    Returned by the API.
+    Defines the Forest Area information returned by
+    the API.
     """
 
     model_config = ConfigDict(
@@ -143,16 +186,33 @@ class ForestAreaResponse(ForestAreaBase):
 
     updated_at: datetime
 
-    # =====================================================
-    # Convert PostGIS Geometry to WKT
-    # =====================================================
+    # -----------------------------------------------------
+    # District information
+    # -----------------------------------------------------
 
-    @field_validator("geometry", mode="before")
+    district_name: str | None = Field(
+        default=None,
+        description="Name of the associated district.",
+    )
+
+    district_code: str | None = Field(
+        default=None,
+        description="Official code of the associated district.",
+    )
+
+    # -----------------------------------------------------
+    # PostGIS geometry conversion
+    # -----------------------------------------------------
+
+    @field_validator(
+        "geometry",
+        mode="before",
+    )
     @classmethod
     def convert_geometry_to_wkt(cls, value):
         """
-        Convert GeoAlchemy/PostGIS WKBElement
-        into a WKT string before Pydantic validation.
+        Convert a PostGIS WKBElement into a WKT string
+        before Pydantic response validation.
         """
 
         if isinstance(value, WKBElement):

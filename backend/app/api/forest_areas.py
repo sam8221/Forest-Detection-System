@@ -5,12 +5,27 @@ ForestWatch Zambia
 Module: Forest Areas API
 
 Purpose:
-    Provides endpoints for managing forest areas,
-    satellite imagery, and forest analysis.
+    Provides REST API endpoints for managing monitored
+    forest areas and initiating forest analysis.
+
+Responsibilities:
+    - Retrieve active forest areas.
+    - Retrieve individual forest areas.
+    - Create forest areas.
+    - Update forest areas.
+    - Deactivate forest areas.
+    - Retrieve satellite imagery for forest areas.
+    - Initiate deforestation analysis.
+
+Author:
+    Samuel Bikiloni
 
 Project:
     Web-Based Deforestation Detection and Alert System
     Using Sentinel-2 Imagery in the Copperbelt, Zambia
+
+Version:
+    1.0.0
 ===========================================================
 """
 
@@ -22,6 +37,7 @@ from fastapi import (
 )
 
 from geoalchemy2 import WKTElement
+
 from sqlalchemy.orm import Session
 
 from app.api.deps import (
@@ -47,13 +63,59 @@ from app.services.analysis_service import AnalysisService
 
 
 # =========================================================
-# ROUTER
+# ROUTER CONFIGURATION
 # =========================================================
 
 router = APIRouter(
     prefix="/forest-areas",
     tags=["Forest Areas"],
 )
+
+
+# =========================================================
+# RESPONSE BUILDER
+# =========================================================
+
+def build_forest_area_response(
+    forest: ForestArea,
+) -> dict:
+    """
+    Build a JSON-compatible Forest Area response.
+
+    The helper adds district information from the
+    SQLAlchemy relationship so the frontend receives
+    both the district identifier and readable district
+    information.
+    """
+
+    return {
+        "id": forest.id,
+        "forest_code": forest.forest_code,
+        "name": forest.name,
+        "district_id": forest.district_id,
+        "district_name": (
+            forest.district.name
+            if forest.district
+            else None
+        ),
+        "district_code": (
+            forest.district.code
+            if forest.district
+            else None
+        ),
+        "geometry": forest.geometry,
+        "protected_status": forest.protected_status,
+        "monitoring_frequency": (
+            forest.monitoring_frequency
+        ),
+        "priority_level": forest.priority_level,
+        "area_hectares": forest.area_hectares,
+        "description": forest.description,
+        "created_by": forest.created_by,
+        "is_active": forest.is_active,
+        "created_at": forest.created_at,
+        "updated_at": forest.updated_at,
+    }
 
 
 # =========================================================
@@ -69,10 +131,10 @@ def get_forest_areas(
     _: User = Depends(get_current_active_user),
 ):
     """
-    Return all active forest areas.
+    Return all active Forest Areas ordered by name.
     """
 
-    return (
+    forests = (
         db.query(ForestArea)
         .filter(
             ForestArea.is_active.is_(True)
@@ -82,6 +144,11 @@ def get_forest_areas(
         )
         .all()
     )
+
+    return [
+        build_forest_area_response(forest)
+        for forest in forests
+    ]
 
 
 # =========================================================
@@ -98,7 +165,7 @@ def get_forest_area(
     _: User = Depends(get_current_active_user),
 ):
     """
-    Retrieve one forest area.
+    Retrieve a single Forest Area by its identifier.
     """
 
     forest = (
@@ -115,7 +182,7 @@ def get_forest_area(
             detail="Forest area not found.",
         )
 
-    return forest
+    return build_forest_area_response(forest)
 
 
 # =========================================================
@@ -133,7 +200,10 @@ def create_forest_area(
     current_user: User = Depends(get_forestry_officer),
 ):
     """
-    Create a new forest area.
+    Create a new Forest Area.
+
+    The forest boundary is stored in PostGIS as a
+    POLYGON using WGS84/SRID 4326.
     """
 
     data = forest_data.model_dump()
@@ -169,10 +239,13 @@ def create_forest_area(
 
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Could not create forest area: {str(exc)}",
+            detail=(
+                f"Could not create forest area: "
+                f"{str(exc)}"
+            ),
         )
 
-    return forest
+    return build_forest_area_response(forest)
 
 
 # =========================================================
@@ -191,7 +264,7 @@ def update_forest_area(
     _: User = Depends(get_forestry_officer),
 ):
     """
-    Update an existing forest area.
+    Update an existing Forest Area.
     """
 
     forest = (
@@ -213,12 +286,14 @@ def update_forest_area(
     )
 
     # -----------------------------------------------------
-    # Handle geometry separately
+    # Convert updated WKT geometry to a PostGIS element.
     # -----------------------------------------------------
 
     if "geometry" in update_data:
 
-        geometry_wkt = update_data.pop("geometry")
+        geometry_wkt = update_data.pop(
+            "geometry"
+        )
 
         try:
             update_data["geometry"] = WKTElement(
@@ -233,11 +308,10 @@ def update_forest_area(
             )
 
     # -----------------------------------------------------
-    # Update fields
+    # Apply validated field updates.
     # -----------------------------------------------------
 
     for field, value in update_data.items():
-
         setattr(
             forest,
             field,
@@ -253,10 +327,13 @@ def update_forest_area(
 
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Could not update forest area: {str(exc)}",
+            detail=(
+                f"Could not update forest area: "
+                f"{str(exc)}"
+            ),
         )
 
-    return forest
+    return build_forest_area_response(forest)
 
 
 # =========================================================
@@ -273,7 +350,10 @@ def delete_forest_area(
     _: User = Depends(get_forestry_officer),
 ):
     """
-    Deactivate a forest area.
+    Deactivate a Forest Area.
+
+    The record is retained in the database so historical
+    analysis and detection records remain available.
     """
 
     forest = (
@@ -300,11 +380,16 @@ def delete_forest_area(
 
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Could not deactivate forest area: {str(exc)}",
+            detail=(
+                f"Could not deactivate forest area: "
+                f"{str(exc)}"
+            ),
         )
 
     return {
-        "message": "Forest area deactivated successfully."
+        "message": (
+            "Forest area deactivated successfully."
+        )
     }
 
 
@@ -321,15 +406,15 @@ def get_satellite_images(
     _: User = Depends(get_current_active_user),
 ):
     """
-    Return all satellite images for a forest area.
+    Return satellite images associated with a Forest Area.
 
-    Only direct SatelliteImage fields are returned.
-    Relationships are intentionally excluded to prevent
-    PostGIS WKBElement serialization errors.
+    Only direct SatelliteImage fields are returned to avoid
+    unnecessary relationship loading and PostGIS geometry
+    serialization problems.
     """
 
     # -----------------------------------------------------
-    # Verify forest area exists
+    # Verify that the Forest Area exists.
     # -----------------------------------------------------
 
     forest = (
@@ -347,7 +432,7 @@ def get_satellite_images(
         )
 
     # -----------------------------------------------------
-    # Retrieve satellite images
+    # Retrieve satellite images.
     # -----------------------------------------------------
 
     images = (
@@ -363,7 +448,7 @@ def get_satellite_images(
     )
 
     # -----------------------------------------------------
-    # Convert ORM objects to JSON-safe dictionaries
+    # Convert ORM objects into JSON-safe dictionaries.
     # -----------------------------------------------------
 
     result = []
@@ -373,12 +458,20 @@ def get_satellite_images(
         result.append(
             {
                 "id": image.id,
-                "forest_area_id": image.forest_area_id,
+                "forest_area_id": (
+                    image.forest_area_id
+                ),
                 "product_id": image.product_id,
                 "tile_id": image.tile_id,
-                "satellite_name": image.satellite_name,
-                "acquisition_date": image.acquisition_date,
-                "processing_level": image.processing_level,
+                "satellite_name": (
+                    image.satellite_name
+                ),
+                "acquisition_date": (
+                    image.acquisition_date
+                ),
+                "processing_level": (
+                    image.processing_level
+                ),
             }
         )
 
@@ -400,11 +493,11 @@ def run_analysis(
     current_user: User = Depends(get_forestry_officer),
 ):
     """
-    Start deforestation analysis for a forest area.
+    Start a deforestation analysis job for a Forest Area.
     """
 
     # -----------------------------------------------------
-    # Verify forest area exists
+    # Verify that the Forest Area exists.
     # -----------------------------------------------------
 
     forest = (
@@ -422,13 +515,13 @@ def run_analysis(
         )
 
     # -----------------------------------------------------
-    # Create analysis service
+    # Initialize the analysis service.
     # -----------------------------------------------------
 
     service = AnalysisService(db)
 
     # -----------------------------------------------------
-    # Run analysis
+    # Start the forest analysis process.
     # -----------------------------------------------------
 
     try:

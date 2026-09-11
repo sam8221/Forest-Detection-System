@@ -5,13 +5,15 @@ ForestWatch Zambia
 Module: Email Worker
 
 Purpose:
-    Processes queued emails and sends them automatically.
+    Processes queued deforestation alert emails.
 
 Responsibilities:
     - Read pending emails.
-    - Send emails.
-    - Update queue status.
+    - Send emails through SMTP.
+    - Mark successfully sent emails as SENT.
+    - Mark the related alert as SENT.
     - Retry failed emails.
+    - Mark alerts as FAILED after maximum retries.
 
 Author:
     Samuel Bikiloni
@@ -21,7 +23,7 @@ Project:
     Using Sentinel-2 Imagery in the Copperbelt, Zambia
 
 Version:
-    1.0.0
+    1.1.0
 ===========================================================
 """
 
@@ -29,8 +31,12 @@ from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
+from app.models.alert import Alert
 from app.models.email_queue import EmailQueue
-from app.models.enums import EmailQueueStatus
+from app.models.enums import (
+    AlertStatus,
+    EmailQueueStatus,
+)
 from app.services.email_service import EmailService
 
 
@@ -48,24 +54,33 @@ class EmailWorker:
         """
 
         self.db = db
-
         self.email_service = EmailService()
 
-    # ---------------------------------------------------------
-    # Process Email Queue
-    # ---------------------------------------------------------
-    def process_queue(
-        self,
-    ) -> None:
+    # =========================================================
+    # PROCESS EMAIL QUEUE
+    # =========================================================
+
+    def process_queue(self) -> None:
         """
         Process all pending emails.
+
+        Successful email:
+            EmailQueue -> SENT
+            Alert -> SENT
+
+        Failed email:
+            retry_count increases.
+
+        Maximum retries reached:
+            EmailQueue -> FAILED
+            Alert -> FAILED
         """
 
         pending_emails = (
             self.db.query(EmailQueue)
             .filter(
-                EmailQueue.status ==
-                EmailQueueStatus.PENDING
+                EmailQueue.status
+                == EmailQueueStatus.PENDING
             )
             .order_by(
                 EmailQueue.created_at.asc(),
@@ -76,24 +91,43 @@ class EmailWorker:
         for email in pending_emails:
 
             try:
+                # -------------------------------------------------
+                # Send email through SMTP
+                # -------------------------------------------------
 
-                # -------------------------------------
-                # Send Email
-                # -------------------------------------
                 self.email_service.send_email(
                     recipient_email=email.recipient_email,
                     subject=email.subject,
                     html_body=email.body,
                 )
 
-                # -------------------------------------
-                # Update Queue
-                # -------------------------------------
+                # -------------------------------------------------
+                # Mark email as sent
+                # -------------------------------------------------
+
                 email.status = EmailQueueStatus.SENT
 
-                email.sent_at = datetime.now(
-                    UTC,
+                email.sent_at = datetime.now(UTC)
+
+                email.last_error = None
+
+                # -------------------------------------------------
+                # Update related alert
+                # -------------------------------------------------
+
+                alert = (
+                    self.db.query(Alert)
+                    .filter(
+                        Alert.id == email.alert_id,
+                    )
+                    .first()
                 )
+
+                if alert is not None:
+
+                    alert.status = AlertStatus.SENT
+
+                    alert.sent_at = datetime.now(UTC)
 
                 self.db.commit()
 
@@ -101,12 +135,17 @@ class EmailWorker:
 
             except Exception as ex:
 
-                # -------------------------------------
-                # Retry
-                # -------------------------------------
+                # -------------------------------------------------
+                # Record failure
+                # -------------------------------------------------
+
                 email.retry_count += 1
 
                 email.last_error = str(ex)
+
+                # -------------------------------------------------
+                # Maximum retry limit
+                # -------------------------------------------------
 
                 if (
                     email.retry_count
@@ -117,25 +156,38 @@ class EmailWorker:
                         EmailQueueStatus.FAILED
                     )
 
+                    alert = (
+                        self.db.query(Alert)
+                        .filter(
+                            Alert.id == email.alert_id,
+                        )
+                        .first()
+                    )
+
+                    if alert is not None:
+                        alert.status = (
+                            AlertStatus.FAILED
+                        )
+
                 self.db.commit()
 
                 self.db.refresh(email)
 
-    # ---------------------------------------------------------
-    # Run Worker Once
-    # ---------------------------------------------------------
-    def run_once(
-        self,
-    ) -> None:
+    # =========================================================
+    # RUN ONCE
+    # =========================================================
+
+    def run_once(self) -> None:
         """
-        Execute one email processing cycle.
+        Execute one email-processing cycle.
 
-        Can be called by:
+        This method can later be called by:
 
-        • APScheduler
-        • Celery
-        • FastAPI BackgroundTasks
-        • Cron Jobs
+            - FastAPI BackgroundTasks
+            - APScheduler
+            - Celery
+            - Cron
+            - Another scheduled worker
         """
 
         self.process_queue()

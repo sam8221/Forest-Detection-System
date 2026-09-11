@@ -1,26 +1,35 @@
 """
+===========================================================
 ForestWatch Zambia
-
+-----------------------------------------------------------
 Module: Application Entry Point
 
 Purpose:
-Creates and configures the FastAPI application.
+    Creates and configures the FastAPI application.
 
 Responsibilities:
-- Configure FastAPI.
-- Register middleware.
-- Register API routers.
-- Load application settings.
+    - Configure FastAPI.
+    - Register middleware.
+    - Register API routers.
+    - Load application settings.
+    - Start and stop background services.
 
 Author:
-Samuel Bikiloni
+    Samuel Bikiloni
 
 Project:
-Web-Based Deforestation Detection and Alert System
-Using Sentinel-2 Imagery in the Copperbelt, Zambia
+    Web-Based Deforestation Detection and Alert System
+    Using Sentinel-2 Imagery in the Copperbelt, Zambia
+
+Version:
+    1.0.0
+===========================================================
 """
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from app.api.alerts import router as alerts_router
@@ -28,17 +37,48 @@ from app.api.analysis import router as analysis_router
 from app.api.auth import router as auth_router
 from app.api.dashboard import router as dashboard_router
 from app.api.detections import router as detections_router
+from app.api.districts import router as districts_router
 from app.api.forest_areas import router as forest_areas_router
 from app.api.health import router as health_router
+from app.api.planetary_computer import router as planetary_computer_router
 from app.api.satellite_images import router as satellite_images_router
+from app.api.sentinel_wms import router as sentinel_wms_router
 from app.api.users import router as users_router
 
 from app.core.config import get_settings
+from app.services.email_scheduler import EmailScheduler
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Manage the lifecycle of ForestWatch background services.
+    """
+
+    email_scheduler = EmailScheduler(
+        interval_seconds=30
+    )
+
+    email_scheduler.start()
+
+    print(
+        "[ForestWatch] Email scheduler started."
+    )
+
+    try:
+        yield
+
+    finally:
+        email_scheduler.stop()
+
+        print(
+            "[ForestWatch] Email scheduler stopped."
+        )
 
 
 def create_application() -> FastAPI:
     """
-    Create and configure the FastAPI application.
+    Create and configure the ForestWatch FastAPI application.
     """
 
     settings = get_settings()
@@ -48,9 +88,14 @@ def create_application() -> FastAPI:
         version="1.0.0",
         description=(
             "REST API for the ForestWatch Zambia "
-            "Deforestation Detection System."
+            "Deforestation Detection and Alert System."
         ),
-        docs_url="/docs" if settings.is_development else None,
+        lifespan=lifespan,
+        docs_url=(
+            "/docs"
+            if settings.is_development
+            else None
+        ),
         redoc_url=None,
         openapi_url=(
             "/openapi.json"
@@ -59,17 +104,21 @@ def create_application() -> FastAPI:
         ),
     )
 
-    # ---------------------------------------------------------
-    # Middleware
-    # ---------------------------------------------------------
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     app.add_middleware(
         TrustedHostMiddleware,
         allowed_hosts=settings.allowed_hosts,
     )
-
-    # ---------------------------------------------------------
-    # API Routers
-    # ---------------------------------------------------------
 
     app.include_router(
         health_router,
@@ -83,6 +132,11 @@ def create_application() -> FastAPI:
 
     app.include_router(
         users_router,
+        prefix=settings.api_v1_prefix,
+    )
+
+    app.include_router(
+        districts_router,
         prefix=settings.api_v1_prefix,
     )
 
@@ -113,6 +167,16 @@ def create_application() -> FastAPI:
 
     app.include_router(
         dashboard_router,
+        prefix=settings.api_v1_prefix,
+    )
+
+    app.include_router(
+        planetary_computer_router,
+        prefix=settings.api_v1_prefix,
+    )
+
+    app.include_router(
+        sentinel_wms_router,
         prefix=settings.api_v1_prefix,
     )
 

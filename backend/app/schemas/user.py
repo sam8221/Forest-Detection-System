@@ -11,6 +11,7 @@ Purpose:
 Responsibilities:
     - Validate user input.
     - Validate login requests.
+    - Enforce password security requirements.
     - Serialize user responses.
     - Support JWT authentication.
 
@@ -33,17 +34,71 @@ from pydantic import (
     ConfigDict,
     EmailStr,
     Field,
+    field_validator,
 )
 
 from app.models.enums import UserRole
 
 
-# ---------------------------------------------------------
-# Base Schema
-# ---------------------------------------------------------
+# =========================================================
+# PASSWORD VALIDATION
+# =========================================================
+
+def validate_password_strength(value: str) -> str:
+    """
+    Enforce the ForestWatch Zambia password security policy.
+
+    Password requirements:
+        - Minimum 8 characters.
+        - Maximum 128 characters.
+        - At least one uppercase letter.
+        - At least one lowercase letter.
+        - At least one number.
+        - At least one special character.
+    """
+
+    if not any(
+        character.isupper()
+        for character in value
+    ):
+        raise ValueError(
+            "Password must contain at least one uppercase letter."
+        )
+
+    if not any(
+        character.islower()
+        for character in value
+    ):
+        raise ValueError(
+            "Password must contain at least one lowercase letter."
+        )
+
+    if not any(
+        character.isdigit()
+        for character in value
+    ):
+        raise ValueError(
+            "Password must contain at least one number."
+        )
+
+    if not any(
+        not character.isalnum()
+        for character in value
+    ):
+        raise ValueError(
+            "Password must contain at least one special character."
+        )
+
+    return value
+
+
+# =========================================================
+# BASE USER SCHEMA
+# =========================================================
+
 class UserBase(BaseModel):
     """
-    Common user fields.
+    Defines the common information shared by user schemas.
     """
 
     full_name: str = Field(
@@ -59,33 +114,44 @@ class UserBase(BaseModel):
     )
 
 
-# ---------------------------------------------------------
-# Create Schema
-# ---------------------------------------------------------
+# =========================================================
+# USER CREATION SCHEMA
+# =========================================================
+
 class UserCreate(UserBase):
     """
-    Used by administrators when creating users.
+    Defines the information required to create a new user.
     """
 
     password: str = Field(
         ...,
         min_length=8,
         max_length=128,
-        description="Temporary password.",
+        description="Temporary password meeting the system security policy.",
     )
 
     role: UserRole = Field(
         ...,
-        description="System role.",
+        description="System role assigned to the user.",
     )
 
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, value: str) -> str:
+        """
+        Validate password strength during user creation.
+        """
 
-# ---------------------------------------------------------
-# Update Schema
-# ---------------------------------------------------------
+        return validate_password_strength(value)
+
+
+# =========================================================
+# USER UPDATE SCHEMA
+# =========================================================
+
 class UserUpdate(BaseModel):
     """
-    Used when updating a user.
+    Defines fields that administrators may update.
     """
 
     full_name: str | None = Field(
@@ -101,29 +167,45 @@ class UserUpdate(BaseModel):
     is_active: bool | None = None
 
 
-# ---------------------------------------------------------
-# Change Password Schema
-# ---------------------------------------------------------
+# =========================================================
+# CHANGE PASSWORD SCHEMA
+# =========================================================
+
 class ChangePasswordRequest(BaseModel):
     """
-    Used when changing a password.
+    Validates authenticated password-change requests.
     """
 
-    current_password: str
+    current_password: str = Field(
+        ...,
+        min_length=1,
+        description="Current account password.",
+    )
 
     new_password: str = Field(
         ...,
         min_length=8,
         max_length=128,
+        description="New password meeting the system security policy.",
     )
 
+    @field_validator("new_password")
+    @classmethod
+    def validate_password(cls, value: str) -> str:
+        """
+        Validate password strength during password changes.
+        """
 
-# ---------------------------------------------------------
-# Login Schema
-# ---------------------------------------------------------
+        return validate_password_strength(value)
+
+
+# =========================================================
+# LOGIN SCHEMA
+# =========================================================
+
 class UserLogin(BaseModel):
     """
-    User authentication request.
+    Defines the credentials submitted during authentication.
     """
 
     email: EmailStr
@@ -131,12 +213,13 @@ class UserLogin(BaseModel):
     password: str
 
 
-# ---------------------------------------------------------
-# User Response Schema
-# ---------------------------------------------------------
+# =========================================================
+# USER RESPONSE SCHEMA
+# =========================================================
+
 class UserResponse(UserBase):
     """
-    User returned by the API.
+    Defines the user information returned by the API.
     """
 
     model_config = ConfigDict(
@@ -158,12 +241,13 @@ class UserResponse(UserBase):
     updated_at: datetime
 
 
-# ---------------------------------------------------------
-# JWT Token Schema
-# ---------------------------------------------------------
+# =========================================================
+# JWT TOKEN SCHEMA
+# =========================================================
+
 class Token(BaseModel):
     """
-    JWT access token.
+    Defines the JWT access-token response.
     """
 
     access_token: str
@@ -171,20 +255,35 @@ class Token(BaseModel):
     token_type: str = "bearer"
 
 
-# ---------------------------------------------------------
-# JWT Payload Schema
-# ---------------------------------------------------------
+# =========================================================
+# JWT PAYLOAD SCHEMA
+# =========================================================
+
 class TokenData(BaseModel):
     """
-    Decoded JWT payload.
+    Defines the decoded JWT payload.
     """
 
     email: EmailStr | None = None
 
     role: UserRole | None = None
+
+
+# =========================================================
+# USER SUMMARY SCHEMA
+# =========================================================
+
 class UserSummary(BaseModel):
+    """
+    Defines a lightweight user representation.
+    """
+
     id: int
+
     full_name: str
+
     email: EmailStr
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(
+        from_attributes=True,
+    )

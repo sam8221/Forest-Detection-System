@@ -12,7 +12,9 @@ Responsibilities:
     - Retrieve user details
     - Create users
     - Update users
-    - Delete users
+    - Deactivate users
+    - Retrieve current user profile
+    - Change current user password
 
 Author:
     Samuel Bikiloni
@@ -26,10 +28,6 @@ Version:
 ===========================================================
 """
 
-from app.api.deps import (
-    get_admin_user,
-    get_current_active_user,
-)
 from fastapi import (
     APIRouter,
     Depends,
@@ -38,29 +36,102 @@ from fastapi import (
 )
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_admin_user
+from app.api.deps import (
+    get_admin_user,
+    get_current_active_user,
+)
 from app.database.session import get_db
 from app.models.user import User
 from app.repositories.user_repository import UserRepository
 from app.schemas.user import (
+    ChangePasswordRequest,
     UserCreate,
     UserResponse,
     UserUpdate,
 )
 from app.services.auth_service import AuthService
 
+
 # ---------------------------------------------------------
 # Router
 # ---------------------------------------------------------
+
 router = APIRouter(
     prefix="/users",
     tags=["Users"],
 )
 
 
-# ---------------------------------------------------------
-# Get All Users
-# ---------------------------------------------------------
+# =========================================================
+# CURRENT USER PROFILE
+# =========================================================
+# IMPORTANT:
+# This route is BEFORE /{user_id}
+# =========================================================
+
+@router.get(
+    "/profile",
+    response_model=UserResponse,
+    status_code=status.HTTP_200_OK,
+)
+def get_profile(
+    current_user: User = Depends(
+        get_current_active_user
+    ),
+):
+    """
+    Return the currently authenticated user's profile.
+    """
+
+    return current_user
+
+
+# =========================================================
+# CHANGE CURRENT USER PASSWORD
+# =========================================================
+
+@router.put(
+    "/profile/password",
+    status_code=status.HTTP_200_OK,
+)
+def change_password(
+    password_data: ChangePasswordRequest,
+    current_user: User = Depends(
+        get_current_active_user
+    ),
+    db: Session = Depends(get_db),
+):
+    """
+    Change the password of the currently
+    authenticated user.
+
+    The current password must be correct
+    before the new password is saved.
+    """
+
+    auth_service = AuthService(db)
+
+    try:
+        auth_service.change_password(
+            email=current_user.email,
+            password_data=password_data,
+        )
+
+        return {
+            "message": "Password changed successfully."
+        }
+
+    except ValueError as ex:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(ex),
+        )
+
+
+# =========================================================
+# GET ALL USERS
+# =========================================================
+
 @router.get(
     "",
     response_model=list[UserResponse],
@@ -81,9 +152,10 @@ def get_users(
     return repository.get_all()
 
 
-# ---------------------------------------------------------
-# Get User By ID
-# ---------------------------------------------------------
+# =========================================================
+# GET USER BY ID
+# =========================================================
+
 @router.get(
     "/{user_id}",
     response_model=UserResponse,
@@ -96,6 +168,8 @@ def get_user(
 ):
     """
     Retrieve a user by ID.
+
+    Only Administrators can access this endpoint.
     """
 
     repository = UserRepository(db)
@@ -111,9 +185,10 @@ def get_user(
     return user
 
 
-# ---------------------------------------------------------
-# Create User
-# ---------------------------------------------------------
+# =========================================================
+# CREATE USER
+# =========================================================
+
 @router.post(
     "",
     response_model=UserResponse,
@@ -134,7 +209,7 @@ def create_user(
 
     try:
         return auth_service.register_user(
-            user_data,
+            user_data
         )
 
     except ValueError as ex:
@@ -144,9 +219,10 @@ def create_user(
         )
 
 
-# ---------------------------------------------------------
-# Update User
-# ---------------------------------------------------------
+# =========================================================
+# UPDATE USER
+# =========================================================
+
 @router.put(
     "/{user_id}",
     response_model=UserResponse,
@@ -177,9 +253,12 @@ def update_user(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(ex),
         )
-    # ---------------------------------------------------------
-# Deactivate User
-# ---------------------------------------------------------
+
+
+# =========================================================
+# DEACTIVATE USER
+# =========================================================
+
 @router.delete(
     "/{user_id}",
     status_code=status.HTTP_200_OK,
@@ -212,21 +291,3 @@ def delete_user(
     return {
         "message": "User account deactivated successfully."
     }
-# ---------------------------------------------------------
-# Current User Profile
-# ---------------------------------------------------------
-@router.get(
-    "/profile",
-    response_model=UserResponse,
-    status_code=status.HTTP_200_OK,
-)
-def get_profile(
-    current_user: User = Depends(
-        get_current_active_user,
-    ),
-):
-    """
-    Return the currently authenticated user's profile.
-    """
-
-    return current_user

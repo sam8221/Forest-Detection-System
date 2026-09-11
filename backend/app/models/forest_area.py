@@ -25,6 +25,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from geoalchemy2 import Geometry
+
 from sqlalchemy import (
     Boolean,
     Enum as SqlEnum,
@@ -34,6 +35,7 @@ from sqlalchemy import (
     String,
     Text,
 )
+
 from sqlalchemy.orm import (
     Mapped,
     mapped_column,
@@ -42,11 +44,13 @@ from sqlalchemy.orm import (
 
 from app.database.session import Base
 from app.models.base_model import AuditMixin
+
 from app.models.enums import (
     MonitoringFrequency,
     PriorityLevel,
     ProtectedStatus,
 )
+
 
 if TYPE_CHECKING:
     from app.models.analysis_job import AnalysisJob
@@ -168,40 +172,46 @@ class ForestArea(AuditMixin, Base):
 
     # =========================================================
     # RELATIONSHIPS
+    #
+    # IMPORTANT:
+    # Use lazy="select" so related records are loaded only
+    # when the application actually accesses them.
+    # This prevents the Forest Areas list from loading
+    # satellite images, analysis jobs and detections.
     # =========================================================
 
     district: Mapped["District"] = relationship(
         "District",
         back_populates="forest_areas",
-        lazy="joined",
+        lazy="select",
     )
 
     creator: Mapped["User"] = relationship(
         "User",
         back_populates="forest_areas",
         foreign_keys=[created_by],
-        lazy="joined",
+        lazy="select",
     )
 
     satellite_images: Mapped[list["SatelliteImage"]] = relationship(
         "SatelliteImage",
         back_populates="forest_area",
         cascade="all, delete-orphan",
-        lazy="selectin",
+        lazy="select",
     )
 
     analysis_jobs: Mapped[list["AnalysisJob"]] = relationship(
         "AnalysisJob",
         back_populates="forest_area",
         cascade="all, delete-orphan",
-        lazy="selectin",
+        lazy="select",
     )
 
     detections: Mapped[list["Detection"]] = relationship(
         "Detection",
         back_populates="forest_area",
         cascade="all, delete-orphan",
-        lazy="selectin",
+        lazy="select",
     )
 
     # =========================================================

@@ -14,7 +14,7 @@ Responsibilities:
     - Store acquisition details.
     - Store cloud coverage.
     - Store image location.
-    - Support future NDVI analysis.
+    - Support NDVI and multi-date analysis.
 
 Author:
     Samuel Bikiloni
@@ -24,18 +24,14 @@ Project:
     Using Sentinel-2 Imagery in the Copperbelt, Zambia
 
 Version:
-    1.0.0
+    1.3.0
 ===========================================================
 """
-from __future__ import annotations
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from app.models.analysis_job import AnalysisJob
-    from app.models.detection import Detection
-    from app.models.forest_area import ForestArea
+from __future__ import annotations
 
 from datetime import date
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     Boolean,
@@ -57,15 +53,22 @@ from app.database.session import Base
 from app.models.base_model import AuditMixin
 
 
+if TYPE_CHECKING:
+    from app.models.analysis_job import AnalysisJob
+    from app.models.detection import Detection
+    from app.models.forest_area import ForestArea
+
+
 class SatelliteImage(AuditMixin, Base):
     """
     Represents one Sentinel-2 image downloaded
     for a monitored forest area.
     """
 
-    # ---------------------------------------------------------
-    # Database Table
-    # ---------------------------------------------------------
+    # =========================================================
+    # DATABASE TABLE
+    # =========================================================
+
     __tablename__ = "satellite_images"
 
     __table_args__ = (
@@ -76,18 +79,20 @@ class SatelliteImage(AuditMixin, Base):
         ),
     )
 
-    # ---------------------------------------------------------
-    # Primary Key
-    # ---------------------------------------------------------
+    # =========================================================
+    # PRIMARY KEY
+    # =========================================================
+
     id: Mapped[int] = mapped_column(
         Integer,
         primary_key=True,
         index=True,
     )
 
-    # ---------------------------------------------------------
-    # Forest Area
-    # ---------------------------------------------------------
+    # =========================================================
+    # FOREST AREA
+    # =========================================================
+
     forest_area_id: Mapped[int] = mapped_column(
         ForeignKey("forest_areas.id"),
         nullable=False,
@@ -95,21 +100,22 @@ class SatelliteImage(AuditMixin, Base):
         comment="Forest area associated with this image.",
     )
 
-    # ---------------------------------------------------------
-    # Sentinel Information
-    # ---------------------------------------------------------
+    # =========================================================
+    # SENTINEL INFORMATION
+    # =========================================================
+
     product_id: Mapped[str] = mapped_column(
         String(120),
         nullable=False,
         index=True,
-        comment="Unique Sentinel product identifier.",
+        comment="Unique Sentinel-2 product identifier.",
     )
 
     tile_id: Mapped[str] = mapped_column(
         String(20),
         nullable=False,
         index=True,
-        comment="Sentinel tile identifier.",
+        comment="Sentinel-2 tile identifier.",
     )
 
     satellite_name: Mapped[str] = mapped_column(
@@ -130,7 +136,7 @@ class SatelliteImage(AuditMixin, Base):
         String(10),
         default="L2A",
         nullable=False,
-        comment="Sentinel processing level.",
+        comment="Sentinel-2 processing level.",
     )
 
     cloud_cover_percentage: Mapped[float] = mapped_column(
@@ -140,9 +146,10 @@ class SatelliteImage(AuditMixin, Base):
         comment="Cloud cover percentage.",
     )
 
-    # ---------------------------------------------------------
-    # Storage
-    # ---------------------------------------------------------
+    # =========================================================
+    # STORAGE
+    # =========================================================
+
     file_name: Mapped[str] = mapped_column(
         String(255),
         nullable=False,
@@ -167,9 +174,10 @@ class SatelliteImage(AuditMixin, Base):
         comment="SHA256 checksum.",
     )
 
-    # ---------------------------------------------------------
-    # Status
-    # ---------------------------------------------------------
+    # =========================================================
+    # STATUS
+    # =========================================================
+
     is_downloaded: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
@@ -188,12 +196,12 @@ class SatelliteImage(AuditMixin, Base):
         Boolean,
         default=True,
         nullable=False,
-        comment="Soft delete flag.",
+        comment="Indicates whether the image is active.",
     )
 
-         # ---------------------------------------------------------
-    # Relationships
-    # ---------------------------------------------------------
+    # =========================================================
+    # RELATIONSHIPS
+    # =========================================================
 
     forest_area: Mapped["ForestArea"] = relationship(
         "ForestArea",
@@ -201,12 +209,45 @@ class SatelliteImage(AuditMixin, Base):
         lazy="joined",
     )
 
+    # =========================================================
+    # ANALYSIS JOBS - LATEST IMAGE
+    # =========================================================
+    #
+    # AnalysisJob.satellite_image_id points to the
+    # latest image used by the analysis.
+    #
+
     analysis_jobs: Mapped[list["AnalysisJob"]] = relationship(
         "AnalysisJob",
         back_populates="satellite_image",
-        cascade="all, delete-orphan",
+        foreign_keys="AnalysisJob.satellite_image_id",
         lazy="selectin",
     )
+
+    # =========================================================
+    # ANALYSIS JOBS - PREVIOUS IMAGE
+    # =========================================================
+    #
+    # AnalysisJob.previous_satellite_image_id points to the
+    # baseline image used for comparison.
+    #
+    # This relationship has its own back_populates so that
+    # SQLAlchemy knows these are intentionally separate
+    # relationships.
+    #
+
+    previous_analysis_jobs: Mapped[
+        list["AnalysisJob"]
+    ] = relationship(
+        "AnalysisJob",
+        back_populates="previous_satellite_image",
+        foreign_keys="AnalysisJob.previous_satellite_image_id",
+        lazy="selectin",
+    )
+
+    # =========================================================
+    # DETECTIONS
+    # =========================================================
 
     detections: Mapped[list["Detection"]] = relationship(
         "Detection",
@@ -215,14 +256,15 @@ class SatelliteImage(AuditMixin, Base):
         lazy="selectin",
     )
 
-    # ---------------------------------------------------------
-    # String Representation
-    # ---------------------------------------------------------
+    # =========================================================
+    # STRING REPRESENTATION
+    # =========================================================
+
     def __repr__(self) -> str:
         return (
             f"SatelliteImage("
             f"id={self.id}, "
             f"product_id='{self.product_id}', "
-            f"tile_id='{self.tile_id}')"
+            f"tile_id='{self.tile_id}', "
+            f"date='{self.acquisition_date}')"
         )
-       
