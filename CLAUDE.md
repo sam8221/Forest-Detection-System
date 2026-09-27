@@ -136,8 +136,16 @@ If asked in the viva, present it as a licensing-driven decision with a known tra
 ## Detection rules
 
 - **Minimum detectable area: 0.5 hectares** = 50 Sentinel-2 pixels at 10 m.
-  Aligns with the statutory definition of a forest in Zambian law, and suppresses
-  isolated noise pixels. Put this in `config.py`, never as a literal.
+  Taken from the area criterion in the **Forests Act No. 4 of 2015**, which defines a
+  forest as land with "a tree canopy cover of more than ten percent and area of more
+  than zero point five hectares". Also suppresses isolated noise pixels. Put this in
+  `config.py`, never as a literal.
+  - Only the **area** criterion is applied. The system does not measure canopy cover
+    or tree height, so a detection is not a finding that a forest *as legally defined*
+    has been cleared. Do not claim otherwise in the dissertation.
+  - The Act says "more than" 0.5 ha; the filter keeps a patch of exactly 0.5 ha
+    (50 pixels lands exactly on the boundary, since pixel areas are multiples of
+    100 m²). Deliberate — see the note in `config.py`.
 - NDVI threshold is configurable per analysis job (`AnalysisJob.ndvi_threshold`).
 - Store `ndvi_before`, `ndvi_after`, `ndvi_delta` on every detection — not just the
   conclusion. Lets detections be re-evaluated when a threshold changes, without

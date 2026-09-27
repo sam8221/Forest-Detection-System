@@ -55,3 +55,14 @@ backend/storage/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# ==============================
+# Accidental nested copy of the project
+#
+# A second full checkout of this repository sits inside
+# backend/. It is not part of the system, and pytest run
+# from the repository root fails while it is present,
+# because it collects two modules of the same name from
+# the two trees.
+# ==============================
+backend/Forest-Detection-System/
