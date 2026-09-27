@@ -31,10 +31,11 @@ Version:
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import (
+    Date,
     DateTime,
     Enum as SqlEnum,
     Float,
@@ -157,6 +158,53 @@ class AnalysisJob(AuditMixin, Base):
         SqlEnum(AnalysisJobStatus),
         nullable=False,
         default=AnalysisJobStatus.PENDING,
+    )
+
+    # =========================================================
+    # SEASONAL COMPARISON WINDOWS
+    #
+    # Miombo woodland in the Copperbelt has a severe wet/dry
+    # cycle: NDVI falls across the entire province every dry
+    # season. Comparing one month against the month before it
+    # therefore reports deforestation almost everywhere.
+    #
+    # To avoid that, an analysis compares two EQUIVALENT
+    # seasonal windows in DIFFERENT years, for example
+    # May-July 2024 (baseline) against May-July 2025
+    # (comparison). Vegetation loss that survives this
+    # comparison is a real change in land cover rather than
+    # the normal seasonal cycle.
+    #
+    # Plain dates are used rather than timestamps because a
+    # Sentinel-2 acquisition is identified by its date.
+    # =========================================================
+
+    baseline_start: Mapped[date | None] = mapped_column(
+        Date,
+        nullable=True,
+        comment="First acquisition date of the baseline window.",
+    )
+
+    baseline_end: Mapped[date | None] = mapped_column(
+        Date,
+        nullable=True,
+        comment="Last acquisition date of the baseline window.",
+    )
+
+    comparison_start: Mapped[date | None] = mapped_column(
+        Date,
+        nullable=True,
+        comment=(
+            "First acquisition date of the comparison window."
+        ),
+    )
+
+    comparison_end: Mapped[date | None] = mapped_column(
+        Date,
+        nullable=True,
+        comment=(
+            "Last acquisition date of the comparison window."
+        ),
     )
 
     # =========================================================

@@ -20,6 +20,7 @@ Project:
 from app.models.alert import Alert
 from app.models.alert_recipient import AlertRecipient
 from app.models.analysis_job import AnalysisJob
+from app.models.audit_log import AuditLog
 from app.models.detection import Detection
 from app.models.district import District
 from app.models.email_queue import EmailQueue
@@ -32,6 +33,7 @@ __all__ = [
     "Alert",
     "AlertRecipient",
     "AnalysisJob",
+    "AuditLog",
     "Detection",
     "District",
     "EmailQueue",

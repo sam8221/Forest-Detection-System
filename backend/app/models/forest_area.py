@@ -62,7 +62,37 @@ if TYPE_CHECKING:
 
 class ForestArea(AuditMixin, Base):
     """
-    Represents one monitored forest area (AOI).
+    One monitored forest area, the unit an analysis runs over.
+
+    A forest area is the area of interest an officer
+    registers and the system then compares between two
+    seasonal windows. Detections reference the job that
+    produced them, and each job references one forest area,
+    so this table is the root of the detection record.
+
+    Coordinate systems:
+        The boundary here is stored in EPSG:4326, degrees of
+        latitude and longitude, because that is what a map
+        client draws and what a shapefile of reserve
+        boundaries normally arrives in.
+
+        Detection.geometry is stored in EPSG:32735 instead,
+        UTM zone 35S, whose unit is the metre. Detection
+        areas are measured from their geometry, and an area
+        computed in degrees varies with latitude and cannot
+        be converted to hectares by a constant.
+
+        The two therefore need reprojecting before they are
+        compared, for example when testing whether a
+        detection falls inside this boundary.
+
+    NOTE: area_hectares is supplied by the client on create
+    and update, and is never computed from the geometry or
+    checked against it. The stored figure can therefore
+    contradict the boundary in the same row. PostGIS can
+    derive it from the geometry once reprojected to a metric
+    CRS, which would make the column consistent by
+    construction.
     """
 
     __tablename__ = "forest_areas"
@@ -86,22 +116,31 @@ class ForestArea(AuditMixin, Base):
         unique=True,
         nullable=False,
         index=True,
+        comment=(
+            "Departmental reference for the forest area. "
+            "Unique, so officers can cite one area "
+            "unambiguously in correspondence and field "
+            "reports without quoting a database id."
+        ),
     )
 
     name: Mapped[str] = mapped_column(
         String(150),
         nullable=False,
         index=True,
+        comment="Name of the forest area as officers know it.",
     )
 
     description: Mapped[str | None] = mapped_column(
         Text,
         nullable=True,
+        comment="Free description of the area and its vegetation.",
     )
 
     notes: Mapped[str | None] = mapped_column(
         Text,
         nullable=True,
+        comment="Working notes kept by officers about the area.",
     )
 
     # =========================================================
@@ -112,6 +151,13 @@ class ForestArea(AuditMixin, Base):
         ForeignKey("districts.id"),
         nullable=False,
         index=True,
+        comment=(
+            "District the area lies in. This is what "
+            "jurisdiction is enforced against: a district "
+            "officer may retrieve only areas whose district "
+            "matches their own, and the province follows "
+            "from the district."
+        ),
     )
 
     geometry: Mapped[object] = mapped_column(
@@ -120,11 +166,22 @@ class ForestArea(AuditMixin, Base):
             srid=4326,
         ),
         nullable=False,
+        comment=(
+            "Boundary of the area in EPSG:4326, degrees. "
+            "Reproject to a metric CRS such as EPSG:32735 "
+            "before measuring area or distance; degrees "
+            "give no usable unit of area."
+        ),
     )
 
     area_hectares: Mapped[float] = mapped_column(
         Float,
         nullable=False,
+        comment=(
+            "Stated size of the area in hectares. Supplied "
+            "by the client, not derived from the geometry, "
+            "so it may disagree with the boundary."
+        ),
     )
 
     # =========================================================
@@ -135,30 +192,54 @@ class ForestArea(AuditMixin, Base):
         SqlEnum(ProtectedStatus),
         default=ProtectedStatus.PROTECTED_FOREST,
         nullable=False,
+        comment=(
+            "Legal protection class, which governs how a "
+            "detection here is escalated."
+        ),
     )
 
     monitoring_frequency: Mapped[MonitoringFrequency] = mapped_column(
         SqlEnum(MonitoringFrequency),
-        default=MonitoringFrequency.DAILY,
+        default=MonitoringFrequency.WEEKLY,
         nullable=False,
+        comment=(
+            "How often the area is analysed. Bounded by the "
+            "Sentinel-2 revisit interval of about five "
+            "days, so no shorter period is offered."
+        ),
     )
 
     priority_level: Mapped[PriorityLevel] = mapped_column(
         SqlEnum(PriorityLevel),
         default=PriorityLevel.MEDIUM,
         nullable=False,
+        comment=(
+            "Relative importance, used to order alerts when "
+            "several areas report detections at once."
+        ),
     )
 
     monitoring_enabled: Mapped[bool] = mapped_column(
         Boolean,
         default=True,
         nullable=False,
+        comment=(
+            "Whether scheduled analysis picks this area up. "
+            "Distinct from is_active: an area can be "
+            "current but temporarily not analysed, for "
+            "example while its boundary is being corrected."
+        ),
     )
 
     is_active: Mapped[bool] = mapped_column(
         Boolean,
         default=True,
         nullable=False,
+        comment=(
+            "Whether the area is current. Retired areas are "
+            "kept rather than deleted, because detections "
+            "and alerts remain attached to them."
+        ),
     )
 
     # =========================================================

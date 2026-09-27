@@ -1,9 +1,55 @@
 """
-ForestWatch Zambia
+Create remaining forest detection system tables
 
+===========================================================
+ForestWatch Zambia
+-----------------------------------------------------------
 Revision: Create remaining forest detection system tables
+
 Revision ID: e91c6f2a4b7e
 Revises: dff42c735d8c
+
+Purpose:
+    Creates the operational tables: the imagery the system
+    analyses, the jobs that analyse it, the detections those
+    jobs produce, and the alerts raised from them.
+
+Creates:
+    satellite_images   Sentinel-2 products held per forest
+                       area, with acquisition date and cloud
+                       cover.
+    analysis_jobs      One analysis run, with its status.
+    detections         Areas of vegetation loss found.
+    alerts             Notifications raised from detections.
+    alert_recipients   Which officer receives which alert.
+    email_queue        Outbound mail awaiting delivery.
+
+How the pipeline uses them:
+    Together with the previous revision these complete the
+    chain the whole system runs along:
+
+        SatelliteImage -> AnalysisJob -> Detection -> Alert
+
+    An officer submits a job against a forest area; the job
+    compares two seasonal windows of imagery; each patch of
+    vegetation loss above the half-hectare threshold becomes
+    a detection; a detection raises an alert; the alert is
+    delivered to the officers whose jurisdiction covers it.
+
+Why mail is queued rather than sent directly:
+    email_queue exists so that a mail server being slow or
+    unreachable cannot fail an analysis run that has already
+    produced valid detections. The detection is recorded
+    first and the notification is delivered separately, which
+    also leaves a record of what was sent and when.
+
+Author:
+    Samuel Bikiloni
+
+Project:
+    Web-Based Deforestation Detection and Alert System
+    Using Sentinel-2 Imagery in the Copperbelt, Zambia
+===========================================================
 """
 
 from typing import Sequence, Union

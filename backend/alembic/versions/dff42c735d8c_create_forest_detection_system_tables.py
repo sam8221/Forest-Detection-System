@@ -1,9 +1,57 @@
 """
-ForestWatch Zambia
+Create forest detection system tables
 
+===========================================================
+ForestWatch Zambia
+-----------------------------------------------------------
 Revision: Create forest detection system tables
+
 Revision ID: dff42c735d8c
 Revises: da8e3b0a7357
+
+Purpose:
+    Creates the administrative hierarchy the system is
+    organised around, and the forest areas it monitors.
+
+Creates:
+    provinces      Zambian provinces.
+    districts      Districts, each belonging to a province.
+    forest_areas   Monitored areas, each in a district, with
+                   a PostGIS geometry column.
+
+Why this order matters:
+    These three tables form the chain that jurisdiction-
+    scoped access (requirement FR-04) is enforced along:
+
+        Province -> District -> ForestArea -> Detection
+
+    A provincial officer is assigned a province and sees
+    every district within it; a district officer sees one
+    district. The repository layer walks this chain to decide
+    what a query may return, so the foreign keys created here
+    are a security control as much as a data structure.
+
+Geometry:
+    forest_areas.geometry is a PostGIS POLYGON in EPSG:4326,
+    which is longitude and latitude in degrees. It is indexed
+    with GiST, without which a spatial query would scan every
+    row.
+
+    Note that this differs from detections, added later in
+    c3f8a1d54b72, which use EPSG:32735 (UTM 35S, metres).
+    Boundaries are stored in degrees because that is what
+    the interface draws and exchanges; detection areas are
+    stored in metres so that surface area comes out directly
+    in square metres, and the half-hectare threshold can be
+    applied without a projection step.
+
+Author:
+    Samuel Bikiloni
+
+Project:
+    Web-Based Deforestation Detection and Alert System
+    Using Sentinel-2 Imagery in the Copperbelt, Zambia
+===========================================================
 """
 
 from typing import Sequence, Union

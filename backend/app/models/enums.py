@@ -34,11 +34,25 @@ from enum import Enum
 # =========================================================
 
 class UserRole(str, Enum):
-    """System user roles."""
+    """
+    System user roles.
+
+    The system is restricted to authorised officers of the
+    Zambian Forestry Department.
+
+    ADMIN provisions accounts and configures thresholds but
+    has no operational alert duties. Keeping administration
+    separate from operational review means the audit trail
+    stays independent of the people being audited.
+
+    The two officer roles differ only in the extent of their
+    jurisdiction: a district officer sees one district, a
+    provincial officer sees every district in their province.
+    """
 
     ADMIN = "ADMIN"
-    FORESTRY_OFFICER = "FORESTRY_OFFICER"
-    RESEARCHER = "RESEARCHER"
+    PROVINCIAL_FORESTRY_OFFICER = "PROVINCIAL_FORESTRY_OFFICER"
+    DISTRICT_FORESTRY_OFFICER = "DISTRICT_FORESTRY_OFFICER"
 
 
 # =========================================================
@@ -49,8 +63,6 @@ class ProtectedStatus(str, Enum):
     """Forest protection categories."""
 
     PROTECTED_FOREST = "PROTECTED_FOREST"
-    NATIONAL_PARK = "NATIONAL_PARK"
-    GAME_MANAGEMENT_AREA = "GAME_MANAGEMENT_AREA"
     COMMUNITY_FOREST = "COMMUNITY_FOREST"
     PRIVATE_FOREST = "PRIVATE_FOREST"
 
@@ -62,8 +74,6 @@ class ProtectedStatus(str, Enum):
 class MonitoringFrequency(str, Enum):
     """Automatic monitoring frequency."""
 
-    DAILY = "DAILY"
-    EVERY_2_DAYS = "EVERY_2_DAYS"
     WEEKLY = "WEEKLY"
     MONTHLY = "MONTHLY"
 

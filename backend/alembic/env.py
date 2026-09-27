@@ -1,3 +1,58 @@
+"""
+===========================================================
+ForestWatch Zambia
+-----------------------------------------------------------
+Module: Alembic Environment
+
+Purpose:
+    Configures Alembic so it can compare the SQLAlchemy
+    models against the live database and generate or apply
+    migrations.
+
+Responsibilities:
+    - Register every model on Base.metadata.
+    - Supply the database URL from application settings.
+    - Run migrations in offline or online mode.
+
+How it works:
+    Alembic needs two things to work out what changed: the
+    schema the code describes, and the schema the database
+    currently has. The first comes from Base.metadata, which
+    is only populated by importing the models; the second
+    from a live connection.
+
+    The database URL is read from app.core.config rather than
+    from alembic.ini, so migrations run against the same
+    database the application uses and no connection string is
+    duplicated, or committed.
+
+Why the models package is imported, not individual models:
+    Autogenerate treats a table absent from Base.metadata as
+    one that should be DROPPED. If a model is not imported
+    before autogenerate inspects the metadata, Alembic will
+    quietly write a migration that drops its table, and the
+    data with it.
+
+    Importing the package rather than each module means a
+    newly added model is registered automatically and cannot
+    be forgotten.
+
+Note on migrations as evidence:
+    The migration history is the record of how the schema
+    reached its present shape, and the dissertation relies on
+    it. Migrations are therefore never edited once applied; a
+    correction is a new revision. Take a pg_dump before
+    running one against a database holding real records.
+
+Author:
+    Samuel Bikiloni
+
+Project:
+    Web-Based Deforestation Detection and Alert System
+    Using Sentinel-2 Imagery in the Copperbelt, Zambia
+===========================================================
+"""
+
 from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config
@@ -6,7 +61,13 @@ from sqlalchemy import pool
 from alembic import context
 from app.core.config import get_settings
 from app.database.session import Base
-from app.models.user import User  # noqa: F401
+
+# Import the models package rather than individual models.
+# Every model must be registered on Base.metadata BEFORE
+# autogenerate inspects it, otherwise a table that exists in
+# the code is silently treated as one that should be dropped.
+# Importing the package guarantees a new model is included.
+import app.models  # noqa: F401
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

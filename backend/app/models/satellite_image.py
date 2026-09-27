@@ -6,7 +6,7 @@ Module: Satellite Image Model
 
 Purpose:
     Stores metadata about Sentinel-2 satellite images
-    used by the Forest Detection System.
+    used by the ForestWatch Zambia.
 
 Responsibilities:
     - Link images to forest areas.

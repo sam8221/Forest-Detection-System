@@ -1,8 +1,45 @@
 """
-Add previous satellite image to analysis jobs.
+Add previous satellite image to analysis jobs
+
+===========================================================
+ForestWatch Zambia
+-----------------------------------------------------------
+Revision: Add previous satellite image to analysis jobs
 
 Revision ID: 7c07409be073
 Revises: e91c6f2a4b7e
+
+Purpose:
+    Gives an analysis job a second image reference, so it
+    records both sides of the comparison it performed.
+
+Changes:
+    analysis_jobs.previous_satellite_image_id  added, with
+    an index.
+
+Why this is needed:
+    NDVI change detection compares two acquisitions. A job
+    that stored only one of them recorded the result without
+    recording what produced it, which made a detection
+    impossible to re-examine later.
+
+    Holding both means a detection can be traced back to the
+    exact pair of products behind it, which the accuracy
+    evaluation in Chapter Five depends on: a false positive
+    can only be explained if the two images that generated it
+    can be retrieved.
+
+    The column is nullable, because jobs created before this
+    revision have no second image and cannot be given one
+    retrospectively.
+
+Author:
+    Samuel Bikiloni
+
+Project:
+    Web-Based Deforestation Detection and Alert System
+    Using Sentinel-2 Imagery in the Copperbelt, Zambia
+===========================================================
 """
 
 from typing import Sequence, Union

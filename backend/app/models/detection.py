@@ -10,6 +10,7 @@ Purpose:
 
 Responsibilities:
     - Store detected forest changes.
+    - Store the affected area as a map geometry.
     - Link detections to analysis jobs.
     - Store confidence scores.
     - Support verification workflow.
@@ -32,6 +33,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from geoalchemy2 import Geometry
 from sqlalchemy import (
     DateTime,
     Enum as SqlEnum,
@@ -105,6 +107,33 @@ class Detection(AuditMixin, Base):
     )
 
     # ---------------------------------------------------------
+    # Affected Area Geometry
+    #
+    # SRID 32735 is WGS 84 / UTM Zone 35S, which covers the
+    # Copperbelt. A projected CRS is used here, rather than
+    # the geographic SRID 4326 used by ForestArea, because
+    # UTM coordinates are in metres: areas and distances can
+    # be measured directly without reprojecting first.
+    #
+    # Comparing this column against ForestArea.geometry
+    # therefore requires ST_Transform on one side.
+    #
+    # Nullable because detections created before this column
+    # existed have no recorded outline.
+    # ---------------------------------------------------------
+    geometry: Mapped[object | None] = mapped_column(
+        Geometry(
+            geometry_type="MULTIPOLYGON",
+            srid=32735,
+        ),
+        nullable=True,
+        comment=(
+            "Outline of the detected clearing, "
+            "UTM Zone 35S (EPSG:32735)."
+        ),
+    )
+
+    # ---------------------------------------------------------
     # Detection Results
     # ---------------------------------------------------------
     detected_area_hectares: Mapped[float] = mapped_column(
@@ -116,7 +145,11 @@ class Detection(AuditMixin, Base):
     confidence_score: Mapped[float] = mapped_column(
         Float,
         nullable=False,
-        comment="AI confidence score.",
+        comment=(
+            "Confidence indicator (0-100) combining pixel "
+            "persistence and NDVI decline strength. "
+            "Not a machine-learning probability."
+        ),
     )
 
     ndvi_before: Mapped[float] = mapped_column(
