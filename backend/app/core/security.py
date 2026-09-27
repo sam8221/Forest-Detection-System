@@ -1,12 +1,12 @@
 """
 ===========================================================
-Forest Detection System
+ForestWatch Zambia
 -----------------------------------------------------------
 Module: Security
 
 Purpose:
     Provides authentication and security utilities for the
-    Forest Detection System.
+    ForestWatch Zambia.
 
 Responsibilities:
     - Hash user passwords.
@@ -42,8 +42,20 @@ settings = get_settings()
 # ---------------------------------------------------------
 # Password hashing configuration
 #
-# bcrypt is the recommended password hashing algorithm.
-# Passwords are NEVER stored as plain text.
+# Passwords are NEVER stored as plain text, and never
+# encrypted either: encryption is reversible, and a key that
+# can decrypt the whole users table is a key that can be
+# stolen. A hash cannot be reversed at all, so a copy of the
+# database yields no credentials.
+#
+# bcrypt is used rather than a general-purpose hash such as
+# SHA-256 for two reasons. It salts each password
+# automatically, so two officers who choose the same
+# password do not produce the same stored value and a
+# precomputed table cannot be used against either. It is
+# also deliberately slow, with a tunable work factor, so
+# guessing at scale is expensive rather than limited only by
+# how fast the hardware can hash.
 # ---------------------------------------------------------
 pwd_context = CryptContext(
     schemes=["bcrypt"],
@@ -63,14 +75,22 @@ ACCESS_TOKEN_EXPIRE_MINUTES = settings.access_token_expire_minutes
 # =========================================================
 def hash_password(password: str) -> str:
     """
-    Hash a plain-text password.
+    Hash a plain-text password for storage.
 
     Args:
         password:
-            User password.
+            The password as typed by the officer. Held in
+            memory only for the duration of this call and
+            never written to the database or to a log.
 
     Returns:
-        Secure bcrypt hash.
+        str:
+            A bcrypt hash containing the algorithm
+            identifier, the work factor and the generated
+            salt alongside the digest. The salt is part of
+            the stored value, so no separate salt column is
+            needed and verification can read the parameters
+            back from the hash itself.
     """
     return pwd_context.hash(password)
 
@@ -80,18 +100,37 @@ def verify_password(
     hashed_password: str,
 ) -> bool:
     """
-    Verify that a plain password matches
-    its stored hash.
+    Verify that a plain password matches its stored hash.
 
     Args:
         plain_password:
-            Password entered by the user.
+            Password entered at the sign-in form.
 
         hashed_password:
-            Password stored in the database.
+            The bcrypt hash held against the account.
 
     Returns:
-        True if valid, otherwise False.
+        bool:
+            True when the password matches, otherwise
+            False.
+
+    Raises:
+        passlib.exc.UnknownHashError:
+            The stored value is not a recognisable hash,
+            for example an empty string or a password that
+            was written to the column unhashed. This
+            propagates as a 500 rather than a failed
+            sign-in, so a damaged account record presents
+            as a server fault. Callers that must tolerate
+            such a record should catch it explicitly.
+
+    Security:
+        The comparison is performed by bcrypt, which
+        re-hashes the submitted password using the salt and
+        work factor read from the stored value and compares
+        the digests in constant time. It does not return
+        early at the first differing byte, so the time taken
+        does not reveal how much of a guess was correct.
     """
     return pwd_context.verify(
         plain_password,

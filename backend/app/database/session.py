@@ -47,7 +47,15 @@ settings = get_settings()
 # ---------------------------------------------------------
 engine = create_engine(
     settings.database_url,
-    echo=settings.is_development,
+
+    # Statement echoing is a setting of its own rather than
+    # following development mode, and is off unless asked
+    # for. A single analysis run emits more than a hundred
+    # kilobytes of SQL, which buries its own progress and
+    # makes a failure hard to find; the log can be turned
+    # back up when a query genuinely needs inspecting.
+    echo=settings.database_echo,
+
     future=True,
 )
 
