@@ -34,7 +34,11 @@ import React, {
   useState,
 } from "react";
 
-const API_URL = "http://127.0.0.1:8000";
+import ForestMap from "../components/ForestMap";
+
+
+import { API_URL as CONFIG_API_URL } from "../config";
+const API_URL = CONFIG_API_URL;
 
 export default function RegisterForestArea({
   onBack,
@@ -202,6 +206,28 @@ export default function RegisterForestArea({
       (previous) => ({
         ...previous,
         [name]: value,
+      })
+    );
+
+    setSuccessMessage("");
+    setErrorMessage("");
+  };
+
+  /**
+   * Records a boundary drawn on the map.
+   *
+   * The map reports the area it drew as a WKT polygon, in
+   * the same form the coordinate field accepts, so drawing
+   * and typing produce identical submissions.
+   *
+   * @param {string} wkt
+   *   The drawn boundary, or "" when it was cleared.
+   */
+  const handleGeometryChange = (wkt) => {
+    setFormData(
+      (previous) => ({
+        ...previous,
+        geometry: wkt,
       })
     );
 
@@ -952,31 +978,66 @@ export default function RegisterForestArea({
           <div className="settings-field">
 
             <label htmlFor="geometry">
-              Forest Boundary (WKT)
+              Area to monitor
             </label>
 
-            <textarea
-              id="geometry"
-              name="geometry"
-              value={
-                formData.geometry
-              }
-              onChange={
-                handleChange
-              }
-              placeholder={
-                "POLYGON ((28.2 -12.8, 28.21 -12.8, " +
-                "28.21 -12.81, 28.2 -12.81, 28.2 -12.8))"
-              }
-              rows={5}
-              required
+            {/*
+              The boundary is drawn on Sentinel-2 imagery
+              rather than typed. An officer knows the forest
+              by sight, not by its coordinates, and a hand
+              written polygon is easy to get wrong in ways
+              that are invisible until the analysis runs
+              over the wrong ground.
+
+              The map reports the drawn boundary as WKT, so
+              what reaches the server is unchanged.
+            */}
+            <ForestMap
+              drawable
+              value={formData.geometry}
+              onChange={handleGeometryChange}
+              height={420}
             />
 
             <small>
-              Enter a closed WKT POLYGON
-              using WGS84 coordinates
-              (SRID 4326).
+              Draw the boundary on the map above. Switch to
+              false colour or NDVI to see vegetation more
+              clearly while tracing the edge.
             </small>
+
+            {/*
+              The coordinates remain visible and editable,
+              so a boundary supplied from a survey or an
+              existing record can still be pasted in, and so
+              what was drawn can be checked.
+            */}
+            <details className="geometry-details">
+              <summary>
+                Show coordinates (WKT)
+              </summary>
+
+              <textarea
+                id="geometry"
+                name="geometry"
+                value={
+                  formData.geometry
+                }
+                onChange={
+                  handleChange
+                }
+                placeholder={
+                  "POLYGON ((28.2 -12.8, 28.21 -12.8, " +
+                  "28.21 -12.81, 28.2 -12.81, 28.2 -12.8))"
+                }
+                rows={5}
+                required
+              />
+
+              <small>
+                A closed WKT POLYGON in WGS84 coordinates
+                (SRID 4326).
+              </small>
+            </details>
 
           </div>
 

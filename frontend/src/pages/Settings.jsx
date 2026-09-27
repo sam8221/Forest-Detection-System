@@ -1,37 +1,61 @@
-/*
- * =========================================================
- * FORESTWATCH ZAMBIA
- * SETTINGS PAGE
- * =========================================================
+/**
+ * ===========================================================
+ * ForestWatch Zambia
+ * -----------------------------------------------------------
+ * Module: Settings Page
+ *
  * Purpose:
- *   Provides authenticated account management functionality
- *   for ForestWatch Zambia users.
+ *   Lets an officer manage their own account, and gives an
+ *   administrator the account controls that belong to that
+ *   role.
  *
  * Responsibilities:
- *   - Display the authenticated user's profile.
- *   - Update the user's full name.
- *   - Change the authenticated user's password.
- *   - Enforce password security requirements.
- *   - Display administrator-only user management.
- *   - Deactivate active user accounts.
+ *   - Display the signed-in officer's profile.
+ *   - Update their full name.
+ *   - Change their password, enforcing the strength rules.
+ *   - Show account administration to administrators only.
+ *   - Deactivate an account.
  *
- * Layout:
- *   - Profile Settings: 500px
- *   - Change Password: 500px
- *   - User Management: 900px
+ * How it works:
+ *
+ *   Password rules are enforced on both sides
+ *   -----------------------------------------
+ *   validatePassword() checks the new password in the browser
+ *   before the request is sent. This is for the officer's
+ *   benefit, not for security: it explains the requirement
+ *   immediately instead of after a round trip. The server
+ *   applies the same rules and is the one that decides.
+ *
+ *   Deactivation, not deletion
+ *   --------------------------
+ *   An account is deactivated rather than removed. Detections
+ *   carry the identifier of the officer who verified them and
+ *   analysis jobs carry whoever started them, so deleting an
+ *   account would break the audit trail that requirement
+ *   FR-19 exists to preserve. A deactivated officer can no
+ *   longer sign in, while everything they decided remains
+ *   attributable.
+ *
+ * Note on separation of duties:
+ *   An administrator provisions accounts and configures
+ *   thresholds, but carries no operational alert duties. That
+ *   separation is what keeps the audit trail independent of
+ *   the person who controls the accounts.
+ *
+ * Author:
+ *   Samuel Bikiloni
  *
  * Project:
  *   Web-Based Deforestation Detection and Alert System
  *   Using Sentinel-2 Imagery in the Copperbelt, Zambia
- *
- * Author:
- *   Samuel Bikiloni
- * =========================================================
+ * ===========================================================
  */
 
 import React, { useEffect, useState } from "react";
 
-const API_URL = "http://127.0.0.1:8000";
+
+import { API_URL as CONFIG_API_URL } from "../config";
+const API_URL = CONFIG_API_URL;
 
 export default function Settings() {
   /* Store the authenticated user's profile information. */
@@ -513,8 +537,20 @@ export default function Settings() {
    * The authenticated administrator cannot deactivate
    * their own account.
    */
-  const handleDeactivate = async (userId) => {
-    if (userId === profile?.id) {
+  /*
+   * Withdraw or restore an account's access.
+   *
+   * The account is never deleted, so the detections it
+   * verified and the alerts it acted on stay attributed
+   * to it.
+   *
+   * The server applies the same rules and refuses a change
+   * that would leave nobody able to administer the system.
+   * The check below is only so the administrator is told
+   * at once, rather than after a round trip.
+   */
+  const handleSetActive = async (userId, nextActive) => {
+    if (!nextActive && userId === profile?.id) {
       setError(
         "You cannot deactivate your own administrator account."
       );
@@ -522,7 +558,9 @@ export default function Settings() {
     }
 
     const confirmed = window.confirm(
-      "Are you sure you want to deactivate this user account?"
+      nextActive
+        ? "Restore access for this user account?"
+        : "Are you sure you want to deactivate this user account?"
     );
 
     if (!confirmed) {
@@ -542,9 +580,11 @@ export default function Settings() {
       }
 
       const response = await fetch(
-        `${API_URL}/api/v1/users/${userId}`,
+        `${API_URL}/api/v1/users/${userId}/${
+          nextActive ? "activate" : "deactivate"
+        }`,
         {
-          method: "DELETE",
+          method: "POST",
           headers: {
             Accept: "application/json",
             Authorization: `Bearer ${token}`,
@@ -556,25 +596,33 @@ export default function Settings() {
         throw new Error(
           await getErrorMessage(
             response,
-            "Unable to deactivate user."
+            nextActive
+              ? "Unable to reactivate user."
+              : "Unable to deactivate user."
           )
         );
       }
 
       setMessage(
-        "User account deactivated successfully."
+        nextActive
+          ? "User account reactivated successfully."
+          : "User account deactivated successfully."
       );
 
       await loadUsers();
     } catch (err) {
       console.error(
-        "Deactivate user error:",
+        nextActive
+          ? "Reactivate user error:"
+          : "Deactivate user error:",
         err
       );
 
       setError(
         err.message ||
-          "Unable to deactivate the user."
+          (nextActive
+            ? "Unable to reactivate the user."
+            : "Unable to deactivate the user.")
       );
     }
   };
@@ -1043,17 +1091,27 @@ export default function Settings() {
                                   type="button"
                                   className="deactivate-user-button"
                                   onClick={() =>
-                                    handleDeactivate(
-                                      user.id
+                                    handleSetActive(
+                                      user.id,
+                                      false
                                     )
                                   }
                                 >
                                   Deactivate
                                 </button>
                               ) : (
-                                <span className="current-user-label">
-                                  Deactivated
-                                </span>
+                                <button
+                                  type="button"
+                                  className="activate-user-button"
+                                  onClick={() =>
+                                    handleSetActive(
+                                      user.id,
+                                      true
+                                    )
+                                  }
+                                >
+                                  Reactivate
+                                </button>
                               )}
                             </td>
                           </tr>

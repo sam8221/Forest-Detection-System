@@ -1,4 +1,41 @@
+/**
+ * ===========================================================
+ * ForestWatch Zambia
+ * -----------------------------------------------------------
+ * Module: Alerts Page
+ *
+ * Purpose:
+ *     Lists the deforestation alerts raised by the monitoring
+ *     system and lets an officer work through them.
+ *
+ * Responsibilities:
+ *     - Retrieve alert records for the signed-in officer.
+ *     - Summarise them by state and priority.
+ *     - Mark an alert as read, or resolve it.
+ *
+ * Note on styling:
+ *     Layout and colour live in the stylesheet, under the
+ *     "ALERTS PAGE" block in src/index.css, rather than as
+ *     inline style objects on the elements. This lets the
+ *     page inherit the shared corner radius and elevation
+ *     scales, and lets the summary row reflow on a narrow
+ *     screen, which an inline width cannot do.
+ *
+ * Author:
+ *     Samuel Bikiloni
+ *
+ * Project:
+ *     Web-Based Deforestation Detection and Alert System
+ *     Using Sentinel-2 Imagery in the Copperbelt, Zambia
+ *
+ * Version:
+ *     1.0.0
+ * ===========================================================
+ */
+
 import React, { useEffect, useState } from "react";
+
+import { API_URL as CONFIG_API_URL } from "../config";
 import {
   AlertTriangle,
   Bell,
@@ -9,7 +46,55 @@ import {
   Check,
 } from "lucide-react";
 
-const API_URL = "http://127.0.0.1:8000";
+const API_URL = CONFIG_API_URL;
+
+// =========================================================
+// BADGE VARIANTS
+//
+// Priority and status are both rendered as a pill, and both
+// arrive from the server as an uppercase string. The tint is
+// selected by appending the lowercased value to the badge
+// class, so a value the interface does not recognise falls
+// back to a neutral grey rather than rendering unstyled.
+//
+// Declared once, outside the component, because the set does
+// not change between renders.
+// =========================================================
+
+const PRIORITY_VARIANTS = [
+  "critical",
+  "high",
+  "medium",
+  "low",
+];
+
+const STATUS_VARIANTS = [
+  "pending",
+  "sent",
+  "read",
+  "failed",
+  "resolved",
+];
+
+/**
+ * Return the badge class for a server-supplied value.
+ *
+ * @param {string} value
+ *     Priority or status as received from the API.
+ * @param {string[]} allowed
+ *     Variants the stylesheet defines a tint for.
+ * @returns {string}
+ *     Two class names: the shared badge shape and its tint.
+ */
+function badgeClass(value, allowed) {
+  const normalised = String(value || "").toLowerCase();
+
+  const variant = allowed.includes(normalised)
+    ? normalised
+    : "unknown";
+
+  return `alert-badge alert-badge--${variant}`;
+}
 
 export default function Alerts() {
   const [alerts, setAlerts] = useState([]);
@@ -171,106 +256,6 @@ export default function Alerts() {
   };
 
   // =========================================================
-  // PRIORITY STYLE
-  // =========================================================
-
-  const getPriorityStyle = (priority) => {
-    const value = String(priority || "").toLowerCase();
-
-    if (value === "critical") {
-      return {
-        backgroundColor: "#FEE2E2",
-        color: "#B91C1C",
-        border: "1px solid #FCA5A5",
-      };
-    }
-
-    if (value === "high") {
-      return {
-        backgroundColor: "#FFEDD5",
-        color: "#C2410C",
-        border: "1px solid #FDBA74",
-      };
-    }
-
-    if (value === "medium") {
-      return {
-        backgroundColor: "#FEF3C7",
-        color: "#B45309",
-        border: "1px solid #FCD34D",
-      };
-    }
-
-    if (value === "low") {
-      return {
-        backgroundColor: "#DCFCE7",
-        color: "#15803D",
-        border: "1px solid #86EFAC",
-      };
-    }
-
-    return {
-      backgroundColor: "#F1F5F9",
-      color: "#475569",
-      border: "1px solid #CBD5E1",
-    };
-  };
-
-  // =========================================================
-  // STATUS STYLE
-  // =========================================================
-
-  const getStatusStyle = (status) => {
-    const value = String(status || "").toLowerCase();
-
-    if (value === "pending") {
-      return {
-        backgroundColor: "#FEF3C7",
-        color: "#B45309",
-        border: "1px solid #FCD34D",
-      };
-    }
-
-    if (value === "sent") {
-      return {
-        backgroundColor: "#DCFCE7",
-        color: "#15803D",
-        border: "1px solid #86EFAC",
-      };
-    }
-
-    if (value === "read") {
-      return {
-        backgroundColor: "#DBEAFE",
-        color: "#1D4ED8",
-        border: "1px solid #93C5FD",
-      };
-    }
-
-    if (value === "failed") {
-      return {
-        backgroundColor: "#FEE2E2",
-        color: "#B91C1C",
-        border: "1px solid #FCA5A5",
-      };
-    }
-
-    if (value === "resolved") {
-      return {
-        backgroundColor: "#E0E7FF",
-        color: "#4338CA",
-        border: "1px solid #A5B4FC",
-      };
-    }
-
-    return {
-      backgroundColor: "#F1F5F9",
-      color: "#475569",
-      border: "1px solid #CBD5E1",
-    };
-  };
-
-  // =========================================================
   // DATE
   // =========================================================
 
@@ -294,7 +279,11 @@ export default function Alerts() {
 
   // =========================================================
   // FORMAT ALERT MESSAGE
-  // Bold labels, normal values
+  //
+  // The alert body arrives as plain text, one "Label: value"
+  // pair per line. Emphasising the label lets an officer scan
+  // down the left edge of the block instead of reading every
+  // line in full.
   // =========================================================
 
   const renderAlertMessage = (message) => {
@@ -329,14 +318,7 @@ export default function Alerts() {
 
       return (
         <React.Fragment key={index}>
-          <strong
-            style={{
-              color: "#073B2A",
-              fontWeight: "700",
-            }}
-          >
-            {label}:
-          </strong>{" "}
+          <strong>{label}:</strong>{" "}
           {value}
 
           {index < lines.length - 1 && (
@@ -412,18 +394,17 @@ export default function Alerts() {
 
       {/* =====================================================
           ACTION ERROR
+
+          Announced politely: the message appears after the
+          officer has acted, so a screen reader should finish
+          the current phrase before reading it.
       ====================================================== */}
 
       {actionError && (
         <div
-          style={{
-            background: "#FEF2F2",
-            border: "1px solid #FCA5A5",
-            color: "#B91C1C",
-            borderRadius: "10px",
-            padding: "12px 16px",
-            marginBottom: "20px",
-          }}
+          className="alerts-action-error"
+          role="status"
+          aria-live="polite"
         >
           {actionError}
         </div>
@@ -434,46 +415,36 @@ export default function Alerts() {
       ====================================================== */}
 
       {!loading && !error && (
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns:
-              "repeat(4, minmax(0, 1fr))",
-            gap: "18px",
-            marginBottom: "28px",
-          }}
-        >
+        <div className="alerts-summary">
+
           <SummaryCard
             icon={<Bell size={23} />}
             title="Total Alerts"
             value={alerts.length}
-            background="#E8F5EC"
-            color="#16834D"
+            variant="total"
           />
 
           <SummaryCard
             icon={<Clock size={23} />}
             title="Pending Alerts"
             value={pendingCount}
-            background="#FEF3C7"
-            color="#B45309"
+            variant="pending"
           />
 
           <SummaryCard
             icon={<AlertTriangle size={23} />}
             title="Critical Alerts"
             value={criticalCount}
-            background="#FEE2E2"
-            color="#B91C1C"
+            variant="critical"
           />
 
           <SummaryCard
             icon={<CheckCircle size={23} />}
             title="Resolved Alerts"
             value={resolvedCount}
-            background="#E0E7FF"
-            color="#4338CA"
+            variant="resolved"
           />
+
         </div>
       )}
 
@@ -538,63 +509,26 @@ export default function Alerts() {
       ====================================================== */}
 
       {!loading && !error && (
-        <div
-          style={{
-            background: "#FFFFFF",
-            border:
-              "1px solid #E2E8E5",
-            borderRadius: "20px",
-            overflow: "hidden",
-          }}
-        >
+        <div className="alerts-panel">
 
           {/* LIST HEADER */}
 
-          <div
-            style={{
-              padding: "24px 28px",
-              borderBottom:
-                "1px solid #E2E8E5",
-              display: "flex",
-              justifyContent:
-                "space-between",
-              alignItems: "center",
-            }}
-          >
+          <div className="alerts-panel-header">
 
             <div>
 
-              <h2
-                style={{
-                  margin: 0,
-                  color: "#073B2A",
-                }}
-              >
+              <h2>
                 Deforestation Alerts
               </h2>
 
-              <p
-                style={{
-                  margin:
-                    "6px 0 0",
-                  color: "#718096",
-                }}
-              >
+              <p>
                 Alerts generated from
                 detected forest changes.
               </p>
 
             </div>
 
-            <strong
-              style={{
-                color: "#16834D",
-                background: "#E8F5EC",
-                padding:
-                  "9px 15px",
-                borderRadius: "12px",
-              }}
-            >
+            <strong className="alerts-panel-count">
               {alerts.length} Alerts
             </strong>
 
@@ -615,6 +549,11 @@ export default function Alerts() {
                     alert.status || ""
                   ).toLowerCase();
 
+                const priority =
+                  String(
+                    alert.priority || ""
+                  ).toUpperCase();
+
                 const isResolved =
                   alert.is_resolved === true ||
                   status === "resolved";
@@ -630,49 +569,35 @@ export default function Alerts() {
                   actionLoading ===
                   `resolve-${alert.id}`;
 
+                // Critical and high share the stronger icon
+                // background; only critical takes the red
+                // foreground with it.
+
+                const iconClasses = [
+                  "alert-entry-icon",
+                  priority === "CRITICAL" ||
+                  priority === "HIGH"
+                    ? "is-severe"
+                    : "",
+                  priority === "CRITICAL"
+                    ? "is-critical"
+                    : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ");
+
                 return (
 
                   <div
                     key={alert.id}
-                    style={{
-                      padding:
-                        "22px 28px",
-                      borderBottom:
-                        "1px solid #EDF2EF",
-                      display: "flex",
-                      gap: "18px",
-                      alignItems:
-                        "flex-start",
-                    }}
+                    className="alert-entry"
                   >
 
                     {/* ICON */}
 
                     <div
-                      style={{
-                        width: "46px",
-                        height: "46px",
-                        minWidth: "46px",
-                        borderRadius:
-                          "14px",
-                        background:
-                          alert.priority ===
-                            "CRITICAL" ||
-                          alert.priority ===
-                            "HIGH"
-                            ? "#FFF1EC"
-                            : "#FEF8E8",
-                        color:
-                          alert.priority ===
-                          "CRITICAL"
-                            ? "#B91C1C"
-                            : "#C2410C",
-                        display: "flex",
-                        alignItems:
-                          "center",
-                        justifyContent:
-                          "center",
-                      }}
+                      className={iconClasses}
+                      aria-hidden="true"
                     >
                       <AlertTriangle
                         size={22}
@@ -681,56 +606,19 @@ export default function Alerts() {
 
                     {/* INFORMATION */}
 
-                    <div
-                      style={{
-                        flex: 1,
-                        minWidth: 0,
-                      }}
-                    >
+                    <div className="alert-entry-body">
 
                       {/* TITLE + PRIORITY */}
 
-                      <div
-                        style={{
-                          display: "flex",
-                          justifyContent:
-                            "space-between",
-                          gap: "20px",
-                          alignItems:
-                            "flex-start",
-                        }}
-                      >
+                      <div className="alert-entry-head">
 
                         <div>
 
-                          <h3
-                            style={{
-                              margin: 0,
-                              color:
-                                "#073B2A",
-                              fontSize:
-                                "17px",
-                            }}
-                          >
+                          <h3>
                             {alert.title}
                           </h3>
 
-                          {/* =================================================
-                              FORMATTED ALERT MESSAGE
-                          ================================================== */}
-
-                          <div
-                            style={{
-                              margin:
-                                "8px 0 0",
-                              color:
-                                "#64748B",
-                              lineHeight:
-                                "1.8",
-                              fontSize:
-                                "15px",
-                            }}
-                          >
+                          <div className="alert-entry-message">
                             {renderAlertMessage(
                               alert.message
                             )}
@@ -739,21 +627,10 @@ export default function Alerts() {
                         </div>
 
                         <span
-                          style={{
-                            ...getPriorityStyle(
-                              alert.priority
-                            ),
-                            padding:
-                              "6px 12px",
-                            borderRadius:
-                              "999px",
-                            fontSize:
-                              "11px",
-                            fontWeight:
-                              "700",
-                            whiteSpace:
-                              "nowrap",
-                          }}
+                          className={badgeClass(
+                            alert.priority,
+                            PRIORITY_VARIANTS
+                          )}
                         >
                           {alert.priority}
                         </span>
@@ -762,76 +639,27 @@ export default function Alerts() {
 
                       {/* INFORMATION */}
 
-                      <div
-                        style={{
-                          display: "flex",
-                          flexWrap:
-                            "wrap",
-                          gap: "16px",
-                          alignItems:
-                            "center",
-                          marginTop:
-                            "16px",
-                        }}
-                      >
+                      <div className="alert-entry-meta">
 
-                        <span
-                          style={{
-                            color:
-                              "#718096",
-                            fontSize:
-                              "13px",
-                          }}
-                        >
-                          <strong
-                            style={{
-                              color:
-                                "#073B2A",
-                            }}
-                          >
+                        <span>
+                          <strong>
                             Alert #{alert.id}
                           </strong>
                         </span>
 
-                        <span
-                          style={{
-                            color:
-                              "#718096",
-                            fontSize:
-                              "13px",
-                          }}
-                        >
-                          <strong
-                            style={{
-                              color:
-                                "#073B2A",
-                            }}
-                          >
+                        <span>
+                          <strong>
                             Detection #
                             {alert.detection_id}
                           </strong>
                         </span>
 
-                        <span
-                          style={{
-                            color:
-                              "#718096",
-                            fontSize:
-                              "13px",
-                          }}
-                        >
+                        <span>
                           {alert.alert_type ||
                             "Deforestation"}
                         </span>
 
-                        <span
-                          style={{
-                            color:
-                              "#718096",
-                            fontSize:
-                              "13px",
-                          }}
-                        >
+                        <span>
                           {formatDate(
                             alert.created_at
                           )}
@@ -840,19 +668,10 @@ export default function Alerts() {
                         {/* STATUS */}
 
                         <span
-                          style={{
-                            ...getStatusStyle(
-                              alert.status
-                            ),
-                            padding:
-                              "6px 12px",
-                            borderRadius:
-                              "999px",
-                            fontSize:
-                              "11px",
-                            fontWeight:
-                              "700",
-                          }}
+                          className={badgeClass(
+                            alert.status,
+                            STATUS_VARIANTS
+                          )}
                         >
                           {String(
                             alert.status ||
@@ -863,21 +682,7 @@ export default function Alerts() {
                         {/* RESOLVED */}
 
                         {isResolved && (
-                          <span
-                            style={{
-                              display:
-                                "inline-flex",
-                              alignItems:
-                                "center",
-                              gap: "5px",
-                              color:
-                                "#15803D",
-                              fontSize:
-                                "12px",
-                              fontWeight:
-                                "700",
-                            }}
-                          >
+                          <span className="alert-entry-resolved">
                             <CheckCircle
                               size={15}
                             />
@@ -890,18 +695,14 @@ export default function Alerts() {
 
                       {/* =================================================
                           ACTION BUTTONS
+
+                          Both controls are disabled while any
+                          action on the page is in flight, so
+                          two requests cannot be issued against
+                          the same record at once.
                       ================================================== */}
 
-                      <div
-                        style={{
-                          display: "flex",
-                          gap: "10px",
-                          marginTop:
-                            "18px",
-                          flexWrap:
-                            "wrap",
-                        }}
-                      >
+                      <div className="alert-entry-actions">
 
                         {/* MARK AS READ */}
 
@@ -910,6 +711,7 @@ export default function Alerts() {
 
                             <button
                               type="button"
+                              className="alert-action alert-action--read"
                               onClick={() =>
                                 performAlertAction(
                                   alert.id,
@@ -920,31 +722,6 @@ export default function Alerts() {
                                 actionLoading !==
                                 null
                               }
-                              style={{
-                                display:
-                                  "inline-flex",
-                                alignItems:
-                                  "center",
-                                gap: "7px",
-                                padding:
-                                  "9px 14px",
-                                borderRadius:
-                                  "8px",
-                                border:
-                                  "1px solid #93C5FD",
-                                background:
-                                  "#EFF6FF",
-                                color:
-                                  "#1D4ED8",
-                                cursor:
-                                  actionLoading
-                                    ? "not-allowed"
-                                    : "pointer",
-                                fontWeight:
-                                  "700",
-                                fontSize:
-                                  "13px",
-                              }}
                             >
                               <Eye
                                 size={15}
@@ -961,27 +738,7 @@ export default function Alerts() {
                         {isRead &&
                           !isResolved && (
 
-                            <span
-                              style={{
-                                display:
-                                  "inline-flex",
-                                alignItems:
-                                  "center",
-                                gap: "6px",
-                                padding:
-                                  "9px 14px",
-                                borderRadius:
-                                  "8px",
-                                background:
-                                  "#F1F5F9",
-                                color:
-                                  "#64748B",
-                                fontSize:
-                                  "13px",
-                                fontWeight:
-                                  "700",
-                              }}
-                            >
+                            <span className="alert-read-flag">
                               <Check
                                 size={15}
                               />
@@ -996,6 +753,7 @@ export default function Alerts() {
 
                           <button
                             type="button"
+                            className="alert-action alert-action--resolve"
                             onClick={() =>
                               performAlertAction(
                                 alert.id,
@@ -1006,31 +764,6 @@ export default function Alerts() {
                               actionLoading !==
                               null
                             }
-                            style={{
-                              display:
-                                "inline-flex",
-                              alignItems:
-                                "center",
-                              gap: "7px",
-                              padding:
-                                "9px 14px",
-                              borderRadius:
-                                "8px",
-                              border:
-                                "1px solid #86EFAC",
-                              background:
-                                "#F0FDF4",
-                              color:
-                                "#15803D",
-                              cursor:
-                                actionLoading
-                                  ? "not-allowed"
-                                  : "pointer",
-                              fontWeight:
-                                "700",
-                              fontSize:
-                                "13px",
-                            }}
                           >
                             <CheckCircle
                               size={15}
@@ -1054,30 +787,19 @@ export default function Alerts() {
 
           ) : (
 
-            <div
-              style={{
-                padding:
-                  "60px 20px",
-                textAlign:
-                  "center",
-              }}
-            >
+            <div className="alerts-empty">
 
               <Bell
                 size={40}
                 color="#94A3B8"
+                aria-hidden="true"
               />
 
               <h3>
                 No Alerts Found
               </h3>
 
-              <p
-                style={{
-                  color:
-                    "#718096",
-                }}
-              >
+              <p>
                 There are currently no
                 alert records available.
               </p>
@@ -1094,61 +816,35 @@ export default function Alerts() {
 
 // =========================================================
 // SUMMARY CARD
+//
+// One figure from the alert list. The tint is chosen by a
+// modifier class rather than passed in as a colour, so the
+// four cards cannot drift apart from the palette.
 // =========================================================
 
 function SummaryCard({
   icon,
   title,
   value,
-  background,
-  color,
+  variant,
 }) {
   return (
-    <div
-      style={{
-        background: "#FFFFFF",
-        border:
-          "1px solid #E2E8E5",
-        borderRadius: "18px",
-        padding: "22px",
-        display: "flex",
-        alignItems: "center",
-        gap: "16px",
-      }}
-    >
+    <div className="alerts-summary-card">
 
       <div
-        style={{
-          width: "48px",
-          height: "48px",
-          borderRadius: "14px",
-          background,
-          color,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-        }}
+        className={`alerts-summary-icon is-${variant}`}
+        aria-hidden="true"
       >
         {icon}
       </div>
 
       <div>
 
-        <div
-          style={{
-            color: "#718096",
-            fontSize: "14px",
-          }}
-        >
+        <div className="alerts-summary-label">
           {title}
         </div>
 
-        <strong
-          style={{
-            fontSize: "25px",
-            color: "#073B2A",
-          }}
-        >
+        <strong className="alerts-summary-value">
           {value}
         </strong>
 

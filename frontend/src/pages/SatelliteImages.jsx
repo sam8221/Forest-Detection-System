@@ -1,4 +1,64 @@
+/**
+ * ===========================================================
+ * ForestWatch Zambia
+ * -----------------------------------------------------------
+ * Module: Satellite Images Page
+ *
+ * Purpose:
+ *   Searches the Copernicus catalogue for Sentinel-2 products
+ *   covering a forest area, and registers them for analysis.
+ *
+ * Responsibilities:
+ *   - List imagery already held against each forest area.
+ *   - Search Copernicus within a date range.
+ *   - Report cloud cover and acquisition date per product.
+ *   - Register a chosen product for download.
+ *
+ * How it works:
+ *
+ *   Where the imagery comes from
+ *   ----------------------------
+ *   The Copernicus Data Space Ecosystem, not Google Earth
+ *   Engine. Earth Engine is free for academic use, but
+ *   government operational use requires a paid commercial
+ *   licence, and this system is built for a government
+ *   department. Copernicus removes that barrier.
+ *
+ *   The cost of that choice is that cloud masking and
+ *   compositing are performed locally with rasterio rather
+ *   than on someone else's servers, and that products are
+ *   roughly a gigabyte each.
+ *
+ *   Why cloud cover is shown on every result
+ *   ----------------------------------------
+ *   Cloud is the limiting factor on this system, not revisit
+ *   frequency. Sentinel-2 passes every five days, but a
+ *   clouded scene is unusable for NDVI: the SCL band masks
+ *   those pixels out, and a scene that is mostly cloud leaves
+ *   too little valid ground to compare. The figure is shown
+ *   against each product so an officer can see why a date
+ *   with imagery still produced no analysis.
+ *
+ *   Registering versus downloading
+ *   ------------------------------
+ *   Registering records the product against a forest area.
+ *   The download happens on the server, in the background,
+ *   because of the file sizes involved. An image therefore
+ *   appears in the list before it is usable, which is why the
+ *   records carry is_downloaded and is_processed flags.
+ *
+ * Author:
+ *   Samuel Bikiloni
+ *
+ * Project:
+ *   Web-Based Deforestation Detection and Alert System
+ *   Using Sentinel-2 Imagery in the Copperbelt, Zambia
+ * ===========================================================
+ */
+
 import React, { useEffect, useState } from "react";
+
+import { API_URL as CONFIG_API_URL } from "../config";
 import {
   Satellite,
   RefreshCw,
@@ -13,7 +73,7 @@ import {
   Database,
 } from "lucide-react";
 
-const API_URL = "http://127.0.0.1:8000";
+const API_URL = CONFIG_API_URL;
 
 export default function SatelliteImages() {
   const [images, setImages] = useState([]);

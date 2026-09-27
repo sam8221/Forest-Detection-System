@@ -1,3 +1,70 @@
+/**
+ * ===========================================================
+ * ForestWatch Zambia
+ * -----------------------------------------------------------
+ * Module: Analysis Page
+ *
+ * Purpose:
+ *   Submits a deforestation analysis for a forest area and
+ *   follows it to completion.
+ *
+ * Responsibilities:
+ *   - List the forest areas the officer may analyse.
+ *   - Submit an analysis job.
+ *   - Poll the job until it finishes.
+ *   - Report progress, and report failure with its reason.
+ *
+ * How it works:
+ *
+ *   Analysis is asynchronous by necessity
+ *   -------------------------------------
+ *   Building a cloud-free seasonal composite over a district
+ *   means downloading Sentinel-2 products of roughly a
+ *   gigabyte each, masking cloud with the SCL band and
+ *   computing NDVI across both windows. That takes minutes,
+ *   far longer than an HTTP request should be held open.
+ *
+ *   So the server acknowledges the request immediately with a
+ *   job in PENDING, and processes it in the background. This
+ *   page then polls the job until it reports COMPLETED or
+ *   FAILED, at which point the interval is cleared. The
+ *   handle is kept in pollingRef rather than state, because
+ *   changing it must not trigger a re-render, and because the
+ *   cleanup function needs the current value to stop it.
+ *
+ *   Reading the outcome
+ *   -------------------
+ *   A job that completes with ZERO detections is a valid
+ *   outcome, not a failure, and the two are shown
+ *   differently on purpose: the officer's response differs.
+ *   Zero detections means no vegetation loss was found above
+ *   the half-hectare threshold, and the answer is to wait for
+ *   the next acquisition. FAILED means something went wrong
+ *   and is worth investigating.
+ *
+ *   The job carries an execution_log field, which the server
+ *   updates as it moves between stages. It is displayed so a
+ *   run that takes several minutes shows what it is doing
+ *   rather than appearing to have stalled.
+ *
+ * Note on seasonal windows:
+ *   The two periods compared are equivalent calendar windows
+ *   in different years, never adjacent months. Miombo
+ *   woodland loses leaf across the whole province every dry
+ *   season, so comparing consecutive months would report
+ *   deforestation everywhere. This is the main
+ *   methodological defence of the project and must not be
+ *   weakened.
+ *
+ * Author:
+ *   Samuel Bikiloni
+ *
+ * Project:
+ *   Web-Based Deforestation Detection and Alert System
+ *   Using Sentinel-2 Imagery in the Copperbelt, Zambia
+ * ===========================================================
+ */
+
 import {
   AlertTriangle,
   CheckCircle2,

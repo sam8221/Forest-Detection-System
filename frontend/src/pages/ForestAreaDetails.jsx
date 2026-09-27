@@ -31,7 +31,6 @@ import {
   LayersControl,
   MapContainer,
   Polygon,
-  TileLayer,
   Tooltip,
   useMap,
   WMSTileLayer,
@@ -40,23 +39,50 @@ import {
 import "leaflet/dist/leaflet.css";
 
 
+
+import {
+  API_URL as CONFIG_API_URL,
+  SENTINEL_WMS_URL as SENTINEL_WMS_ENDPOINT,
+} from "../config";
 /* =========================================================
    API
    ========================================================= */
 
-const API_URL =
-  "http://127.0.0.1:8000";
+const API_URL = CONFIG_API_URL;
 
 
 /* =========================================================
    COPERNICUS DATA SPACE
    ========================================================= */
 
-const SENTINEL_INSTANCE_ID =
-  "0a0b0bc0-5f64-4a9b-826a-28a79ef8007b";
+/*
+   Imagery is requested through this system's own proxy, not
+   from Copernicus directly.
+
+   The Sentinel Hub instance identifier is a credential:
+   anyone holding it can draw against the department's
+   quota. Calling Copernicus from the browser would put it
+   in the page source for anyone to read, so it stays on the
+   server and the proxy adds it.
+*/
 
 const SENTINEL_WMS_URL =
-  `https://sh.dataspace.copernicus.eu/ogc/wms/${SENTINEL_INSTANCE_ID}`;
+  SENTINEL_WMS_ENDPOINT;
+
+/**
+ * Return the stored access token.
+ *
+ * A Leaflet tile layer loads images with plain <img> tags,
+ * which carry no headers the page can set, so the token
+ * travels as a query parameter on imagery requests only.
+ */
+function getImageryToken() {
+  return (
+    localStorage.getItem("access_token") ||
+    localStorage.getItem("token") ||
+    ""
+  );
+}
 
 
 /* =========================================================
@@ -885,6 +911,9 @@ export default function ForestAreaDetails({
                     }
 
                     params={{
+                      access_token:
+                        getImageryToken(),
+
                       layers:
                         "1_TRUE_COLOR",
 
@@ -931,22 +960,6 @@ export default function ForestAreaDetails({
 
 
                 {/* =========================================
-                    OPEN STREET MAP
-                    ========================================= */}
-
-                <LayersControl.BaseLayer
-                  name="🗺 OpenStreetMap"
-                >
-
-                  <TileLayer
-                    attribution="&copy; OpenStreetMap contributors"
-                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                  />
-
-                </LayersControl.BaseLayer>
-
-
-                {/* =========================================
                     SENTINEL-2 FALSE COLOR
                     ========================================= */}
 
@@ -960,6 +973,9 @@ export default function ForestAreaDetails({
                     }
 
                     params={{
+                      access_token:
+                        getImageryToken(),
+
                       layers:
                         "2_FALSE_COLOR",
 
@@ -1005,6 +1021,9 @@ export default function ForestAreaDetails({
                     }
 
                     params={{
+                      access_token:
+                        getImageryToken(),
+
                       layers:
                         "3_NDVI",
 
@@ -1110,7 +1129,9 @@ export default function ForestAreaDetails({
 
                 ⚠ Sentinel-2 imagery could not
                 be loaded. Use the map layer
-                selector to switch to OpenStreetMap.
+                selector to choose another
+                imagery layer, or try a
+                different acquisition date.
 
               </div>
             )}

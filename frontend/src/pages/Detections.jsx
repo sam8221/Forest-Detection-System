@@ -1,5 +1,130 @@
+/**
+ * ===========================================================
+ * ForestWatch Zambia
+ * -----------------------------------------------------------
+ * Module: Detections Page
+ *
+ * Purpose:
+ *   Lists the areas of vegetation loss the system has found,
+ *   and lets an officer confirm or dismiss each one.
+ *
+ * Responsibilities:
+ *   - List detections within the officer's jurisdiction.
+ *   - Show the evidence behind a detection.
+ *   - Record a verdict of VERIFIED or REJECTED, with notes.
+ *
+ * How it works:
+ *
+ *   What a detection is
+ *   -------------------
+ *   A patch of ground where NDVI fell between the baseline
+ *   and comparison windows by more than the configured
+ *   threshold, and which covers at least half a hectare.
+ *   That floor is 50 Sentinel-2 pixels at 10 m resolution,
+ *   and it is taken from the area threshold in the Forests
+ *   Act No. 4 of 2015, which defines a forest as land with
+ *   "a tree canopy cover of more than ten percent and area
+ *   of more than zero point five hectares". It also
+ *   suppresses isolated noise pixels.
+ *
+ *   Only the area criterion is applied. The system does not
+ *   measure canopy cover or tree height, so a detection is
+ *   not a finding that a forest as legally defined has been
+ *   cleared. That determination is the officer's, which is
+ *   what the review on this screen records.
+ *
+ *   The system detects; it does not conclude. Every detection
+ *   is a candidate awaiting human judgement, which is why the
+ *   status begins as PENDING.
+ *
+ *   Why the readings are shown, not just the verdict
+ *   ------------------------------------------------
+ *   The review dialog shows ndvi_before, ndvi_after, the
+ *   affected area and a confidence score, rather than only
+ *   the conclusion. An officer deciding whether to send
+ *   someone into the field needs to see the evidence, and
+ *   storing the underlying readings also lets a detection be
+ *   re-evaluated later if a threshold changes, without
+ *   reprocessing the imagery.
+ *
+ *   The verdict is the evidence base for Chapter Five
+ *   -------------------------------------------------
+ *   Verification is what turns detections into a measurable
+ *   result: confirmed detections are true positives and
+ *   rejected ones are false positives, and the accuracy
+ *   evaluation is built from that. The verdict is written to
+ *   the server's audit trail, so the review can be traced to
+ *   an officer and a time.
+ *
+ *   Verify and Reject appear only while a detection is
+ *   PENDING. A decided detection is not re-decided here.
+ *
+ * Author:
+ *   Samuel Bikiloni
+ *
+ * Project:
+ *   Web-Based Deforestation Detection and Alert System
+ *   Using Sentinel-2 Imagery in the Copperbelt, Zambia
+ * ===========================================================
+ */
+
 import React, { useEffect, useState } from "react";
+import { Download } from "lucide-react";
+
 import api from "../services/api";
+import { downloadDetectionReport } from "../services/reports";
+
+// =========================================================
+// STATUS PILL
+//
+// A detection is PENDING until an officer reviews it, then
+// VERIFIED or REJECTED. The tint for each is defined in the
+// stylesheet under "DETECTIONS PAGE AND REVIEW DIALOG";
+// this only selects between them.
+//
+// A status the interface does not recognise falls back to a
+// neutral pill rather than rendering unstyled, so a value
+// added to the API later is still legible here.
+// =========================================================
+
+const DETECTION_STATUSES = [
+  "verified",
+  "pending",
+  "rejected",
+];
+
+// =========================================================
+// VERDICT ENDPOINTS
+//
+// The server records a verdict through a separate endpoint
+// for each outcome: PUT /detections/{id}/verify and
+// PUT /detections/{id}/reject. The endpoint, not the request
+// body, decides what is recorded, so this mapping is what
+// guarantees that Reject rejects.
+// =========================================================
+
+const VERDICT_ENDPOINTS = {
+  VERIFIED: "verify",
+  REJECTED: "reject",
+};
+
+/**
+ * Return the pill class for a detection status.
+ *
+ * @param {string} status
+ *     Status as received from the API.
+ * @returns {string}
+ *     The shared pill class and its tint modifier.
+ */
+function statusClass(status) {
+  const value = String(status || "").toLowerCase();
+
+  const variant = DETECTION_STATUSES.includes(value)
+    ? value
+    : "unknown";
+
+  return `detection-status detection-status--${variant}`;
+}
 
 export default function Detections() {
   const [detections, setDetections] = useState([]);
@@ -10,6 +135,43 @@ export default function Detections() {
   const [verificationNotes, setVerificationNotes] = useState("");
   const [actionLoading, setActionLoading] = useState(false);
   const [actionError, setActionError] = useState("");
+
+  // Tracked separately from actionLoading: downloading a
+  // report neither changes the record nor should it disable
+  // the verify and reject controls beside it.
+  const [downloading, setDownloading] = useState(false);
+
+  // =========================================================
+  // DOWNLOAD THE EVIDENCE SHEET
+  // =========================================================
+
+  /**
+   * Download this detection as a PDF.
+   *
+   * The report is rendered on the server from the database
+   * of record, not from what this screen is showing, so the
+   * document an officer takes into the field carries the
+   * authoritative figures.
+   *
+   * @returns {Promise<void>}
+   */
+  const handleDownloadReport = async () => {
+    if (!selectedDetection) {
+      return;
+    }
+
+    setDownloading(true);
+    setActionError("");
+
+    try {
+      await downloadDetectionReport(selectedDetection.id);
+    } catch (err) {
+      // The service raises messages written to be shown.
+      setActionError(err.message);
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   // =========================================================
   // FETCH DETECTIONS
@@ -63,44 +225,6 @@ export default function Detections() {
   };
 
   // =========================================================
-  // STATUS STYLE
-  // =========================================================
-
-  const getStatusStyle = (status) => {
-    const value = String(status || "").toLowerCase();
-
-    if (value === "verified") {
-      return {
-        backgroundColor: "#DCFCE7",
-        color: "#15803D",
-        border: "1px solid #86EFAC",
-      };
-    }
-
-    if (value === "pending") {
-      return {
-        backgroundColor: "#FEF3C7",
-        color: "#B45309",
-        border: "1px solid #FCD34D",
-      };
-    }
-
-    if (value === "rejected") {
-      return {
-        backgroundColor: "#FEE2E2",
-        color: "#B91C1C",
-        border: "1px solid #FCA5A5",
-      };
-    }
-
-    return {
-      backgroundColor: "#F1F5F9",
-      color: "#475569",
-      border: "1px solid #CBD5E1",
-    };
-  };
-
-  // =========================================================
   // OPEN DETECTION
   // =========================================================
 
@@ -125,18 +249,83 @@ export default function Detections() {
   };
 
   // =========================================================
+  // DISMISS ON ESCAPE
+  //
+  // The dialog could already be dismissed by clicking the
+  // dimmed area behind it, but not from the keyboard. An
+  // officer working through a list of detections moves
+  // between them without reaching for the mouse, so Escape
+  // is bound to the same close path.
+  //
+  // The listener is attached only while a detection is open
+  // and removed when it closes, so the page does not keep a
+  // key handler alive for a dialog that is not on screen.
+  // =========================================================
+
+  useEffect(() => {
+    if (!selectedDetection) {
+      return undefined;
+    }
+
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") {
+        closeDetection();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener(
+        "keydown",
+        handleKeyDown
+      );
+    };
+  }, [selectedDetection, actionLoading]);
+
+  // =========================================================
   // VERIFY / REJECT
   // =========================================================
 
+  /**
+   * Record the officer's verdict on the open detection.
+   *
+   * Each verdict has its own endpoint, and the endpoint is what
+   * decides the outcome. The server ignores the `status` field
+   * in the body for this purpose; the field is still sent only
+   * because the request schema requires it.
+   *
+   * The endpoint must therefore match the verdict exactly.
+   * Sending a rejection to /verify would mark the detection
+   * VERIFIED and trigger the alert workflow, emailing officers
+   * about a detection that had just been judged false, and
+   * would record a false positive as a true positive in the
+   * data the Chapter Five accuracy evaluation is built from.
+   *
+   * @param {"VERIFIED"|"REJECTED"} newStatus
+   * @returns {Promise<void>}
+   */
   const updateDetectionStatus = async (newStatus) => {
     if (!selectedDetection) return;
+
+    const action = VERDICT_ENDPOINTS[newStatus];
+
+    // Refuse rather than guess. Falling back to a default
+    // endpoint is exactly how the original bug arose.
+    if (!action) {
+      setActionError(
+        `Unsupported verdict "${newStatus}". The detection ` +
+          "was not changed."
+      );
+      return;
+    }
 
     try {
       setActionLoading(true);
       setActionError("");
 
       await api.put(
-        `/detections/${selectedDetection.id}/verify`,
+        `/detections/${selectedDetection.id}/${action}`,
         {
           status: newStatus,
           verification_notes:
@@ -337,22 +526,9 @@ export default function Detections() {
                       <td>
 
                         <span
-                          style={{
-                            ...getStatusStyle(
-                              detection.status
-                            ),
-                            display: "inline-flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            minWidth: "95px",
-                            padding: "7px 14px",
-                            borderRadius: "999px",
-                            fontSize: "12px",
-                            fontWeight: "700",
-                            letterSpacing: "0.3px",
-                            textTransform: "uppercase",
-                            whiteSpace: "nowrap",
-                          }}
+                          className={statusClass(
+                            detection.status
+                          )}
                         >
                           {formatStatus(
                             detection.status
@@ -365,19 +541,10 @@ export default function Detections() {
 
                         <button
                           type="button"
+                          className="detection-view-button"
                           onClick={() =>
                             openDetection(detection)
                           }
-                          style={{
-                            border: "none",
-                            background: "#E8F5E9",
-                            color: "#15803D",
-                            padding: "8px 14px",
-                            borderRadius: "8px",
-                            cursor: "pointer",
-                            fontWeight: "700",
-                            fontSize: "13px",
-                          }}
                         >
                           View Details
                         </button>
@@ -425,32 +592,15 @@ export default function Detections() {
 
       {selectedDetection && (
         <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            backgroundColor:
-              "rgba(15, 23, 42, 0.55)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 9999,
-            padding: "20px",
-          }}
+          className="detection-overlay"
           onClick={closeDetection}
         >
 
           <div
-            style={{
-              width: "100%",
-              maxWidth: "650px",
-              maxHeight: "90vh",
-              overflowY: "auto",
-              background: "#FFFFFF",
-              borderRadius: "16px",
-              padding: "28px",
-              boxShadow:
-                "0 20px 60px rgba(0,0,0,0.25)",
-            }}
+            className="detection-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="detection-dialog-title"
             onClick={(event) =>
               event.stopPropagation()
             }
@@ -458,33 +608,15 @@ export default function Detections() {
 
             {/* HEADER */}
 
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "flex-start",
-                marginBottom: "24px",
-              }}
-            >
+            <div className="detection-dialog-header">
 
               <div>
 
-                <h2
-                  style={{
-                    margin: 0,
-                    fontSize: "24px",
-                    color: "#14532D",
-                  }}
-                >
+                <h2 id="detection-dialog-title">
                   Detection #{selectedDetection.id}
                 </h2>
 
-                <p
-                  style={{
-                    marginTop: "6px",
-                    color: "#64748B",
-                  }}
-                >
+                <p>
                   Detection review and verification
                 </p>
 
@@ -492,17 +624,10 @@ export default function Detections() {
 
               <button
                 type="button"
+                aria-label="Close detection review"
                 onClick={closeDetection}
                 disabled={actionLoading}
-                style={{
-                  border: "none",
-                  background: "#F1F5F9",
-                  width: "36px",
-                  height: "36px",
-                  borderRadius: "50%",
-                  cursor: "pointer",
-                  fontSize: "20px",
-                }}
+                className="detection-dialog-close"
               >
                 ×
               </button>
@@ -511,19 +636,12 @@ export default function Detections() {
 
             {/* STATUS */}
 
-            <div style={{ marginBottom: "20px" }}>
+            <div className="detection-dialog-status">
 
               <span
-                style={{
-                  ...getStatusStyle(
-                    selectedDetection.status
-                  ),
-                  display: "inline-flex",
-                  padding: "8px 16px",
-                  borderRadius: "999px",
-                  fontSize: "12px",
-                  fontWeight: "700",
-                }}
+                className={statusClass(
+                  selectedDetection.status
+                )}
               >
                 {formatStatus(
                   selectedDetection.status
@@ -534,15 +652,7 @@ export default function Detections() {
 
             {/* DETAILS */}
 
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns:
-                  "repeat(2, minmax(0, 1fr))",
-                gap: "16px",
-                marginBottom: "24px",
-              }}
-            >
+            <div className="detection-detail-grid">
 
               <DetailItem
                 label="Forest Area"
@@ -639,17 +749,9 @@ export default function Detections() {
 
             {/* NOTES */}
 
-            <div style={{ marginBottom: "20px" }}>
+            <div className="detection-notes">
 
-              <label
-                htmlFor="verification-notes"
-                style={{
-                  display: "block",
-                  fontWeight: "700",
-                  marginBottom: "8px",
-                  color: "#334155",
-                }}
-              >
+              <label htmlFor="verification-notes">
                 Verification Notes
               </label>
 
@@ -664,16 +766,6 @@ export default function Detections() {
                 placeholder="Enter verification notes..."
                 rows={4}
                 disabled={actionLoading}
-                style={{
-                  width: "100%",
-                  boxSizing: "border-box",
-                  padding: "12px",
-                  border: "1px solid #CBD5E1",
-                  borderRadius: "8px",
-                  resize: "vertical",
-                  fontFamily: "inherit",
-                  fontSize: "14px",
-                }}
               />
 
             </div>
@@ -682,16 +774,9 @@ export default function Detections() {
 
             {actionError && (
               <div
-                style={{
-                  background: "#FEF2F2",
-                  color: "#B91C1C",
-                  border:
-                    "1px solid #FCA5A5",
-                  borderRadius: "8px",
-                  padding: "12px",
-                  marginBottom: "18px",
-                  fontSize: "14px",
-                }}
+                className="detection-dialog-error"
+                role="status"
+                aria-live="polite"
               >
                 {actionError}
               </div>
@@ -699,31 +784,31 @@ export default function Detections() {
 
             {/* BUTTONS */}
 
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "flex-end",
-                gap: "10px",
-                flexWrap: "wrap",
-              }}
-            >
+            <div className="detection-dialog-actions">
+
+              {/* Kept to the leading edge, away from Verify
+                  and Reject. Downloading is not a decision
+                  about the detection, and it stays available
+                  whatever the status: an officer may need the
+                  sheet for a record already reviewed. */}
+              <button
+                type="button"
+                className="detection-button--report"
+                onClick={handleDownloadReport}
+                disabled={downloading}
+              >
+                <Download size={15} aria-hidden="true" />
+
+                {downloading
+                  ? "Preparing…"
+                  : "Download report"}
+              </button>
 
               <button
                 type="button"
+                className="detection-button--cancel"
                 onClick={closeDetection}
                 disabled={actionLoading}
-                style={{
-                  padding: "11px 18px",
-                  borderRadius: "8px",
-                  border:
-                    "1px solid #CBD5E1",
-                  background: "#FFFFFF",
-                  color: "#475569",
-                  cursor: actionLoading
-                    ? "not-allowed"
-                    : "pointer",
-                  fontWeight: "700",
-                }}
               >
                 Cancel
               </button>
@@ -740,18 +825,7 @@ export default function Detections() {
                       )
                     }
                     disabled={actionLoading}
-                    style={{
-                      padding: "11px 18px",
-                      borderRadius: "8px",
-                      border:
-                        "1px solid #FCA5A5",
-                      background: "#FEE2E2",
-                      color: "#B91C1C",
-                      cursor: actionLoading
-                        ? "not-allowed"
-                        : "pointer",
-                      fontWeight: "700",
-                    }}
+                    className="detection-button--reject"
                   >
                     {actionLoading
                       ? "Processing..."
@@ -766,18 +840,7 @@ export default function Detections() {
                       )
                     }
                     disabled={actionLoading}
-                    style={{
-                      padding: "11px 18px",
-                      borderRadius: "8px",
-                      border:
-                        "1px solid #86EFAC",
-                      background: "#DCFCE7",
-                      color: "#15803D",
-                      cursor: actionLoading
-                        ? "not-allowed"
-                        : "pointer",
-                      fontWeight: "700",
-                    }}
+                    className="detection-button--verify"
                   >
                     {actionLoading
                       ? "Processing..."
@@ -804,34 +867,13 @@ export default function Detections() {
 
 function DetailItem({ label, value }) {
   return (
-    <div
-      style={{
-        background: "#F8FAFC",
-        border: "1px solid #E2E8F0",
-        borderRadius: "10px",
-        padding: "14px",
-      }}
-    >
+    <div className="detection-detail">
 
-      <div
-        style={{
-          fontSize: "12px",
-          color: "#64748B",
-          marginBottom: "5px",
-          fontWeight: "700",
-        }}
-      >
+      <div className="detection-detail-label">
         {label}
       </div>
 
-      <div
-        style={{
-          fontSize: "15px",
-          color: "#1E293B",
-          fontWeight: "700",
-          wordBreak: "break-word",
-        }}
-      >
+      <div className="detection-detail-value">
         {value}
       </div>
 

@@ -35,8 +35,9 @@ import React, {
   useState,
 } from "react";
 
-const API_URL =
-  "http://127.0.0.1:8000";
+import { API_URL as CONFIG_API_URL } from "../config";
+
+const API_URL = CONFIG_API_URL;
 
 export default function ForestAreas({
   onRegister,
@@ -50,6 +51,15 @@ export default function ForestAreas({
 
   const [error, setError] =
     useState("");
+
+  // Confirmation shown after a forest area is removed.
+  const [notice, setNotice] =
+    useState("");
+
+  // Identifier of the area currently being removed, so only
+  // that card shows a pending state rather than all of them.
+  const [removingId, setRemovingId] =
+    useState(null);
 
   // =======================================================
   // AUTHENTICATION
@@ -117,6 +127,93 @@ export default function ForestAreas({
   // =======================================================
   // FETCH FOREST AREAS
   // =======================================================
+
+  /**
+   * Stop monitoring a forest area.
+   *
+   * The server deactivates the record rather than deleting
+   * it, so every analysis and detection already recorded
+   * against the area remains available. Destroying that
+   * history would remove the evidence behind alerts that
+   * officers have already acted on.
+   *
+   * @param {object} forest
+   */
+  const handleRemoveForest = async (forest) => {
+    const confirmed = window.confirm(
+      `Stop monitoring "${forest.name}"?\n\n` +
+        "The forest area will no longer be analysed for " +
+        "deforestation.\n\n" +
+        "Its past analyses, detections and alerts are " +
+        "kept, and the area can be restored later."
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setRemovingId(forest.id);
+    setError("");
+    setNotice("");
+
+    try {
+      const token = getAccessToken();
+
+      const response = await fetch(
+        `${API_URL}/api/v1/forest-areas/${forest.id}`,
+        {
+          method: "DELETE",
+          headers: {
+            Accept: "application/json",
+            ...(token
+              ? { Authorization: `Bearer ${token}` }
+              : {}),
+          },
+        }
+      );
+
+      if (!response.ok) {
+        let message =
+          "The forest area could not be removed. " +
+          `Server returned ${response.status}.`;
+
+        // 403 means the area lies outside this officer's
+        // jurisdiction, which is a different problem from
+        // a server fault and should read that way.
+        if (response.status === 403) {
+          message =
+            "This forest area is outside your assigned " +
+            "jurisdiction.";
+        }
+
+        try {
+          const data = await response.json();
+
+          if (data?.detail) {
+            message = Array.isArray(data.detail)
+              ? data.detail
+                  .map((item) => item.msg)
+                  .join(" ")
+              : data.detail;
+          }
+        } catch {
+          // Keep the status-based message.
+        }
+
+        throw new Error(message);
+      }
+
+      setNotice(
+        `"${forest.name}" is no longer being monitored.`
+      );
+
+      await fetchForestAreas();
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setRemovingId(null);
+    }
+  };
 
   const fetchForestAreas =
     useCallback(
@@ -301,6 +398,24 @@ export default function ForestAreas({
         </div>
 
       </div>
+
+      {/* =================================================
+          REMOVAL CONFIRMATION
+          ================================================= */}
+
+      {notice && (
+        <div className="forest-notice">
+          <span>✓</span>
+          <p>{notice}</p>
+          <button
+            type="button"
+            onClick={() => setNotice("")}
+            aria-label="Dismiss"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {/* =================================================
           LOADING
@@ -570,23 +685,61 @@ export default function ForestAreas({
                         </div>
 
                         {/* =================================================
-                            VIEW DETAILS BUTTON
+                            CARD ACTIONS
                             ================================================= */}
 
-                        <button
-                          type="button"
-                          className="view-details-button"
-                          onClick={() =>
-                            handleViewDetails(
-                              forest.id
-                            )
-                          }
-                        >
-                          View Details
-                          <span>
-                            →
-                          </span>
-                        </button>
+                        <div className="forest-card-actions">
+
+                          <button
+                            type="button"
+                            className="view-details-button"
+                            onClick={() =>
+                              handleViewDetails(
+                                forest.id
+                              )
+                            }
+                          >
+                            View Details
+                            <span>
+                              →
+                            </span>
+                          </button>
+
+                          {/*
+                            Removing a forest area stops its
+                            monitoring but keeps the record,
+                            so the analyses and detections
+                            already recorded against it stay
+                            available. Destroying that
+                            history would remove the
+                            evidence behind past alerts.
+
+                            Only offered while the area is
+                            active; an inactive one has
+                            nothing left to stop.
+                          */}
+                          {forest.is_active && (
+                            <button
+                              type="button"
+                              className="remove-forest-button"
+                              disabled={
+                                removingId === forest.id
+                              }
+                              onClick={() =>
+                                handleRemoveForest(forest)
+                              }
+                              title={
+                                "Stop monitoring this " +
+                                "forest area"
+                              }
+                            >
+                              {removingId === forest.id
+                                ? "Removing..."
+                                : "Remove"}
+                            </button>
+                          )}
+
+                        </div>
 
                       </article>
                     );

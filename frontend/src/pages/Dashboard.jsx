@@ -1,3 +1,73 @@
+/**
+ * ===========================================================
+ * ForestWatch Zambia
+ * -----------------------------------------------------------
+ * Module: Dashboard Page
+ *
+ * Purpose:
+ *   The screen an officer opens first. Summarises the state
+ *   of forest monitoring across the area they are responsible
+ *   for, and shows it on a map.
+ *
+ * Responsibilities:
+ *   - Report headline counts: forest areas, detections,
+ *     alerts and imagery held.
+ *   - Draw the monitored province with detections on it.
+ *   - Offer Sentinel-2 true colour, false colour and NDVI.
+ *   - List the most recent detections and alerts.
+ *   - Compare districts, for provincial officers and
+ *     administrators only.
+ *
+ * How it works:
+ *
+ *   Everything shown here is already scoped by the server.
+ *   A district officer's counts cover their district alone,
+ *   because the repository layer filters before counting.
+ *   This page performs no filtering of its own and must not
+ *   start doing so.
+ *
+ *   The map, and why it has three sources
+ *   -------------------------------------
+ *   Base layer, from Esri. Cached tiles, drawn in under a
+ *   second, no credential and no quota. It is always present
+ *   so the map never shows an empty canvas.
+ *
+ *   Sentinel-2, through the server's authenticated Copernicus
+ *   proxy. Rendered on request rather than served from a tile
+ *   cache, so a single view costs four to five seconds. It is
+ *   therefore selected deliberately, not loaded by default.
+ *
+ *   Place names and boundaries, from Esri, drawn over the
+ *   imagery. Without them a satellite view of the Copperbelt
+ *   at province zoom is undifferentiated miombo: an officer
+ *   cannot tell Kitwe from Ndola or see which district a
+ *   clearing falls in.
+ *
+ *   The scene summary panel
+ *   -----------------------
+ *   The acquisition date and cloud figure come from a
+ *   secondary catalogue lookup. That lookup is the only part
+ *   of this screen that can fail on its own, and when it does
+ *   the map is unaffected, so the failure is reported as a
+ *   notice along the top edge rather than as a panel covering
+ *   the map.
+ *
+ * Note on imagery and OpenStreetMap:
+ *   The base layers are Esri, not OpenStreetMap. The map
+ *   exists to show vegetation, and a road map is the wrong
+ *   base layer for that; the street option is provided only
+ *   for judging whether a detection can be reached on a field
+ *   visit.
+ *
+ * Author:
+ *   Samuel Bikiloni
+ *
+ * Project:
+ *   Web-Based Deforestation Detection and Alert System
+ *   Using Sentinel-2 Imagery in the Copperbelt, Zambia
+ * ===========================================================
+ */
+
 import {
   useCallback,
   useEffect,
@@ -22,6 +92,7 @@ import {
   Popup,
   ScaleControl,
   TileLayer,
+  WMSTileLayer,
   ZoomControl,
   useMap,
 } from "react-leaflet";
@@ -29,6 +100,133 @@ import {
 import "leaflet/dist/leaflet.css";
 
 import api from "../services/api";
+import { TOKEN_KEY } from "../services/auth";
+
+
+import { API_URL as CONFIG_API_URL } from "../config";
+// ---------------------------------------------------------
+// Imagery source
+//
+// Requests go to this system's own proxy rather than to
+// Copernicus directly, so the Sentinel Hub instance
+// identifier stays on the server.
+// ---------------------------------------------------------
+
+const API_URL = CONFIG_API_URL;
+
+/**
+ * Return the stored access token.
+ *
+ * Read at render time rather than captured once, so a map
+ * drawn after signing back in uses the current token.
+ *
+ * @returns {string}
+ */
+function getAccessToken() {
+  return localStorage.getItem(TOKEN_KEY) || "";
+}
+
+/**
+ * Imagery layers offered on the dashboard map.
+ *
+ * Esri is the default because it is fast. Sentinel Hub
+ * renders each view on demand and a single request measured
+ * around twenty seconds against this instance, while an
+ * Esri tile returns in well under one. Waiting twenty
+ * seconds after every pan made the map feel broken.
+ *
+ * The Sentinel-2 layers stay, because they are what the
+ * analysis is actually based on and NDVI is the only layer
+ * that shows vegetation loss directly. They are opt-in
+ * rather than default: chosen deliberately, for one view,
+ * rather than paid for on every movement of the map.
+ *
+ * The Sentinel-2 names must match the layers configured in
+ * the Sentinel Hub instance the server proxies to.
+ */
+const BASE_IMAGERY = {
+  id: "esri",
+  label: "Satellite",
+  help:
+    "High-resolution satellite imagery. Fast, and always " +
+    "available.",
+};
+
+const STREET_IMAGERY = {
+  id: "street",
+  label: "Street map",
+  help:
+    "Roads, towns and place names, for working out where a " +
+    "forest area actually is and how to reach it.",
+};
+
+// Esri street basemap. A different provider from
+// OpenStreetMap, and consistent with the satellite imagery
+// already in use, so one attribution covers the map.
+const ESRI_STREET_URL =
+  "https://services.arcgisonline.com/ArcGIS/rest/services/" +
+  "World_Street_Map/MapServer/tile/{z}/{y}/{x}";
+
+// Transparent overlay of boundaries and place names. Drawn
+// ON TOP of imagery so an officer can read where they are
+// without giving up the view of the vegetation, which is
+// the point of the map.
+const ESRI_LABELS_URL =
+  "https://services.arcgisonline.com/ArcGIS/rest/services/" +
+  "Reference/World_Boundaries_and_Places/MapServer/" +
+  "tile/{z}/{y}/{x}";
+
+const SENTINEL_LAYERS = [
+  {
+    id: "1_TRUE_COLOR",
+    label: "Sentinel true colour",
+    help:
+      "Natural colour from Sentinel-2. Slower to draw: " +
+      "each view is rendered on request.",
+  },
+  {
+    id: "2_FALSE_COLOR",
+    label: "Sentinel false colour",
+    help:
+      "Near-infrared. Healthy vegetation is bright red, " +
+      "cleared ground is pale.",
+  },
+  {
+    id: "3_NDVI",
+    label: "NDVI",
+    help:
+      "Vegetation index. This is the layer that shows " +
+      "vegetation loss directly.",
+  },
+];
+
+const IMAGERY_OPTIONS = [
+  BASE_IMAGERY,
+  STREET_IMAGERY,
+  ...SENTINEL_LAYERS,
+];
+
+/**
+ * Report whether a layer comes from Sentinel Hub.
+ *
+ * Those layers need an access token and are rendered on
+ * request; the Esri layers need neither.
+ *
+ * @param {string} layerId
+ * @returns {boolean}
+ */
+function isSentinelLayer(layerId) {
+  return SENTINEL_LAYERS.some(
+    (layer) => layer.id === layerId
+  );
+}
+
+// Esri World Imagery: plain tiles, no key, no proxy and no
+// per-request quota, which is what makes it dependable as
+// the layer the map falls back to.
+const ESRI_IMAGERY_URL =
+  "https://services.arcgisonline.com/ArcGIS/rest/services/" +
+  "World_Imagery/MapServer/tile/{z}/{y}/{x}";
 
 
 const DEFAULT_CENTER = [
@@ -108,6 +306,20 @@ export default function Dashboard() {
 
   const [loading, setLoading] =
     useState(true);
+
+  // Which imagery layer the map is showing. Defaults to the
+  // fast satellite base rather than a Sentinel-2 render.
+  const [sentinelLayer, setSentinelLayer] =
+    useState(BASE_IMAGERY.id);
+
+  // Place names drawn over the imagery. On by default: a
+  // detection is somewhere an officer may have to travel to,
+  // and bare imagery gives no clue where that is.
+  const [showLabels, setShowLabels] = useState(true);
+
+  // Reported when an imagery layer fails, so a blank map is
+  // never left unexplained.
+  const [layerError, setLayerError] = useState("");
 
   const [mapLoading, setMapLoading] =
     useState(true);
@@ -785,53 +997,58 @@ export default function Dashboard() {
           )}
 
 
+          {/* =================================================
+              SCENE LOOKUP FAILURE
+
+              Rendered inline, above the map rather than
+              over it. A panel covering the map would make a
+              failure of the scene lookup look like a
+              failure of the map itself.
+
+              It is not. The lookup supplies the acquisition
+              date, the cloud figure and an initial centre.
+              The imagery itself comes from the Copernicus
+              proxy and the base layer from Esri, and both
+              keep working when the lookup does not, which
+              the map's own comment below already notes.
+
+              So the notice now sits along the top edge and
+              leaves the map visible and usable underneath.
+              An officer can still pan, switch layers and
+              read detections while the scene summary is
+              unavailable.
+            ================================================= */}
+
           {!mapLoading &&
             sentinelError && (
               <div
-                style={{
-                  position:
-                    "absolute",
-                  inset: 0,
-                  zIndex: 2000,
-                  display:
-                    "flex",
-                  flexDirection:
-                    "column",
-                  alignItems:
-                    "center",
-                  justifyContent:
-                    "center",
-                  gap: "12px",
-                  padding:
-                    "30px",
-                  textAlign:
-                    "center",
-                  background:
-                    "#f8fafc",
-                }}
+                className="map-scene-notice"
+                role="status"
+                aria-live="polite"
               >
 
                 <XCircle
-                  size={42}
+                  size={18}
+                  aria-hidden="true"
                 />
 
-                <strong>
-                  Sentinel-2 imagery
-                  could not be loaded
-                </strong>
+                <div className="map-scene-notice-text">
 
-                <span
-                  style={{
-                    maxWidth:
-                      "600px",
-                    color:
-                      "#64748b",
-                  }}
-                >
-                  {sentinelError}
-                </span>
+                  <strong>
+                    Latest scene details
+                    unavailable
+                  </strong>
+
+                  <span>
+                    {sentinelError}{" "}
+                    The map below is
+                    unaffected.
+                  </span>
+
+                </div>
 
                 <button
+                  type="button"
                   className="refresh-button"
                   onClick={
                     loadSentinel
@@ -848,17 +1065,25 @@ export default function Dashboard() {
             )}
 
 
-          {!mapLoading &&
-            !sentinelError &&
-            tileUrl &&
-            sentinel && (
+          {/* =================================================
+              The map does not depend on the scene lookup.
+
+              Imagery comes from the Copernicus proxy, which
+              serves any extent the map asks for. The scene
+              lookup is only used to centre the view on the
+              most recent acquisition, so when it is
+              unavailable the map still draws over the
+              Copperbelt rather than disappearing.
+              ================================================= */}
+
+          {!mapLoading && (
 
               <MapContainer
                 key={
-                  sentinel.item_id
+                  sentinel?.item_id || "copperbelt"
                 }
                 center={
-                  sentinel.center
+                  sentinel?.center
                     ? [
                         Number(
                           sentinel
@@ -898,38 +1123,116 @@ export default function Dashboard() {
                 />
 
 
-                <TileLayer
-                  key={
-                    `${sentinel.item_id}-visual`
-                  }
-                  url={
-                    tileUrl
-                  }
-                  tileSize={
-                    256
-                  }
-                  minZoom={
-                    0
-                  }
-                  maxZoom={
-                    18
-                  }
-                  maxNativeZoom={
-                    18
-                  }
-                  keepBuffer={
-                    3
-                  }
-                  updateWhenIdle={
-                    true
-                  }
-                  updateWhenZooming={
-                    false
-                  }
-                  attribution={
-                    "Sentinel-2 / Microsoft Planetary Computer"
-                  }
-                />
+                {/* =================================================
+                    COPERNICUS SENTINEL-2 IMAGERY
+
+                    Served through this system's own proxy,
+                    which keeps the Sentinel Hub instance
+                    identifier on the server instead of
+                    exposing it in the page source.
+
+                    The token travels as a query parameter
+                    because a Leaflet tile layer requests
+                    images with plain <img> tags and cannot
+                    set an Authorization header.
+
+                    There is no street base layer. This map
+                    exists to show vegetation.
+                    ================================================= */}
+
+                {sentinelLayer === BASE_IMAGERY.id && (
+                  <TileLayer
+                    key="esri-satellite"
+                    url={ESRI_IMAGERY_URL}
+                    tileSize={256}
+                    minZoom={0}
+                    maxZoom={18}
+                    maxNativeZoom={18}
+                    keepBuffer={3}
+                    attribution={
+                      "Imagery © Esri, Maxar, Earthstar " +
+                      "Geographics"
+                    }
+                  />
+                )}
+
+                {sentinelLayer === STREET_IMAGERY.id && (
+                  <TileLayer
+                    key="esri-street"
+                    url={ESRI_STREET_URL}
+                    tileSize={256}
+                    minZoom={0}
+                    maxZoom={18}
+                    maxNativeZoom={18}
+                    keepBuffer={3}
+                    attribution="© Esri"
+                  />
+                )}
+
+                {isSentinelLayer(sentinelLayer) && (
+                  <WMSTileLayer
+                    key={
+                      `${sentinelLayer}-copernicus`
+                    }
+                    url={
+                      `${API_URL}/api/v1/sentinel/wms`
+                    }
+                    params={{
+                      LAYERS: sentinelLayer,
+                      FORMAT: "image/png",
+                      TRANSPARENT: false,
+                      access_token: getAccessToken(),
+                    }}
+                    tileSize={512}
+                    minZoom={0}
+                    maxZoom={18}
+                    keepBuffer={1}
+                    updateWhenIdle={true}
+                    updateWhenZooming={false}
+                    attribution={
+                      "Sentinel-2 © Copernicus Data Space Ecosystem"
+                    }
+                    eventHandlers={{
+                      /*
+                        Without this a failed tile is simply
+                        blank. An expired session is the
+                        common cause, and it looked
+                        identical to "this layer is broken",
+                        which is what made these layers seem
+                        not to work at all.
+                      */
+                      tileerror: () =>
+                        setLayerError(
+                          "Sentinel-2 imagery could not be " +
+                            "loaded. If you have been " +
+                            "signed in a while, sign out " +
+                            "and back in, then try again."
+                        ),
+                      tileload: () => setLayerError(""),
+                    }}
+                  />
+                )}
+
+                {/*
+                  Place names drawn over whichever imagery is
+                  selected, so the officer can tell where
+                  they are while still looking at vegetation.
+                  Pointless over the street map, which
+                  already carries its own labels.
+                */}
+                {showLabels &&
+                  sentinelLayer !== STREET_IMAGERY.id && (
+                    <TileLayer
+                      key="esri-labels"
+                      url={ESRI_LABELS_URL}
+                      tileSize={256}
+                      minZoom={0}
+                      maxZoom={18}
+                      maxNativeZoom={18}
+                      opacity={0.9}
+                      zIndex={400}
+                    />
+                  )}
 
 
                 {forestAreas.map(
@@ -1130,6 +1433,93 @@ export default function Dashboard() {
                 <ScaleControl
                   position="bottomleft"
                 />
+
+                {/* =================================================
+                    IMAGERY SELECTOR
+
+                    NDVI is the layer that actually shows
+                    vegetation loss, so it has to be
+                    reachable rather than buried. Rendered
+                    outside the Leaflet pane so it sits
+                    above the tiles.
+                    ================================================= */}
+
+                <div className="map-layer-switch">
+
+                  {IMAGERY_OPTIONS.map((layer) => (
+                    <button
+                      key={layer.id}
+                      type="button"
+                      title={layer.help}
+                      className={
+                        sentinelLayer === layer.id
+                          ? "map-layer-option active"
+                          : "map-layer-option"
+                      }
+                      onClick={(event) => {
+                        // Leaflet would otherwise treat the
+                        // click as a map interaction.
+                        event.stopPropagation();
+                        setSentinelLayer(layer.id);
+                      }}
+                    >
+                      {layer.label}
+                    </button>
+                  ))}
+
+                  {/*
+                    Separated from the imagery choices: this
+                    is an overlay drawn on top of whichever
+                    of them is selected, not an alternative
+                    to them.
+                  */}
+                  {sentinelLayer !== STREET_IMAGERY.id && (
+                    <label
+                      className="map-label-toggle"
+                      title={
+                        "Show town and district names over " +
+                        "the imagery"
+                      }
+                      onClick={(event) =>
+                        event.stopPropagation()
+                      }
+                    >
+                      <input
+                        type="checkbox"
+                        checked={showLabels}
+                        onChange={(event) =>
+                          setShowLabels(
+                            event.target.checked
+                          )
+                        }
+                      />
+                      Place names
+                    </label>
+                  )}
+
+                </div>
+
+                {/*
+                  Sentinel Hub renders each view on request,
+                  which takes appreciably longer than serving
+                  a prepared tile. Saying so removes the
+                  main reason the map felt broken: a long
+                  pause with nothing explaining it.
+                */}
+                {isSentinelLayer(sentinelLayer) &&
+                  !layerError && (
+                    <div className="map-layer-hint">
+                      Sentinel-2 imagery is rendered on
+                      request and may take a few seconds to
+                      appear.
+                    </div>
+                  )}
+
+                {layerError && (
+                  <div className="map-layer-hint error">
+                    {layerError}
+                  </div>
+                )}
 
               </MapContainer>
             )}

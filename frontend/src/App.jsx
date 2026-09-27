@@ -1,3 +1,81 @@
+/**
+ * ===========================================================
+ * ForestWatch Zambia
+ * -----------------------------------------------------------
+ * Module: Application Shell
+ *
+ * Purpose:
+ *   Holds the session, decides which screen is shown, and
+ *   provides the navigation, notification tray and theme that
+ *   surround every page.
+ *
+ * Responsibilities:
+ *   - Decide between the login screen and the application.
+ *   - Load the signed-in officer's identity and jurisdiction.
+ *   - Show only the screens that officer's role allows.
+ *   - Move between screens and carry the selected record.
+ *   - Poll for unresolved alerts and show them in the tray.
+ *   - Return to the login screen when the session ends.
+ *
+ * How it works:
+ *
+ *   Navigation without a router
+ *   ---------------------------
+ *   This project does not use React Router. A single piece of
+ *   state, activePage, holds the name of the current screen,
+ *   and the render body mounts the matching page component.
+ *
+ *   The consequences are deliberate and must be understood
+ *   before adding a screen: there are no URLs for individual
+ *   screens, the browser back button does not move between
+ *   them, and a refresh returns to the Dashboard. A router
+ *   was judged unnecessary for an internal tool used by a
+ *   small number of officers on a single deployment.
+ *
+ *   Because there is no route parameter either, a screen that
+ *   needs to know WHICH record to open reads it from state
+ *   held here: selectedForestId does the job that /forest/:id
+ *   would otherwise do.
+ *
+ *   Pages never navigate themselves. They are handed
+ *   callbacks such as onBack and onViewDetails, and this
+ *   module decides what those mean. That keeps every page
+ *   independent of every other page: no page imports another.
+ *
+ *   Sessions
+ *   --------
+ *   isAuthenticated is seeded from hasStoredToken(), so a
+ *   refresh resumes the session rather than forcing a fresh
+ *   sign-in. The token itself is never inspected here; only
+ *   the server can judge whether it is still valid.
+ *
+ *   When it stops being valid, the API client detects the
+ *   401 and calls every subscriber registered through
+ *   onSessionExpired(). This module is one of those
+ *   subscribers, and responds by returning to the login
+ *   screen. Handling it in one place means no page has to
+ *   check for an ended session before trusting a response.
+ *
+ *   Role-based screens
+ *   ------------------
+ *   isAdministrator() and supervisesMultipleDistricts()
+ *   decide which navigation entries and panels appear.
+ *
+ *   This is presentation, NOT access control. The server
+ *   enforces jurisdiction independently in its repository
+ *   layer, and refuses an out-of-jurisdiction record however
+ *   it is requested. An interface that merely hides data is
+ *   not security; a query that cannot return it is.
+ *
+ * Author:
+ *   Samuel Bikiloni
+ *
+ * Project:
+ *   Web-Based Deforestation Detection and Alert System
+ *   Using Sentinel-2 Imagery in the Copperbelt, Zambia
+ * ===========================================================
+ */
+
 import {
   useEffect,
   useRef,
@@ -12,6 +90,8 @@ import {
   Clock,
   LayoutDashboard,
   Leaf,
+  LogOut,
+  Info,
   Menu,
   Moon,
   Satellite,
@@ -33,12 +113,40 @@ import Login from "./pages/Login";
 import RegisterForestArea from "./pages/RegisterForestArea";
 import SatelliteImages from "./pages/SatelliteImages";
 import SettingsPage from "./pages/Settings";
+import About from "./pages/About";
+import UserManagement from "./pages/UserManagement";
 
-const API_URL = "http://127.0.0.1:8000";
+import DistrictBreakdown from "./components/DistrictBreakdown";
+import useCurrentUser from "./hooks/useCurrentUser";
+import { onSessionExpired } from "./services/api";
+
+import { API_URL as CONFIG_API_URL } from "./config";
+import {
+  describeJurisdiction,
+  describeRole,
+  hasStoredToken,
+  initialsFor,
+  isAdministrator,
+  isAwaitingJurisdiction,
+  supervisesMultipleDistricts,
+  logout as clearSession,
+} from "./services/auth";
+
+const API_URL = CONFIG_API_URL;
 
 function App() {
+  // A token already in storage means the officer signed in
+  // during an earlier visit, so the interface restores the
+  // session instead of asking them to sign in again on
+  // every page refresh.
   const [isAuthenticated, setIsAuthenticated] =
-    useState(false);
+    useState(hasStoredToken);
+
+  // Identity and jurisdiction of the signed-in officer.
+  const {
+    currentUser,
+    error: currentUserError,
+  } = useCurrentUser(isAuthenticated);
 
   const [darkMode, setDarkMode] =
     useState(false);
@@ -76,6 +184,19 @@ function App() {
 
   const notificationRef = useRef(null);
 
+  // -------------------------------------------------------
+  // Navigation
+  //
+  // Operational pages are available to every signed-in
+  // officer. Account administration is shown only to
+  // administrators.
+  //
+  // Hiding a page is presentation, NOT access control. The
+  // server refuses an out-of-jurisdiction record and a
+  // non-administrator's request to manage accounts whether
+  // or not the interface offers the link.
+  // -------------------------------------------------------
+
   const navigation = [
     {
       name: "Dashboard",
@@ -102,6 +223,44 @@ function App() {
       icon: Satellite,
     },
   ];
+
+  if (isAdministrator(currentUser)) {
+    navigation.push({
+      name: "User Management",
+      icon: ShieldCheck,
+    });
+  }
+
+  // -------------------------------------------------------
+  // End the session when the server rejects the token
+  //
+  // Tokens expire while the interface is open. Without
+  // this, every page would simply stop returning data and
+  // an expired session would look like an empty database.
+  // -------------------------------------------------------
+
+  useEffect(() => {
+    return onSessionExpired(() => {
+      setIsAuthenticated(false);
+      setActivePage("Dashboard");
+    });
+  }, []);
+
+  /**
+   * Sign the current officer out.
+   *
+   * The stored token is discarded and the interface returns
+   * to the sign-in screen. Returning to Dashboard prevents
+   * the next officer from landing on a page the previous
+   * one had open.
+   */
+  const handleSignOut = () => {
+    clearSession();
+
+    setIsAuthenticated(false);
+    setActivePage("Dashboard");
+    setSelectedForestId(null);
+  };
 
   useEffect(() => {
     localStorage.setItem(
@@ -435,6 +594,31 @@ function App() {
             )}
           </button>
 
+          {/* Sits below Settings rather than in the main
+              navigation: it describes the system rather than
+              being part of the monitoring work, and it is
+              also where an officer is sent when they need to
+              check whether the server is reachable. */}
+          <button
+            className={`nav-item ${
+              activePage === "About"
+                ? "active"
+                : ""
+            }`}
+            onClick={() => {
+              setActivePage("About");
+              setSelectedForestId(null);
+            }}
+          >
+            <Info size={20} />
+
+            {sidebarOpen && (
+              <span>
+                About
+              </span>
+            )}
+          </button>
+
           {sidebarOpen && (
             <div className="institution-card">
               <ShieldCheck size={20} />
@@ -735,30 +919,117 @@ function App() {
               )}
             </div>
 
-            <div className="user-profile">
+            <div
+              className="user-profile"
+              title={
+                currentUser
+                  ? `${describeRole(currentUser)} - ` +
+                    `${describeJurisdiction(currentUser)}`
+                  : "Loading your profile"
+              }
+            >
               <div className="avatar">
-                FO
+                {initialsFor(currentUser)}
               </div>
 
               <div className="user-details">
                 <strong>
-                  Forestry Officer
+                  {currentUser?.full_name || "Signing in..."}
                 </strong>
 
+                {/*
+                  The jurisdiction is shown rather than a
+                  generic label, so an officer can always
+                  see which area the records in front of
+                  them are limited to.
+                */}
                 <span>
-                  Forest Monitoring
+                  {currentUser
+                    ? describeJurisdiction(currentUser)
+                    : ""}
                 </span>
               </div>
 
               <ChevronDown size={17} />
             </div>
+
+            {/*
+              Signing out matters on a shared departmental
+              workstation: without it, the next person to
+              use the machine inherits the previous
+              officer's session and their jurisdiction.
+            */}
+            <button
+              type="button"
+              className="sign-out-button"
+              onClick={handleSignOut}
+              title="Sign out"
+              aria-label="Sign out"
+            >
+              <LogOut size={18} />
+            </button>
           </div>
         </header>
 
         <main className="content">
 
+          {/*
+            An officer with no district or province assigned
+            is refused every record by the server, so every
+            page would show an empty list. Saying so plainly
+            prevents that being read as "no deforestation
+            has been detected".
+          */}
+          {isAwaitingJurisdiction(currentUser) && (
+            <div className="jurisdiction-notice">
+              <AlertTriangle size={18} />
+
+              <div>
+                <strong>
+                  No jurisdiction has been assigned to your
+                  account.
+                </strong>
+
+                <span>
+                  Forest areas, detections and alerts are
+                  restricted to the district or province an
+                  officer is responsible for. Until an
+                  administrator assigns yours, these pages
+                  will appear empty. This is not an
+                  indication that no deforestation has been
+                  detected.
+                </span>
+              </div>
+            </div>
+          )}
+
+          {currentUserError && (
+            <div className="jurisdiction-notice">
+              <AlertTriangle size={18} />
+
+              <div>
+                <span>{currentUserError}</span>
+              </div>
+            </div>
+          )}
+
           {activePage === "Dashboard" && (
-            <Dashboard />
+            <>
+              {/*
+                Only officers responsible for more than one
+                district see a comparison between them. A
+                district officer supervises one, so the
+                server refuses the request and the component
+                renders nothing.
+              */}
+              <DistrictBreakdown
+                visible={supervisesMultipleDistricts(
+                  currentUser
+                )}
+              />
+
+              <Dashboard />
+            </>
           )}
 
           {activePage === "Analysis" && (
@@ -833,6 +1104,22 @@ function App() {
           {activePage === "Settings" && (
             <SettingsPage />
           )}
+
+          {activePage === "About" && (
+            <About />
+          )}
+
+          {/*
+            Rendered only for administrators. The page is
+            also removed from the navigation for everyone
+            else, and the endpoints it calls are restricted
+            to administrators on the server, so this check
+            is the least important of the three.
+          */}
+          {activePage === "User Management" &&
+            isAdministrator(currentUser) && (
+              <UserManagement />
+            )}
         </main>
 
         <footer className="footer">

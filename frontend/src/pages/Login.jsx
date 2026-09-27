@@ -1,3 +1,55 @@
+/**
+ * ===========================================================
+ * ForestWatch Zambia
+ * -----------------------------------------------------------
+ * Module: Login Page
+ *
+ * Purpose:
+ *   Signs a Forestry Department officer in and starts a
+ *   session.
+ *
+ * Responsibilities:
+ *   - Collect an email address and password.
+ *   - Exchange them for an access token.
+ *   - Store the token and notify the application shell.
+ *   - Explain a refused sign-in in terms the officer can act
+ *     on.
+ *
+ * How it works:
+ *
+ *   The login endpoint follows the OAuth2 password-form
+ *   convention that FastAPI provides, which means two things
+ *   that surprise anyone testing the API by hand:
+ *
+ *     - the body is form-encoded, not JSON
+ *     - the email is sent in a field named "username"
+ *
+ *   On success the server returns an access token, which is
+ *   written to localStorage. The onLogin callback then tells
+ *   App.jsx that a session exists, and App swaps this screen
+ *   for the application.
+ *
+ *   A failed sign-in deliberately does NOT clear an existing
+ *   stored token. The API client excludes login attempts from
+ *   its 401 handling, so mistyping a password while already
+ *   signed in elsewhere cannot destroy a valid session.
+ *
+ * Note on access:
+ *   There is no registration screen, and there never should
+ *   be. Accounts are provisioned by an administrator for
+ *   named officers. The system is not public-facing:
+ *   publishing the locations of suspected illegal clearing
+ *   would inform the people responsible.
+ *
+ * Author:
+ *   Samuel Bikiloni
+ *
+ * Project:
+ *   Web-Based Deforestation Detection and Alert System
+ *   Using Sentinel-2 Imagery in the Copperbelt, Zambia
+ * ===========================================================
+ */
+
 import { useState } from "react";
 import {
   AlertCircle,
@@ -10,6 +62,8 @@ import {
 } from "lucide-react";
 import axios from "axios";
 
+
+import { API_V1 } from "../config";
 function Login({ onLogin }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -39,7 +93,7 @@ function Login({ onLogin }) {
       formData.append("password", password);
 
       const response = await axios.post(
-        "http://127.0.0.1:8000/api/v1/auth/login",
+        `${API_V1}/auth/login`,
         formData,
         {
           headers: {

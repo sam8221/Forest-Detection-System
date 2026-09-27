@@ -300,9 +300,6 @@ button {
 
 .app.dark .icon-button,
 .app.dark .notification-button {
-  background: #17271e;
-  border-color: #304439;
-  color: #c6d6ca;
 }
 
 .icon-button:hover,
@@ -349,9 +346,6 @@ button {
   color: inherit;
 }
 
-.notification-button {
-  position: relative;
-}
 
 .notification-dot {
   position: absolute;
@@ -381,6 +375,76 @@ button {
   justify-content: center;
   font-weight: 800;
   font-size: 13px;
+}
+
+/* ---------- Sign out ---------- */
+
+.sign-out-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  margin-left: 6px;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted, #6b7280);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.sign-out-button:hover {
+  background: #fee2e2;
+  border-color: #fca5a5;
+  color: #b91c1c;
+}
+
+/* ----------------------------------------------------------
+   Jurisdiction notice
+
+   Shown when an officer has no district or province
+   assigned. Every list will be empty for such an account,
+   and this explains why rather than leaving it to be read
+   as an absence of deforestation.
+   ---------------------------------------------------------- */
+
+.jurisdiction-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  border: 1px solid #fcd34d;
+  border-left: 4px solid #f59e0b;
+  border-radius: 8px;
+  background: #fffbeb;
+  color: #78350f;
+}
+
+.jurisdiction-notice svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: #b45309;
+}
+
+.jurisdiction-notice strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 14px;
+}
+
+.jurisdiction-notice span {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+[data-theme="dark"] .jurisdiction-notice,
+.dark-mode .jurisdiction-notice {
+  border-color: #78350f;
+  border-left-color: #f59e0b;
+  background: #2a1f0a;
+  color: #fde68a;
 }
 
 .user-details {
@@ -418,11 +482,6 @@ button {
 }
 
 .eyebrow {
-  color: #198754;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 1.5px;
-  margin-bottom: 8px;
 }
 
 .page-heading h1 {
@@ -826,15 +885,11 @@ button {
 }
 
 .dashboard-header h1 {
-  font-size: 32px;
-  line-height: 1.2;
   color: #17301f;
 }
 
 .dashboard-header p {
-  margin-top: 8px;
   color: #708077;
-  font-size: 14px;
 }
 
 .app.dark .dashboard-header h1 {
@@ -842,20 +897,13 @@ button {
 }
 
 .refresh-button {
-  border: 1px solid #d8e5dc;
-  background: #ffffff;
-  color: #176b3b;
-  border-radius: 9px;
-  padding: 10px 15px;
   display: flex;
   align-items: center;
   gap: 7px;
-  font-weight: 700;
 }
 
 .refresh-button:hover {
   border-color: #198754;
-  background: #eef8f1;
 }
 
 .app.dark .refresh-button {
@@ -878,9 +926,6 @@ button {
 .stat-card {
   background: #ffffff;
   border: 1px solid #e0eae2;
-  border-radius: 15px;
-  padding: 21px;
-  min-height: 150px;
   box-shadow: 0 3px 12px rgba(30, 70, 45, 0.04);
   transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
@@ -898,13 +943,9 @@ button {
 .stat-card-top {
   display: flex;
   justify-content: space-between;
-  margin-bottom: 18px;
 }
 
 .stat-icon {
-  width: 42px;
-  height: 42px;
-  border-radius: 11px;
   background: #e5f5e9;
   color: #16834a;
   display: flex;
@@ -919,23 +960,18 @@ button {
 
 .stat-card p {
   color: #68786e;
-  font-size: 13px;
   font-weight: 600;
-  margin-bottom: 6px;
 }
 
 .stat-card strong {
   display: block;
   color: #17301f;
-  font-size: 29px;
   line-height: 1.1;
 }
 
 .stat-card span {
   display: block;
   color: #87948b;
-  font-size: 11px;
-  margin-top: 7px;
 }
 
 .app.dark .stat-card strong {
@@ -964,27 +1000,18 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 21px 23px;
   border-bottom: 1px solid #e6eee8;
 }
 
-.app.dark .section-heading {
-  border-color: #2b4032;
-}
 
 .section-heading h2 {
-  font-size: 19px;
   color: #17301f;
 }
 
-.app.dark .section-heading h2 {
-  color: #e8f5eb;
-}
 
 .section-heading p {
   margin-top: 5px;
   color: #7b897f;
-  font-size: 12px;
 }
 
 /* =========================
@@ -1001,19 +1028,11 @@ button {
 .status-panel {
   background: #ffffff;
   border: 1px solid #e0eae2;
-  border-radius: 15px;
-  padding: 21px;
 }
 
-.app.dark .status-panel {
-  background: #15251b;
-  border-color: #2b4032;
-}
 
 .status-panel h2 {
-  font-size: 18px;
   color: #17301f;
-  margin-bottom: 17px;
 }
 
 .app.dark .status-panel h2 {
@@ -1023,39 +1042,26 @@ button {
 .status-items {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
 }
 
 .status-item {
   background: #f7faf8;
   border: 1px solid #e4ece6;
-  border-radius: 10px;
-  padding: 14px;
 }
 
-.app.dark .status-item {
-  background: #192d21;
-  border-color: #2b4032;
-}
 
 .status-item-label {
   display: flex;
   align-items: center;
   gap: 7px;
   color: #68786e;
-  font-size: 12px;
 }
 
 .status-item strong {
   display: block;
-  font-size: 24px;
-  margin-top: 8px;
   color: #17301f;
 }
 
-.app.dark .status-item strong {
-  color: #e8f5eb;
-}
 
 /* =========================
    TABLE
@@ -1074,20 +1080,16 @@ button {
 .dashboard-table th {
   background: #f7faf8;
   color: #66766c;
-  font-size: 11px;
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   text-align: left;
-  padding: 13px 18px;
   border-bottom: 1px solid #e0eae2;
 }
 
 .dashboard-table td {
-  padding: 15px 18px;
   border-bottom: 1px solid #edf2ee;
   color: #425248;
-  font-size: 13px;
 }
 
 .dashboard-table tr:last-child td {
@@ -1103,23 +1105,14 @@ button {
 }
 
 .app.dark .dashboard-table th {
-  background: #192d21;
-  color: #aebeb3;
   border-color: #2b4032;
 }
 
-.app.dark .dashboard-table td {
-  color: #c6d6ca;
-  border-color: #26392d;
-}
 
 .app.dark .dashboard-table tbody tr:hover {
   background: #1b3023;
 }
 
-.app.dark .dashboard-table td strong {
-  color: #e8f5eb;
-}
 
 /* =========================
    STATUS BADGES
@@ -1180,10 +1173,7 @@ button {
 
 .alert-row {
   display: grid;
-  grid-template-columns: 42px minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: 14px;
-  padding: 16px 22px;
   border-bottom: 1px solid #edf2ee;
 }
 
@@ -1195,18 +1185,8 @@ button {
   background: #f8fbf9;
 }
 
-.app.dark .alert-row {
-  border-color: #26392d;
-}
-
-.app.dark .alert-row:hover {
-  background: #1b3023;
-}
 
 .alert-icon {
-  width: 38px;
-  height: 38px;
-  border-radius: 10px;
   background: #fff0e8;
   color: #b6531d;
   display: flex;
@@ -1222,19 +1202,14 @@ button {
 
 .alert-information strong {
   color: #17301f;
-  font-size: 13px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.app.dark .alert-information strong {
-  color: #e8f5eb;
-}
 
 .alert-information span {
   color: #87948b;
-  font-size: 11px;
   margin-top: 4px;
 }
 
@@ -1409,59 +1384,46 @@ button {
 }
 
 .forest-icon {
-  width: 52px;
-  height: 52px;
   display: flex;
   align-items: center;
   justify-content: center;
   background: #e4f5e9;
-  border-radius: 14px;
-  font-size: 27px;
 }
 
 .forest-card h2 {
-  margin: 18px 0 4px;
   color: #092d20;
-  font-size: 23px;
 }
 
 .forest-code {
   margin: 0 0 22px;
   color: #7b8c84;
-  font-size: 14px;
   font-weight: 600;
 }
 
 .forest-details {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 14px;
 }
 
 .forest-details div {
   background: #f7faf8;
   border-radius: 10px;
-  padding: 13px;
 }
 
 .forest-details span {
   display: block;
   color: #778980;
-  font-size: 12px;
   margin-bottom: 5px;
 }
 
 .forest-details strong {
   display: block;
   color: #173b2d;
-  font-size: 14px;
   text-transform: capitalize;
 }
 
 .priority {
-  padding: 7px 13px;
   border-radius: 20px;
-  font-size: 11px;
   font-weight: 800;
 }
 
@@ -1500,8 +1462,6 @@ button {
 
 .forest-description {
   color: #718078;
-  font-size: 14px;
-  line-height: 1.6;
   margin-top: 15px;
 }
 
@@ -1671,8 +1631,6 @@ button {
   margin: 0;
 
   color: #073b2a;
-
-  font-size: 18px;
   font-weight: 700;
 }
 
@@ -1682,8 +1640,6 @@ button {
   margin-top: 3px;
 
   color: #70847b;
-
-  font-size: 12px;
 }
 
 .notification-refresh {
@@ -1730,9 +1686,6 @@ button {
   cursor: default;
 }
 
-.notification-item:hover {
-  background: #f7fbf8;
-}
 
 .notification-item.resolved {
   opacity: 0.72;
@@ -1780,8 +1733,6 @@ button {
 
 .notification-title-row strong {
   color: #073b2a;
-
-  font-size: 13px;
   line-height: 1.4;
 }
 
@@ -1971,7 +1922,6 @@ button {
 }
 
 .notification-read {
-  background: #fafcfb;
   opacity: 0.65;
 }
 
@@ -1996,9 +1946,6 @@ button {
   background: #159447;
 }
 
-.notification-item {
-  position: relative;
-}
 /* ==========================================
    SATELLITE IMAGES
 ========================================== */
@@ -2938,16 +2885,10 @@ button {
   border-color: #2b4032;
 }
 
-.app.dark .forest-page .settings-field label {
-  color: #c6d6ca;
-}
 
 .app.dark .forest-page .settings-field input,
 .app.dark .forest-page .settings-field select,
 .app.dark .forest-page .settings-field textarea {
-  background: #192d21;
-  border-color: #304439;
-  color: #e8f5eb;
 }
 
 .app.dark .forest-page .settings-field input:disabled,
@@ -3034,13 +2975,29 @@ button {
   margin-bottom: 18px;
 }
 
-.user-table-wrapper {
+/* The detections table is listed alongside the users table
+   throughout this block rather than given a parallel set of
+   rules of its own.
+
+   It was previously not styled at all: its markup carried
+   .detection-table and .detection-table-wrapper, but no rule
+   in this stylesheet ever matched either, so the main table
+   on the detections page rendered with the browser's own
+   default table styling while every other table in the
+   system used the rules below.
+
+   Sharing the selector rather than copying the declarations
+   means the two tables cannot drift apart later. */
+
+.user-table-wrapper,
+.detection-table-wrapper {
   width: 100%;
   overflow-x: auto;
   border-radius: 14px;
 }
 
-.user-table {
+.user-table,
+.detection-table {
   width: 100%;
   min-width: 850px;
   border-collapse: separate;
@@ -3048,7 +3005,8 @@ button {
   table-layout: auto;
 }
 
-.user-table th {
+.user-table th,
+.detection-table th {
   padding: 16px 18px;
   text-align: left;
   background: #f3f8f4;
@@ -3059,7 +3017,8 @@ button {
   white-space: nowrap;
 }
 
-.user-table td {
+.user-table td,
+.detection-table td {
   padding: 17px 18px;
   color: #50655a;
   border-bottom: 1px solid #e5eee8;
@@ -3068,15 +3027,18 @@ button {
   vertical-align: middle;
 }
 
-.user-table tbody tr:last-child td {
+.user-table tbody tr:last-child td,
+.detection-table tbody tr:last-child td {
   border-bottom: none;
 }
 
-.user-table tbody tr:hover {
+.user-table tbody tr:hover,
+.detection-table tbody tr:hover {
   background: #f8fbf9;
 }
 
-.user-table td strong {
+.user-table td strong,
+.detection-table td strong {
   color: #123d2b;
   font-weight: 800;
 }
@@ -3208,6 +3170,36 @@ button {
 }
 
 .deactivate-user-button:active {
+  transform: translateY(1px);
+}
+
+/* ---------------------------------------------------------
+   Reactivate
+
+   Green rather than red: restoring an officer's access is
+   the recovery from a deactivation, not another withdrawal,
+   and the two sit in the same column of the same table.
+--------------------------------------------------------- */
+
+.activate-user-button {
+  border: 1px solid #a7d7b4;
+  background: #f4fbf6;
+  color: #15803d;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: 0.2s ease;
+}
+
+.activate-user-button:hover {
+  background: #dcfce7;
+  border-color: #86c79a;
+}
+
+.activate-user-button:active {
   transform: translateY(1px);
 }
 
@@ -3706,8 +3698,6 @@ button {
 }
 
 .view-details-button:hover {
-  background: rgba(22, 128, 60, 0.08);
-  border-color: rgba(22, 128, 60, 0.35);
   transform: translateY(-1px);
 }
 
@@ -3734,14 +3724,8 @@ textarea {
   font-size: 13px;
 }
 
-body {
-  line-height: 1.45;
-}
 
 h1 { font-size: 26px; }
-h2 { font-size: 18px; }
-h3 { font-size: 15px; }
-p { font-size: 12px; }
 
 .content {
   padding: 24px 28px;
@@ -3793,16 +3777,9 @@ p { font-size: 12px; }
 
 .view-details-button span,
 .view-details-button svg {
-  color: #ffffff !important;
-  fill: currentColor;
-  stroke: currentColor;
-  font-size: 15px;
 }
 
 .view-details-button:hover {
-  background: #146c43;
-  border-color: #146c43;
-  color: #ffffff;
 }
 
 .view-details-button:hover span,
@@ -3818,47 +3795,8 @@ p { font-size: 12px; }
 }
 
 .forest-icon {
-  width: 44px;
-  height: 44px;
-  border-radius: 10px;
-  font-size: 21px;
 }
 
-.forest-card h2 {
-  margin: 13px 0 3px;
-  font-size: 19px;
-}
-
-.forest-code {
-  margin-bottom: 15px;
-  font-size: 11px;
-}
-
-.forest-details {
-  gap: 9px;
-}
-
-.forest-details div {
-  padding: 10px;
-}
-
-.forest-details span {
-  font-size: 10px;
-}
-
-.forest-details strong {
-  font-size: 12px;
-}
-
-.forest-description {
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.priority {
-  padding: 5px 9px;
-  font-size: 9px;
-}
 
 /* ---------- Dark mode: global surfaces ---------- */
 
@@ -3956,9 +3894,6 @@ p { font-size: 12px; }
   border-color: var(--border-color);
 }
 
-.app.dark .section-heading {
-  border-color: var(--border-color-soft);
-}
 
 .app.dark .status-panel {
   background: var(--card-background);
@@ -3970,9 +3905,6 @@ p { font-size: 12px; }
   border-color: var(--border-color);
 }
 
-.app.dark .status-item-label {
-  color: var(--text-secondary);
-}
 
 .app.dark .dashboard-table th {
   background: var(--card-background-alt);
@@ -3980,27 +3912,8 @@ p { font-size: 12px; }
 }
 
 .app.dark .dashboard-table td {
-  background: var(--card-background);
-  color: var(--text-secondary);
-  border-color: var(--border-color-soft);
 }
 
-.app.dark .dashboard-table tbody tr:hover td {
-  background: #1b3023;
-}
-
-.app.dark .alert-row {
-  background: var(--card-background);
-  border-color: var(--border-color-soft);
-}
-
-.app.dark .alert-row:hover {
-  background: #1b3023;
-}
-
-.app.dark .alert-information span {
-  color: var(--text-muted);
-}
 
 /* ---------- Dark mode: Sentinel search/forms/tables ---------- */
 
@@ -4035,9 +3948,6 @@ p { font-size: 12px; }
 .app.dark .satellite-form-group input,
 .app.dark .date-input,
 .app.dark .cloud-input {
-  background: var(--input-background);
-  border-color: var(--border-color);
-  color: var(--text-primary);
 }
 
 .app.dark .date-input input,
@@ -4046,15 +3956,8 @@ p { font-size: 12px; }
 }
 
 .app.dark .satellite-table th {
-  background: var(--card-background-alt);
-  color: var(--text-secondary);
-  border-color: var(--border-color);
 }
 
-.app.dark .satellite-table td {
-  background: var(--card-background);
-  border-color: var(--border-color-soft);
-}
 
 .app.dark .satellite-table tbody tr:hover td {
   background: #1b3023;
@@ -4080,23 +3983,6 @@ p { font-size: 12px; }
     0 4px 12px rgba(0, 0, 0, 0.25);
 }
 
-.app.dark .notification-panel::before {
-  background: #111d15;
-  border-color: var(--border-color);
-}
-
-.app.dark .notification-panel-header {
-  background: #15251b;
-  border-color: var(--border-color);
-}
-
-.app.dark .notification-panel-header h3 {
-  color: var(--text-primary);
-}
-
-.app.dark .notification-panel-header span {
-  color: var(--text-secondary);
-}
 
 .app.dark .notification-refresh {
   background: #192d21;
@@ -4115,22 +4001,8 @@ p { font-size: 12px; }
 }
 
 .notification-item {
-  margin: 0 0 7px;
-  padding: 12px 13px;
-  border: 1px solid #e0eae3;
-  border-radius: 9px;
-  background: #ffffff;
-  box-shadow: 0 1px 4px rgba(20, 55, 38, 0.04);
 }
 
-.notification-item:last-child {
-  margin-bottom: 0;
-}
-
-.notification-item:hover {
-  background: #f7fbf8;
-  border-color: #cfe0d4;
-}
 
 .notification-unread {
   background: #ffffff;
@@ -4141,48 +4013,11 @@ p { font-size: 12px; }
   background: #f8faf9;
 }
 
-.app.dark .notification-list {
-  background: #0d1711;
-}
 
 .app.dark .notification-item,
 .app.dark .notification-unread {
-  background: #192d21;
-  border-color: #304439;
-  box-shadow: none;
 }
 
-.app.dark .notification-item:hover,
-.app.dark .notification-unread:hover {
-  background: #20372a;
-  border-color: #42604c;
-}
-
-.app.dark .notification-read {
-  background: #15251b;
-  opacity: 0.8;
-}
-
-.app.dark .notification-title-row strong {
-  color: var(--text-primary);
-}
-
-.app.dark .notification-item-content p {
-  color: var(--text-secondary);
-}
-
-.app.dark .notification-meta {
-  color: var(--text-muted);
-}
-
-.app.dark .notification-panel-footer {
-  background: #15251b;
-  border-color: var(--border-color);
-}
-
-.app.dark .notification-panel-footer span {
-  color: var(--text-secondary);
-}
 
 .app.dark .notification-empty {
   background: #15251b;
@@ -4373,25 +4208,6 @@ p { font-size: 12px; }
   margin-top: 4px;
 }
 
-.dashboard-section {
-  margin-bottom: 16px;
-  border-radius: 11px;
-}
-
-.status-panels {
-  gap: 12px;
-  margin-bottom: 16px;
-}
-
-.status-panel {
-  padding: 14px;
-  border-radius: 11px;
-}
-
-.status-panel h2 {
-  font-size: 15px;
-  margin-bottom: 11px;
-}
 
 /* ---------- Responsive ---------- */
 
@@ -4446,18 +4262,6 @@ html {
   font-size: 14px;
 }
 
-body {
-  font-size: 13px;
-  line-height: 1.45;
-}
-
-button,
-input,
-select,
-textarea {
-  font-size: 13px;
-}
-
 /* General headings */
 h1 {
   font-size: 25px;
@@ -4474,7 +4278,6 @@ h3 {
 p {
   font-size: 12px;
 }
-
 
 /* =========================================================
    DASHBOARD
@@ -4503,7 +4306,6 @@ p {
   align-items: stretch !important;
 }
 
-
 /* ---------------------------------------------------------
    STAT CARD
 --------------------------------------------------------- */
@@ -4527,7 +4329,6 @@ p {
   overflow: hidden;
 }
 
-
 /* Card hover */
 
 .stats-grid .stat-card:hover {
@@ -4536,7 +4337,6 @@ p {
   box-shadow:
     0 5px 14px rgba(30, 70, 45, 0.08);
 }
-
 
 /* ---------------------------------------------------------
    STAT CARD ICON
@@ -4553,10 +4353,6 @@ p {
 }
 
 .stats-grid .stat-icon {
-  width: 31px !important;
-  height: 31px !important;
-
-  border-radius: 8px !important;
 
   background: #e5f5e9;
 
@@ -4568,7 +4364,6 @@ p {
 
   justify-content: center;
 }
-
 
 /* ---------------------------------------------------------
    STAT CARD TEXT
@@ -4589,10 +4384,6 @@ p {
 
   color: #17301f;
 
-  font-size: 21px !important;
-
-  line-height: 1.05;
-
   font-weight: 700;
 }
 
@@ -4600,12 +4391,7 @@ p {
   display: block;
 
   color: #87948b;
-
-  font-size: 9px !important;
-
-  margin-top: 4px;
 }
-
 
 /* =========================================================
    DASHBOARD HEADER
@@ -4614,18 +4400,6 @@ p {
 .dashboard-header {
   margin-bottom: 18px !important;
 }
-
-.dashboard-header h1 {
-  font-size: 25px !important;
-  line-height: 1.2;
-}
-
-.dashboard-header p {
-  margin-top: 5px;
-
-  font-size: 11px !important;
-}
-
 
 /* =========================================================
    DASHBOARD SECTIONS
@@ -4637,19 +4411,6 @@ p {
   border-radius: 11px !important;
 }
 
-.section-heading {
-  padding: 14px 17px !important;
-}
-
-.section-heading h2 {
-  font-size: 15px !important;
-}
-
-.section-heading p {
-  font-size: 10px !important;
-}
-
-
 /* =========================================================
    STATUS PANELS
 ========================================================= */
@@ -4660,38 +4421,14 @@ p {
   margin-bottom: 16px !important;
 }
 
-.status-panel {
-  padding: 14px !important;
-
-  border-radius: 11px !important;
-}
-
-.status-panel h2 {
-  font-size: 15px !important;
-
-  margin-bottom: 10px !important;
-}
-
 .status-items {
   gap: 8px !important;
 }
 
 .status-item {
-  padding: 11px !important;
 
   border-radius: 9px !important;
 }
-
-.status-item-label {
-  font-size: 10px !important;
-}
-
-.status-item strong {
-  font-size: 20px !important;
-
-  margin-top: 5px;
-}
-
 
 /* =========================================================
    TABLE TEXT
@@ -4702,13 +4439,6 @@ p {
 
   font-size: 9px !important;
 }
-
-.dashboard-table td {
-  padding: 12px 14px !important;
-
-  font-size: 11px !important;
-}
-
 
 /* =========================================================
    RECENT ALERTS
@@ -4722,22 +4452,6 @@ p {
 
   padding: 12px 16px !important;
 }
-
-.alert-icon {
-  width: 32px !important;
-  height: 32px !important;
-
-  border-radius: 8px !important;
-}
-
-.alert-information strong {
-  font-size: 11px !important;
-}
-
-.alert-information span {
-  font-size: 9px !important;
-}
-
 
 /* =========================================================
    VIEW DETAILS BUTTON
@@ -4772,26 +4486,6 @@ p {
   font-weight: 700 !important;
 }
 
-.view-details-button:hover {
-  background: #146c43 !important;
-
-  border-color: #146c43 !important;
-
-  color: #ffffff !important;
-}
-
-.view-details-button span,
-.view-details-button svg {
-  color: #ffffff !important;
-
-  fill: currentColor !important;
-
-  stroke: currentColor !important;
-
-  font-size: 14px !important;
-}
-
-
 /* =========================================================
    FOREST CARDS
 ========================================================= */
@@ -4801,56 +4495,6 @@ p {
 
   border-radius: 11px !important;
 }
-
-.forest-card h2 {
-  font-size: 17px !important;
-
-  margin: 11px 0 3px !important;
-}
-
-.forest-code {
-  font-size: 10px !important;
-
-  margin-bottom: 13px !important;
-}
-
-.forest-icon {
-  width: 40px !important;
-  height: 40px !important;
-
-  border-radius: 9px !important;
-
-  font-size: 19px !important;
-}
-
-.forest-details {
-  gap: 8px !important;
-}
-
-.forest-details div {
-  padding: 9px !important;
-}
-
-.forest-details span {
-  font-size: 9px !important;
-}
-
-.forest-details strong {
-  font-size: 11px !important;
-}
-
-.forest-description {
-  font-size: 11px !important;
-
-  line-height: 1.45 !important;
-}
-
-.priority {
-  padding: 5px 8px !important;
-
-  font-size: 8px !important;
-}
-
 
 /* =========================================================
    NOTIFICATIONS
@@ -4864,69 +4508,10 @@ p {
 }
 
 .notification-item {
-  position: relative;
-
-  margin: 0 0 6px 0 !important;
-
-  padding: 11px 12px !important;
-
-  display: flex;
-
-  gap: 10px;
-
-  border: 1px solid #dfe8e2 !important;
-
-  border-radius: 9px !important;
-
-  background: #ffffff !important;
-
-  box-shadow:
-    0 1px 4px rgba(20, 55, 38, 0.04);
-}
-
-.notification-item:last-child {
-  margin-bottom: 0 !important;
-}
-
-.notification-item:hover {
-  background: #f7fbf8 !important;
-
-  border-color: #cbded1 !important;
 }
 
 .notification-item-icon {
-  width: 32px !important;
-  height: 32px !important;
-
-  border-radius: 8px !important;
 }
-
-.notification-title-row strong {
-  font-size: 11px !important;
-}
-
-.notification-item-content p {
-  margin: 4px 0 !important;
-
-  font-size: 10px !important;
-
-  line-height: 1.4 !important;
-}
-
-.notification-meta {
-  gap: 9px !important;
-
-  margin-top: 5px !important;
-
-  font-size: 8px !important;
-}
-
-.notification-priority {
-  padding: 3px 6px !important;
-
-  font-size: 8px !important;
-}
-
 
 /* =========================================================
    NOTIFICATION PANEL
@@ -4937,28 +4522,6 @@ p {
 
   border-radius: 12px !important;
 }
-
-.notification-panel-header {
-  padding: 14px 16px !important;
-}
-
-.notification-panel-header h3 {
-  font-size: 15px !important;
-}
-
-.notification-panel-header span {
-  font-size: 10px !important;
-}
-
-.notification-panel-footer {
-  padding: 10px 14px !important;
-}
-
-.notification-panel-footer span,
-.notification-panel-footer button {
-  font-size: 10px !important;
-}
-
 
 /* =========================================================
    DARK MODE — COMPLETE FIX
@@ -4988,7 +4551,6 @@ p {
   color: var(--text-primary) !important;
 }
 
-
 /* Main areas */
 
 .app.dark .main-area,
@@ -4997,7 +4559,6 @@ p {
 
   color: #edf7ef !important;
 }
-
 
 /* Dashboard stat cards */
 
@@ -5027,7 +4588,6 @@ p {
   color: #83d69c !important;
 }
 
-
 /* Dashboard sections */
 
 .app.dark .dashboard-section,
@@ -5051,7 +4611,6 @@ p {
   color: #aebeb3 !important;
 }
 
-
 /* Status items */
 
 .app.dark .status-item {
@@ -5067,7 +4626,6 @@ p {
 .app.dark .status-item strong {
   color: #edf7ef !important;
 }
-
 
 /* Dashboard table */
 
@@ -5095,7 +4653,6 @@ p {
   background: #203329 !important;
 }
 
-
 /* Recent alerts */
 
 .app.dark .alert-row {
@@ -5116,7 +4673,6 @@ p {
   color: #8fa398 !important;
 }
 
-
 /* =========================================================
    DARK MODE — NOTIFICATIONS
 ========================================================= */
@@ -5127,11 +4683,6 @@ p {
   border-color: #304439 !important;
 }
 
-.app.dark .notification-panel::before {
-  background: #101812 !important;
-
-  border-color: #304439 !important;
-}
 
 .app.dark .notification-panel-header {
   background: #151f19 !important;
@@ -5147,28 +4698,12 @@ p {
   color: #b8c9bd !important;
 }
 
-.app.dark .notification-list {
-  background: #0b120e !important;
-}
 
 .app.dark .notification-item,
 .app.dark .notification-unread {
-  background: #1a2920 !important;
-
-  border-color: #304439 !important;
-
-  color: #edf7ef !important;
-}
-
-.app.dark .notification-item:hover,
-.app.dark .notification-unread:hover {
-  background: #203329 !important;
-
-  border-color: #42604c !important;
 }
 
 .app.dark .notification-read {
-  background: #151f19 !important;
 
   opacity: 0.85;
 }
@@ -5189,10 +4724,6 @@ p {
   background: #151f19 !important;
 
   border-color: #304439 !important;
-}
-
-.app.dark .notification-panel-footer span {
-  color: #b8c9bd !important;
 }
 
 
@@ -5231,7 +4762,6 @@ p {
   color: #edf7ef !important;
 }
 
-
 /* =========================================================
    DARK MODE — VIEW DETAILS BUTTON
 ========================================================= */
@@ -5254,7 +4784,6 @@ p {
 
   border-color: #146c43 !important;
 }
-
 
 /* =========================================================
    DARK MODE — SATELLITE
@@ -5308,7 +4837,6 @@ p {
   border-color: #26392d !important;
 }
 
-
 /* =========================================================
    DARK MODE — SETTINGS / FORMS
 ========================================================= */
@@ -5335,7 +4863,6 @@ p {
 
   color: #edf7ef !important;
 }
-
 
 /* =========================================================
    TOPBAR DARK MODE
@@ -5364,7 +4891,6 @@ p {
   color: #b8c9bd !important;
 }
 
-
 /* =========================================================
    RESPONSIVE
 ========================================================= */
@@ -5383,7 +4909,6 @@ p {
   }
 
 }
-
 
 /* Mobile */
 
@@ -5412,7 +4937,6 @@ p {
   }
 
 }
-
 
 /* =========================================================
    END OF FINAL UI OVERRIDES
@@ -5622,7 +5146,6 @@ textarea {
 
 .view-details-button span,
 .view-details-button svg {
-  color: #ffffff !important;
   fill: currentColor !important;
   stroke: currentColor !important;
   font-size: 14px !important;
@@ -6302,7 +5825,6 @@ textarea {
   box-shadow: 0 5px 14px rgba(30, 70, 45, 0.08) !important;
 }
 
-
 /* =========================================================
    DARK MODE ALERT CARDS
 ========================================================= */
@@ -6322,7 +5844,6 @@ textarea {
   border-color: #42604c !important;
 }
 
-
 /* =========================================================
    ALERT CONTENT — SMALLER
 ========================================================= */
@@ -6341,7 +5862,6 @@ textarea {
   font-size: 11px !important;
 }
 
-
 /* =========================================================
    ALERT BUTTONS
 ========================================================= */
@@ -6350,7 +5870,6 @@ textarea {
   font-size: 11px !important;
   border-radius: 7px !important;
 }
-
 
 /* Resolve button */
 .alert-item .resolve-button {
@@ -6363,7 +5882,6 @@ textarea {
   background: #146c43 !important;
   border-color: #146c43 !important;
 }
-
 
 /* =========================================================
    MOBILE
@@ -6378,34 +5896,6 @@ textarea {
   .alert-item {
     padding: 14px !important;
   }
-}/* =========================================================
-   COPPERBELT PLACE NAMES
-========================================================= */
-
-.copperbelt-place-label {
-  background: transparent !important;
-  border: none !important;
-}
-
-.copperbelt-place-label div {
-  color: #ffffff;
-  background: rgba(20, 35, 25, 0.78);
-  border: 1px solid rgba(255, 255, 255, 0.75);
-  border-radius: 5px;
-  padding: 3px 7px;
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 16px;
-  white-space: nowrap;
-  text-align: center;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
-}
-
-/* Dark mode */
-.app.dark .copperbelt-place-label div {
-  color: #ffffff;
-  background: rgba(10, 20, 14, 0.88);
-  border-color: #83d69c;
 }
 /* =========================================================
    SENTINEL-2 MAP
@@ -6413,29 +5903,6 @@ textarea {
 
 .sentinel-image-overlay {
   image-rendering: auto;
-}
-
-/* =========================================================
-   PLACE NAMES
-========================================================= */
-
-.copperbelt-place-label {
-  background: transparent !important;
-  border: none !important;
-}
-
-.copperbelt-place-label div {
-  background: rgba(15, 35, 23, 0.82);
-  color: #ffffff;
-  border: 1px solid rgba(255, 255, 255, 0.8);
-  border-radius: 5px;
-  padding: 3px 7px;
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 15px;
-  white-space: nowrap;
-  text-align: center;
-  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.35);
 }
 
 /* =========================================================
@@ -6479,68 +5946,6 @@ textarea {
 .sentinel-layer-selector button.active {
   background: #198754;
   color: #ffffff;
-}
-
-/* =========================================================
-   SENTINEL ERROR
-========================================================= */
-
-.sentinel-map-error {
-  position: absolute;
-  z-index: 2000;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-
-  width: 390px;
-  max-width: calc(100% - 30px);
-
-  background: #ffffff;
-  border: 1px solid #e3ebe5;
-  border-radius: 14px;
-
-  padding: 24px;
-
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-
-  text-align: center;
-
-  box-shadow: 0 10px 35px rgba(0, 0, 0, 0.22);
-}
-
-.sentinel-map-error .error-icon {
-  font-size: 30px;
-  color: #dc3545;
-  margin-bottom: 8px;
-}
-
-.sentinel-map-error strong {
-  color: #b42318;
-  font-size: 15px;
-  margin-bottom: 8px;
-}
-
-.sentinel-map-error span {
-  color: #65756b;
-  font-size: 12px;
-  margin-bottom: 15px;
-}
-
-.sentinel-map-error button {
-  border: none;
-  background: #198754;
-  color: #ffffff;
-  border-radius: 7px;
-  padding: 9px 22px;
-  font-size: 13px;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.sentinel-map-error button:hover {
-  background: #146c43;
 }
 
 /* =========================================================
@@ -6591,40 +5996,6 @@ textarea {
   color: #ffffff;
 }
 
-.app.dark .sentinel-map-error {
-  background: #15251b;
-  border-color: #2b4032;
-}
-
-.app.dark .sentinel-map-error strong {
-  color: #ff8f8f;
-}
-
-.app.dark .sentinel-map-error span {
-  color: #aebeb4;
-}
-
-.app.dark .copperbelt-place-label div {
-  background: rgba(8, 20, 12, 0.9);
-  border-color: #83d69c;
-}
-.copperbelt-map-wrapper {
-  position: relative;
-  width: 100%;
-  height: 620px;
-  min-height: 620px;
-  overflow: hidden;
-  border-radius: 12px;
-  background: #d9dde0;
-}
-
-.copperbelt-map-wrapper .leaflet-container {
-  width: 100%;
-  height: 100%;
-  min-height: 620px;
-  background: #d9dde0;
-}
-
 .sentinel-map-status {
   position: absolute;
   top: 15px;
@@ -6662,66 +6033,6 @@ textarea {
 
 .sentinel-dot.loading {
   animation: sentinelPulse 1s infinite;
-}
-
-.sentinel-loading {
-  position: absolute;
-  right: 15px;
-  top: 15px;
-  z-index: 1000;
-  padding: 8px 11px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
-  color: #475569;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.sentinel-map-error {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  z-index: 2000;
-  width: min(420px, calc(100% - 40px));
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 9px;
-  padding: 22px 25px;
-  border-radius: 13px;
-  background: #ffffff;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.20);
-  color: #b91c1c;
-  text-align: center;
-}
-
-.sentinel-map-error strong {
-  font-size: 15px;
-}
-
-.sentinel-map-error span {
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 400;
-  line-height: 1.5;
-}
-
-.sentinel-map-error button {
-  border: 0;
-  border-radius: 7px;
-  padding: 8px 16px;
-  background: #198754;
-  color: #ffffff;
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.sentinel-map-error button:hover {
-  background: #157347;
 }
 
 @keyframes sentinelPulse {
@@ -6859,72 +6170,6 @@ textarea {
   box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.12);
 }
 
-.sentinel-loading {
-  position: absolute;
-  top: 15px;
-  right: 15px;
-  z-index: 1000;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 9px 12px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.14);
-  color: #475569;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.sentinel-map-error {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  z-index: 2000;
-  width: min(420px, calc(100% - 40px));
-  transform: translate(-50%, -50%);
-  padding: 24px;
-  border-radius: 14px;
-  background: #ffffff;
-  box-shadow: 0 10px 35px rgba(0, 0, 0, 0.22);
-  text-align: center;
-  color: #b91c1c;
-}
-
-.sentinel-map-error svg {
-  margin-bottom: 9px;
-}
-
-.sentinel-map-error strong {
-  display: block;
-  font-size: 16px;
-}
-
-.sentinel-map-error p {
-  margin: 8px 0 14px;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.sentinel-map-error button {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  border: 0;
-  border-radius: 7px;
-  padding: 9px 17px;
-  background: #198754;
-  color: #ffffff;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.sentinel-map-error button:hover {
-  background: #146c43;
-}
-
-
 /* =========================================================
    PLACE LABELS
    ========================================================= */
@@ -6950,7 +6195,6 @@ textarea {
   white-space: nowrap;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
 }
-
 
 /* =========================================================
    NDVI LEGEND
@@ -7006,7 +6250,6 @@ textarea {
   font-size: 10px;
 }
 
-
 /* =========================================================
    MOBILE
    ========================================================= */
@@ -7031,14 +6274,2472 @@ textarea {
     top: 10px;
   }
 
-  .sentinel-loading {
-    right: 10px;
-    top: 10px;
-  }
-
   .ndvi-legend {
     right: 10px;
     bottom: 25px;
   }
 
+}
+
+/* ==========================================================
+   User Management
+
+   Where an administrator provisions officer accounts and
+   assigns the district or province each one is responsible
+   for. An account without a jurisdiction is highlighted,
+   because such an officer is refused every record and would
+   otherwise see an empty system with no explanation.
+   ========================================================== */
+
+.user-management-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.user-management-page .page-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.user-management-page .page-heading h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 4px;
+  font-size: 20px;
+}
+
+.user-management-page .page-heading p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted, #6b7280);
+}
+
+.user-management-page .card {
+  padding: 16px;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 10px;
+  background: var(--card-background, #ffffff);
+}
+
+.user-management-page .muted {
+  margin: 0;
+  color: var(--text-muted, #6b7280);
+  font-size: 14px;
+}
+
+/* ---------- Buttons ---------- */
+
+.primary-button,
+.secondary-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 14px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.primary-button {
+  background: #198754;
+  color: #ffffff;
+}
+
+.primary-button:hover:not(:disabled) {
+  background: #146c43;
+}
+
+.primary-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.secondary-button {
+  background: transparent;
+  border-color: var(--border-color, #e5e7eb);
+  color: var(--text-color, #374151);
+}
+
+.secondary-button:hover {
+  background: var(--card-background-alt, #f9fafb);
+}
+
+.user-management-page .icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted, #6b7280);
+  cursor: pointer;
+}
+
+.user-management-page .icon-button:hover {
+  background: var(--card-background-alt, #f9fafb);
+  color: var(--text-color, #374151);
+}
+
+.user-management-page .icon-button.danger:hover {
+  background: #fee2e2;
+  border-color: #fca5a5;
+  color: #b91c1c;
+}
+
+/* ---------- Account form ---------- */
+
+.user-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.user-form-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.user-form-header h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.user-form-grid {
+  display: grid;
+  grid-template-columns: repeat(
+    auto-fit,
+    minmax(240px, 1fr)
+  );
+  gap: 14px;
+}
+
+.user-form-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.user-form-grid input,
+.user-form-grid select {
+  padding: 9px 10px;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 7px;
+  background: var(--card-background, #ffffff);
+  color: var(--text-color, #374151);
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.user-form-grid input:focus,
+.user-form-grid select:focus {
+  outline: 2px solid #19875440;
+  border-color: #198754;
+}
+
+.user-form-grid small {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-muted, #6b7280);
+  line-height: 1.4;
+}
+
+.role-note {
+  align-self: end;
+  padding: 9px 12px;
+  border-radius: 7px;
+  background: var(--card-background-alt, #f9fafb);
+  border: 1px dashed var(--border-color, #e5e7eb);
+  font-size: 12px;
+  color: var(--text-muted, #6b7280);
+  line-height: 1.45;
+}
+
+.user-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+/* ---------- Accounts table ---------- */
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.data-table th {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-color, #e5e7eb);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, #6b7280);
+}
+
+.data-table td {
+  padding: 12px;
+  border-bottom: 1px solid var(--border-color, #f3f4f6);
+}
+
+.data-table tr:last-child td {
+  border-bottom: none;
+}
+
+.row-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+/* ---------- Tags ---------- */
+
+.tag {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--card-background-alt, #f3f4f6);
+  color: var(--text-color, #374151);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.tag-success {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.tag-warning {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.tag-muted {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
+/* ---------- Success notice ---------- */
+
+.success-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 14px;
+  border: 1px solid #6ee7b7;
+  border-left: 4px solid #059669;
+  border-radius: 8px;
+  background: #ecfdf5;
+  color: #065f46;
+  font-size: 13px;
+}
+
+/* ---------- Dark mode ---------- */
+
+[data-theme="dark"] .tag-muted,
+.dark-mode .tag-muted {
+  background: #1f2937;
+  color: #9ca3af;
+}
+
+[data-theme="dark"] .success-notice,
+.dark-mode .success-notice {
+  border-color: #065f46;
+  background: #052e21;
+  color: #a7f3d0;
+}
+
+[data-theme="dark"] .role-note,
+.dark-mode .role-note {
+  background: #15251b;
+}
+
+/* ==========================================================
+   Forest map
+
+   Copernicus Sentinel-2 imagery with an optional drawing
+   tool for selecting the area to monitor.
+
+   There is no street base layer. The map exists to show
+   vegetation, and a road map would show none.
+   ========================================================== */
+
+.forest-map {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--card-background, #ffffff);
+}
+
+.forest-map-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-color, #e5e7eb);
+  background: var(--card-background-alt, #f9fafb);
+}
+
+.forest-map-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.forest-map-control select {
+  padding: 6px 9px;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 7px;
+  background: var(--card-background, #ffffff);
+  color: var(--text-color, #374151);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.forest-map-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.forest-map-hint {
+  font-size: 12px;
+  color: var(--text-muted, #6b7280);
+}
+
+.forest-map-canvas {
+  width: 100%;
+  background: #0b1a12;
+}
+
+.forest-map-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 9px 12px;
+  border-top: 1px solid var(--border-color, #e5e7eb);
+  font-size: 12px;
+  color: var(--text-muted, #6b7280);
+}
+
+.forest-map-footer strong {
+  color: #b45309;
+  font-size: 13px;
+}
+
+.forest-map-warning {
+  padding: 10px 12px;
+  border-top: 1px solid #fcd34d;
+  background: #fffbeb;
+  color: #78350f;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+/* The coordinate field, collapsed behind a disclosure so
+   the map is the primary way to define a boundary. */
+
+.geometry-details {
+  margin-top: 10px;
+}
+
+.geometry-details summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted, #6b7280);
+  padding: 6px 0;
+}
+
+.geometry-details textarea {
+  width: 100%;
+  margin-top: 8px;
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-size: 12px;
+}
+
+[data-theme="dark"] .forest-map-warning,
+.dark-mode .forest-map-warning {
+  border-top-color: #78350f;
+  background: #2a1f0a;
+  color: #fde68a;
+}
+
+/* ==========================================================
+   Forest area actions
+
+   Viewing and removing sit side by side, with removal
+   styled as the quieter of the two. It is not destructive
+   in the usual sense: the server deactivates the record and
+   keeps the analyses and detections already made against
+   it. The wording says "Remove" rather than "Delete" for
+   that reason.
+   ========================================================== */
+
+.forest-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.forest-card-actions .view-details-button {
+  flex: 1;
+  margin-top: 0;
+}
+
+.remove-forest-button {
+  padding: 9px 14px;
+  border: 1px solid #e5c9c9;
+  border-radius: 9px;
+  background: transparent;
+  color: #9a3412;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.remove-forest-button:hover:not(:disabled) {
+  background: #fee2e2;
+  border-color: #fca5a5;
+  color: #b91c1c;
+}
+
+.remove-forest-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* ---------- Removal confirmation ---------- */
+
+.forest-notice {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-bottom: 18px;
+  padding: 12px 15px;
+  border: 1px solid #6ee7b7;
+  border-left: 4px solid #059669;
+  border-radius: 10px;
+  background: #ecfdf5;
+  color: #065f46;
+}
+
+.forest-notice p {
+  flex: 1;
+  margin: 0;
+  font-size: 13.5px;
+}
+
+.forest-notice span {
+  font-weight: 800;
+}
+
+.forest-notice button {
+  border: none;
+  background: transparent;
+  color: #065f46;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+/* ==========================================================
+   Priority as colour
+
+   The interface was almost entirely one green, which meant
+   nothing on screen distinguished a critical forest area
+   from a low-priority one.
+
+   Colour here is not decoration: it encodes the priority
+   already stored against each area, so severity is legible
+   at a glance rather than only after reading the badge.
+   The green identity of the product is kept for navigation
+   and primary actions.
+   ========================================================== */
+
+.forest-card {
+  border-left: 4px solid #cbd5e1;
+  transition: box-shadow 0.18s ease, transform 0.18s ease,
+    border-color 0.18s ease;
+}
+
+.forest-card:hover {
+  transform: translateY(-2px);
+}
+
+/* Critical: needs attention now. */
+.forest-card:has(.priority-CRITICAL),
+.forest-card:has(.priority-critical) {
+  border-left-color: #dc2626;
+}
+
+/* High. */
+.forest-card:has(.priority-HIGH),
+.forest-card:has(.priority-high) {
+  border-left-color: #ea580c;
+}
+
+/* Medium. */
+.forest-card:has(.priority-MEDIUM),
+.forest-card:has(.priority-medium) {
+  border-left-color: #d97706;
+}
+
+/* Low: routine monitoring. */
+.forest-card:has(.priority-LOW),
+.forest-card:has(.priority-low) {
+  border-left-color: #0d9488;
+}
+
+/* An area no longer monitored is drained of colour, so it
+   reads as inactive without having to find the status
+   text. */
+.forest-card:has(.status-dot.inactive) {
+  border-left-color: #cbd5e1;
+  opacity: 0.72;
+}
+
+[data-theme="dark"] .forest-notice,
+.dark-mode .forest-notice {
+  border-color: #065f46;
+  background: #052e21;
+  color: #a7f3d0;
+}
+
+[data-theme="dark"] .forest-notice button,
+.dark-mode .forest-notice button {
+  color: #a7f3d0;
+}
+
+[data-theme="dark"] .remove-forest-button,
+.dark-mode .remove-forest-button {
+  border-color: #4a2626;
+  color: #fca5a5;
+}
+
+[data-theme="dark"] .remove-forest-button:hover:not(:disabled),
+.dark-mode .remove-forest-button:hover:not(:disabled) {
+  background: #3b1717;
+  border-color: #7f1d1d;
+  color: #fecaca;
+}
+
+/* ==========================================================
+   Map imagery selector
+
+   Sits above the Leaflet tile pane. NDVI is the layer that
+   shows vegetation loss, so switching to it has to be one
+   click rather than a buried setting.
+   ========================================================== */
+
+.map-layer-switch {
+  position: absolute;
+  top: 15px;
+  left: 15px;
+  z-index: 1000;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+}
+
+.map-layer-option {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.map-layer-option:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.map-layer-option.active {
+  background: #198754;
+  color: #ffffff;
+}
+
+[data-theme="dark"] .map-layer-switch,
+.dark-mode .map-layer-switch {
+  background: rgba(21, 37, 27, 0.94);
+}
+
+[data-theme="dark"] .map-layer-option,
+.dark-mode .map-layer-option {
+  color: #cbd5e1;
+}
+
+[data-theme="dark"] .map-layer-option:hover,
+.dark-mode .map-layer-option:hover {
+  background: #1f3528;
+  color: #f8fafc;
+}
+
+/* Explains the wait when a Sentinel-2 layer is selected.
+   Sentinel Hub renders each view on request rather than
+   serving a prepared tile, so a pause is expected rather
+   than a fault. */
+
+.map-layer-hint {
+  position: absolute;
+  top: 58px;
+  left: 15px;
+  z-index: 1000;
+  max-width: 260px;
+  padding: 7px 11px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: #475569;
+}
+
+[data-theme="dark"] .map-layer-hint,
+.dark-mode .map-layer-hint {
+  background: rgba(21, 37, 27, 0.94);
+  color: #cbd5e1;
+}
+
+/* ==========================================================
+   ==========================================================
+   INTERFACE REFINEMENT
+   ==========================================================
+
+   This block is deliberately last so it settles
+   inconsistencies that accumulated across the stylesheet,
+   without rewriting the rules that came before it.
+
+   What it corrects, and why:
+
+     Corner radii had grown to eight different values
+     (7, 8, 9, 10, 11, 12, 14 and 20 pixels) applied without
+     a pattern. Nothing looks wrong on its own, but together
+     they read as unfinished. They are reduced to a scale of
+     three.
+
+     Shadows were a single flat value everywhere, so nothing
+     sat above anything else. They become a short elevation
+     scale instead.
+
+     Figures were set in a proportional face, so digits
+     changed width between readings and columns of hectares
+     and percentages did not line up.
+
+   The green identity is unchanged. What follows adds depth
+   and rhythm to it rather than replacing it.
+   ========================================================== */
+
+:root {
+  /* Brand ramp, built from the existing #198754 so the
+     identity is kept while giving hover, active and
+     emphasis states somewhere to go. */
+  --forest-50: #f0fdf4;
+  --forest-100: #dcfce7;
+  --forest-200: #bbf7d0;
+  --forest-300: #86efac;
+  --forest-500: #22c55e;
+  --forest-600: #198754;
+  --forest-700: #146c43;
+  --forest-800: #14532d;
+  --forest-900: #0b3d23;
+
+  /* Radius scale: controls, cards, pills. */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-pill: 999px;
+
+  /* Elevation. Low values on purpose: a dense operational
+     screen should feel flat and calm, not glossy. */
+  --shadow-xs: 0 1px 2px rgba(16, 40, 28, 0.06);
+  --shadow-sm: 0 1px 3px rgba(16, 40, 28, 0.08),
+    0 1px 2px rgba(16, 40, 28, 0.04);
+  --shadow-md: 0 4px 12px rgba(16, 40, 28, 0.08),
+    0 2px 4px rgba(16, 40, 28, 0.04);
+  --shadow-lg: 0 12px 28px rgba(16, 40, 28, 0.12),
+    0 4px 8px rgba(16, 40, 28, 0.06);
+
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ---------- Typography ---------- */
+
+body {
+  font-family: Inter, system-ui, -apple-system,
+    "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  letter-spacing: -0.006em;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  letter-spacing: -0.021em;
+  line-height: 1.25;
+}
+
+/* Figures are read and compared, not just displayed, so
+   they are set in tabular numerals. Without this the digits
+   change width and a column of hectares will not align. */
+.stat-value,
+.stat-number,
+.forest-count,
+.data-table td,
+.dashboard-table td,
+.user-table td,
+.detection-table td,
+.metric-value,
+.priority,
+.status-badge,
+.tag {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* ---------- Corner radius, normalised ---------- */
+
+.card,
+.forest-card,
+.message-card,
+.error-card,
+.stats-card,
+.stat-card,
+.register-forest-card,
+.dashboard-card,
+.notification-panel,
+.user-form,
+.forest-map {
+  border-radius: var(--radius-md);
+}
+
+button,
+input,
+select,
+textarea,
+.view-details-button,
+.register-button,
+.refresh-button,
+.retry-button,
+.remove-forest-button,
+.primary-button,
+.secondary-button {
+  border-radius: var(--radius-sm);
+}
+
+.priority,
+.status-badge,
+.tag {
+  border-radius: var(--radius-pill);
+}
+
+/* ---------- Elevation ---------- */
+
+.card,
+.stats-card,
+.stat-card,
+.dashboard-card,
+.message-card {
+  box-shadow: var(--shadow-sm);
+}
+
+.forest-card,
+.register-forest-card {
+  box-shadow: var(--shadow-sm);
+}
+
+.forest-card:hover {
+  box-shadow: var(--shadow-md);
+}
+
+.notification-panel {
+  box-shadow: var(--shadow-lg);
+}
+
+/* ---------- Controls ---------- */
+
+button {
+  font-family: inherit;
+  transition: background 0.15s var(--ease),
+    border-color 0.15s var(--ease),
+    color 0.15s var(--ease),
+    box-shadow 0.15s var(--ease);
+}
+
+input,
+select,
+textarea {
+  font-family: inherit;
+  transition: border-color 0.15s var(--ease),
+    box-shadow 0.15s var(--ease);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--forest-600);
+  box-shadow: 0 0 0 3px rgba(25, 135, 84, 0.14);
+}
+
+/* Keyboard focus must stay visible. This system is used by
+   government officers on shared machines, where keyboard
+   navigation and accessibility requirements apply. The ring
+   appears only for keyboard users, so pointer users are not
+   given an outline they did not ask for. */
+:focus-visible {
+  outline: 2px solid var(--forest-600);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* ---------- Primary action ---------- */
+
+.register-button,
+.primary-button,
+.view-details-button {
+  box-shadow: var(--shadow-xs);
+}
+
+.register-button:hover,
+.primary-button:hover:not(:disabled) {
+  background: var(--forest-700);
+  box-shadow: var(--shadow-sm);
+}
+
+.register-button:active,
+.primary-button:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: none;
+}
+
+/* ---------- Tables ---------- */
+
+.data-table th,
+.dashboard-table th,
+.user-table th,
+.detection-table th {
+  font-weight: 600;
+  font-size: 11.5px;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+}
+
+.data-table tbody tr,
+.dashboard-table tbody tr,
+.user-table tbody tr,
+.detection-table tbody tr {
+  transition: background 0.12s var(--ease);
+}
+
+.data-table tbody tr:hover,
+.dashboard-table tbody tr:hover,
+.user-table tbody tr:hover,
+.detection-table tbody tr:hover {
+  background: var(--forest-50);
+}
+
+/* ---------- Reduced motion ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .forest-card:hover {
+    transform: none;
+  }
+}
+
+/* ---------- Dark mode ---------- */
+
+[data-theme="dark"] .data-table tbody tr:hover,
+.dark-mode .data-table tbody tr:hover,
+[data-theme="dark"] .dashboard-table tbody tr:hover,
+.dark-mode .dashboard-table tbody tr:hover,
+[data-theme="dark"] .user-table tbody tr:hover,
+.dark-mode .user-table tbody tr:hover {
+  background: #16291e;
+}
+
+[data-theme="dark"] input:focus,
+.dark-mode input:focus,
+[data-theme="dark"] select:focus,
+.dark-mode select:focus,
+[data-theme="dark"] textarea:focus,
+.dark-mode textarea:focus {
+  border-color: var(--forest-500);
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.18);
+}
+
+/* ==========================================================
+   District breakdown
+
+   Shown to officers who supervise several districts. The
+   point is comparison: which district is worst affected, and
+   where reviews are piling up. Colour is used only where it
+   carries that signal.
+   ========================================================== */
+
+.district-breakdown {
+  margin-bottom: 18px;
+  padding: 18px 20px;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: var(--radius-md, 12px);
+  background: var(--card-background, #ffffff);
+  box-shadow: var(--shadow-sm);
+}
+
+.district-breakdown-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.district-breakdown-head h3 {
+  margin: 0 0 3px;
+  font-size: 16px;
+}
+
+.district-breakdown-head p {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-muted, #6b7280);
+}
+
+.district-pending-pill {
+  padding: 5px 12px;
+  border-radius: var(--radius-pill, 999px);
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.district-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.district-table th {
+  text-align: left;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--border-color, #e5e7eb);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+  color: var(--text-muted, #6b7280);
+}
+
+.district-table td {
+  padding: 11px 10px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.district-table tr:last-child td {
+  border-bottom: none;
+}
+
+/* The district carrying the largest affected area. An
+   officer deciding where to send people should see it
+   without reading every row. */
+.district-row.worst td {
+  background: #fff7ed;
+}
+
+.district-row.worst td:first-child {
+  box-shadow: inset 3px 0 0 #ea580c;
+}
+
+.district-flag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill, 999px);
+  background: #ffedd5;
+  color: #9a3412;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+/* Work waiting on a person, rather than a measurement. */
+.district-pending {
+  display: inline-block;
+  min-width: 26px;
+  padding: 2px 9px;
+  border-radius: var(--radius-pill, 999px);
+  background: #fef3c7;
+  color: #92400e;
+  font-weight: 700;
+  text-align: center;
+}
+
+.district-clear {
+  color: #94a3b8;
+}
+
+.district-muted {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+  color: var(--text-muted, #6b7280);
+}
+
+.district-error {
+  margin: 0;
+  font-size: 13px;
+  color: #b91c1c;
+}
+
+[data-theme="dark"] .district-table td,
+.dark-mode .district-table td {
+  border-bottom-color: #1f3528;
+}
+
+[data-theme="dark"] .district-row.worst td,
+.dark-mode .district-row.worst td {
+  background: #2a1f0a;
+}
+
+[data-theme="dark"] .district-clear,
+.dark-mode .district-clear {
+  color: #64748b;
+}
+
+/* Place-names toggle, and the imagery failure message.
+   A blank map with no explanation is what made the
+   Sentinel-2 layers appear broken, so a failure now says so. */
+
+.map-label-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 4px;
+  padding: 6px 11px 6px 9px;
+  border-left: 1px solid rgba(0, 0, 0, 0.1);
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.map-label-toggle input {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: #198754;
+  cursor: pointer;
+}
+
+.map-layer-hint.error {
+  border: 1px solid #fca5a5;
+  background: rgba(254, 242, 242, 0.96);
+  color: #991b1b;
+  max-width: 300px;
+}
+
+[data-theme="dark"] .map-label-toggle,
+.dark-mode .map-label-toggle {
+  border-left-color: rgba(255, 255, 255, 0.12);
+  color: #cbd5e1;
+}
+
+[data-theme="dark"] .map-layer-hint.error,
+.dark-mode .map-layer-hint.error {
+  border-color: #7f1d1d;
+  background: rgba(59, 23, 23, 0.96);
+  color: #fecaca;
+}
+
+/* ==========================================================
+   ALERTS PAGE
+   ==========================================================
+
+   The alerts page was written with its layout and colour
+   expressed as inline style objects on the elements
+   themselves. It rendered correctly, but carried three
+   costs that only show up once the rest of the interface
+   settles down:
+
+     An inline style wins against every stylesheet rule, so
+     the page could not take part in the corner radius,
+     elevation and figure alignment corrections that the
+     refinement block applies to every other card. Its cards
+     sat at 18 and 20 pixel radii while the dashboard beside
+     it had moved to 12.
+
+     The summary row was fixed at four equal columns with no
+     breakpoint, so on a laptop the four figures were
+     squeezed until the labels wrapped mid-word.
+
+     Repeating the same six colours across thirty-four
+     inline objects meant a change to any one of them had to
+     be made in thirty-four places, and would eventually be
+     made in thirty-three.
+
+   Every colour below is carried over unchanged from the
+   inline values it replaces. This block moves the styling;
+   it does not restyle the page.
+   ========================================================== */
+
+/* ---------- Action error ---------- */
+
+.alerts-action-error {
+  background: #fef2f2;
+  border: 1px solid #fca5a5;
+  color: #b91c1c;
+  border-radius: var(--radius-sm);
+  padding: 12px 16px;
+  margin-bottom: 20px;
+}
+
+/* ---------- Summary row ----------
+
+   auto-fit rather than a fixed count of four: the row keeps
+   four columns on a desktop, drops to two on a laptop and
+   to one on a phone, without a breakpoint having to be
+   declared for each step. */
+
+.alerts-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 18px;
+  margin-bottom: 28px;
+}
+
+.alerts-summary-card {
+  background: #ffffff;
+  border: 1px solid #e2e8e5;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  padding: 22px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.alerts-summary-icon {
+  width: 48px;
+  height: 48px;
+  min-width: 48px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* One modifier per figure, replacing the background and
+   colour props the component used to take as arguments. */
+
+.alerts-summary-icon.is-total {
+  background: #e8f5ec;
+  color: #16834d;
+}
+
+.alerts-summary-icon.is-pending {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.alerts-summary-icon.is-critical {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.alerts-summary-icon.is-resolved {
+  background: #e0e7ff;
+  color: #4338ca;
+}
+
+.alerts-summary-label {
+  color: #718096;
+  font-size: 14px;
+}
+
+.alerts-summary-value {
+  display: block;
+  font-size: 25px;
+  color: #073b2a;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Panel ---------- */
+
+.alerts-panel {
+  background: #ffffff;
+  border: 1px solid #e2e8e5;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.alerts-panel-header {
+  padding: 24px 28px;
+  border-bottom: 1px solid #e2e8e5;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.alerts-panel-header h2 {
+  margin: 0;
+  color: #073b2a;
+}
+
+.alerts-panel-header p {
+  margin: 6px 0 0;
+  color: #718096;
+}
+
+.alerts-panel-count {
+  color: #16834d;
+  background: #e8f5ec;
+  padding: 9px 15px;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Alert entry ---------- */
+
+.alert-entry {
+  padding: 22px 28px;
+  border-bottom: 1px solid #edf2ef;
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+}
+
+.alert-entry:last-child {
+  border-bottom: 0;
+}
+
+.alert-entry-icon {
+  width: 46px;
+  height: 46px;
+  min-width: 46px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  /* Default tint: a warning that is not severe. */
+  background: #fef8e8;
+  color: #c2410c;
+}
+
+/* Critical and high share a background; only critical takes
+   the red foreground, which is how the inline version
+   behaved. */
+
+.alert-entry-icon.is-severe {
+  background: #fff1ec;
+}
+
+.alert-entry-icon.is-critical {
+  color: #b91c1c;
+}
+
+.alert-entry-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.alert-entry-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  align-items: flex-start;
+}
+
+.alert-entry-head h3 {
+  margin: 0;
+  color: #073b2a;
+  font-size: 17px;
+}
+
+.alert-entry-message {
+  margin: 8px 0 0;
+  color: #64748b;
+  line-height: 1.8;
+  font-size: 15px;
+}
+
+/* The message body arrives as "Label: value" lines. The
+   label is emphasised so an officer can scan down the left
+   edge of the block rather than reading every line. */
+
+.alert-entry-message strong {
+  color: #073b2a;
+  font-weight: 700;
+}
+
+.alert-entry-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+  margin-top: 16px;
+}
+
+.alert-entry-meta span {
+  color: #718096;
+  font-size: 13px;
+}
+
+.alert-entry-meta strong {
+  color: #073b2a;
+  font-variant-numeric: tabular-nums;
+}
+
+.alert-entry-resolved {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #15803d;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+/* ---------- Badges ----------
+
+   Priority and status share one shape and differ only in
+   tint, so the shape is declared once. */
+
+.alert-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.alert-badge--critical,
+.alert-badge--failed {
+  background: #fee2e2;
+  color: #b91c1c;
+  border: 1px solid #fca5a5;
+}
+
+.alert-badge--high {
+  background: #ffedd5;
+  color: #c2410c;
+  border: 1px solid #fdba74;
+}
+
+.alert-badge--medium,
+.alert-badge--pending {
+  background: #fef3c7;
+  color: #b45309;
+  border: 1px solid #fcd34d;
+}
+
+.alert-badge--low,
+.alert-badge--sent {
+  background: #dcfce7;
+  color: #15803d;
+  border: 1px solid #86efac;
+}
+
+.alert-badge--read {
+  background: #dbeafe;
+  color: #1d4ed8;
+  border: 1px solid #93c5fd;
+}
+
+.alert-badge--resolved {
+  background: #e0e7ff;
+  color: #4338ca;
+  border: 1px solid #a5b4fc;
+}
+
+.alert-badge--unknown {
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+}
+
+/* ---------- Actions ---------- */
+
+.alert-entry-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 18px;
+  flex-wrap: wrap;
+}
+
+.alert-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 14px;
+  border-radius: var(--radius-sm);
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* Disabled here means another action on the page is already
+   in flight, not that this action is unavailable, so the
+   control is dimmed rather than restyled. */
+
+.alert-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.alert-action--read {
+  border: 1px solid #93c5fd;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.alert-action--resolve {
+  border: 1px solid #86efac;
+  background: #f0fdf4;
+  color: #15803d;
+}
+
+.alert-read-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 14px;
+  border-radius: var(--radius-sm);
+  background: #f1f5f9;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+/* ---------- Empty state ---------- */
+
+.alerts-empty {
+  padding: 60px 20px;
+  text-align: center;
+}
+
+.alerts-empty h3 {
+  color: #073b2a;
+}
+
+.alerts-empty p {
+  color: #718096;
+}
+
+/* ---------- Narrow screens ----------
+
+   The title and its priority badge sit side by side while
+   there is room for both. Below this width the badge moves
+   under the title rather than compressing it. */
+
+@media (max-width: 600px) {
+  .alert-entry {
+    padding: 18px 16px;
+    gap: 12px;
+  }
+
+  .alerts-panel-header {
+    padding: 18px 16px;
+  }
+
+  .alert-entry-head {
+    flex-direction: column;
+    gap: 8px;
+  }
+}
+
+/* ==========================================================
+   DETECTIONS PAGE AND REVIEW DIALOG
+   ==========================================================
+
+   As with the alerts page, the review dialog was styled with
+   inline objects. Moving it into the stylesheet corrects two
+   things beyond the tidying:
+
+     The nine-field detail grid was fixed at two columns. On a
+     phone that put roughly eleven characters on each line, so
+     "Satellite Image ID" wrapped across three rows and the
+     figure beneath it was pushed out of view.
+
+     The dialog could not be given a focus ring or a hover
+     state, because every one of its controls carried its own
+     inline background that no stylesheet rule could reach.
+
+   Colours are carried over unchanged from the inline values
+   they replace.
+   ========================================================== */
+
+/* ---------- Status pill ----------
+
+   Shared by the table row and the dialog. The tint is chosen
+   by a modifier rather than computed in JavaScript, so an
+   unrecognised status from the server renders neutral grey
+   instead of unstyled. */
+
+.detection-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 95px;
+  padding: 7px 14px;
+  border-radius: var(--radius-pill);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+}
+
+.detection-status--verified {
+  background: #dcfce7;
+  color: #15803d;
+  border: 1px solid #86efac;
+}
+
+.detection-status--pending {
+  background: #fef3c7;
+  color: #b45309;
+  border: 1px solid #fcd34d;
+}
+
+.detection-status--rejected {
+  background: #fee2e2;
+  color: #b91c1c;
+  border: 1px solid #fca5a5;
+}
+
+.detection-status--unknown {
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+}
+
+/* ---------- Row action ---------- */
+
+.detection-view-button {
+  border: none;
+  background: #e8f5e9;
+  color: #15803d;
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.detection-view-button:hover {
+  background: #d7ecd9;
+}
+
+/* ---------- Dialog ---------- */
+
+.detection-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(15, 23, 42, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  padding: 20px;
+}
+
+.detection-dialog {
+  width: 100%;
+  max-width: 650px;
+  max-height: 90vh;
+  overflow-y: auto;
+  background: #ffffff;
+  border-radius: var(--radius-md);
+  padding: 28px;
+
+  /* Kept at its original depth rather than folded into the
+     elevation scale: the dialog has to read as lifted clear
+     of the dimmed page behind it, which is a stronger
+     separation than any card on the page needs. */
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+}
+
+.detection-dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.detection-dialog-header h2 {
+  margin: 0;
+  font-size: 24px;
+  color: #14532d;
+  font-variant-numeric: tabular-nums;
+}
+
+.detection-dialog-header p {
+  margin-top: 6px;
+  color: #64748b;
+}
+
+.detection-dialog-close {
+  border: none;
+  background: #f1f5f9;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+  color: #475569;
+}
+
+.detection-dialog-close:hover {
+  background: #e2e8f0;
+}
+
+.detection-dialog-status {
+  margin-bottom: 20px;
+}
+
+/* ---------- Detail grid ----------
+
+   auto-fit with a floor wide enough for the longest label
+   ("Satellite Image ID"), so the grid drops to one column on
+   a phone instead of wrapping every label. */
+
+.detection-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.detection-detail {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: var(--radius-sm);
+  padding: 14px;
+}
+
+.detection-detail-label {
+  font-size: 12px;
+  color: #64748b;
+  margin-bottom: 5px;
+  font-weight: 700;
+}
+
+/* Readings are set in tabular figures so the NDVI values and
+   hectare figures line up down the grid. */
+
+.detection-detail-value {
+  font-size: 15px;
+  color: #1e293b;
+  font-weight: 700;
+  word-break: break-word;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Notes ---------- */
+
+.detection-notes {
+  margin-bottom: 20px;
+}
+
+.detection-notes label {
+  display: block;
+  font-weight: 700;
+  margin-bottom: 8px;
+  color: #334155;
+}
+
+.detection-notes textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: var(--radius-sm);
+  resize: vertical;
+  font-family: inherit;
+  font-size: 14px;
+}
+
+/* ---------- Dialog error ---------- */
+
+.detection-dialog-error {
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fca5a5;
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  margin-bottom: 18px;
+  font-size: 14px;
+}
+
+/* ---------- Dialog actions ---------- */
+
+.detection-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.detection-dialog-actions button {
+  padding: 11px 18px;
+  border-radius: var(--radius-sm);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.detection-dialog-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.detection-button--cancel {
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #475569;
+}
+
+.detection-button--reject {
+  border: 1px solid #fca5a5;
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.detection-button--verify {
+  border: 1px solid #86efac;
+  background: #dcfce7;
+  color: #15803d;
+}
+
+/* ---------- Narrow screens ---------- */
+
+@media (max-width: 600px) {
+  .detection-overlay {
+    padding: 12px;
+  }
+
+  .detection-dialog {
+    padding: 20px;
+    max-height: 94vh;
+  }
+
+  /* Verify and Reject are the consequential controls here, so
+     on a narrow screen they take the full width rather than
+     sitting as three cramped targets in a row. */
+  .detection-dialog-actions {
+    flex-direction: column-reverse;
+  }
+
+  .detection-dialog-actions button {
+    width: 100%;
+  }
+}
+
+/* ==========================================================
+   FOREST MAP TOOLBAR
+   ==========================================================
+
+   The map used to offer a single control, so the toolbar
+   could rely on space-between to push it away from the
+   drawing actions. It now carries three: the base map, the
+   Sentinel-2 overlay and the place-name toggle.
+
+   With more than two children, space-between distributes the
+   gaps evenly and the controls drift apart across the width
+   of the bar. They are grouped at the start instead, and the
+   drawing actions pushed to the end with an automatic
+   margin, which holds however many controls are present.
+   ========================================================== */
+
+.forest-map-toolbar {
+  justify-content: flex-start;
+}
+
+/* Pushed to the trailing edge, so the hint and the Clear
+   button stay together and away from the layer controls. */
+
+.forest-map-actions {
+  margin-left: auto;
+}
+
+/* ---------- Place-name toggle ----------
+
+   Matched to .forest-map-control so the checkbox sits on the
+   same baseline as the two dropdowns beside it. */
+
+.forest-map-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+}
+
+.forest-map-toggle input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+
+  /* The one place the brand green is applied to a native
+     control, matching the toggle already on the dashboard
+     map. */
+  accent-color: #198754;
+  cursor: pointer;
+}
+
+/* ---------- Rendering notice ----------
+
+   Sentinel-2 is drawn on request and a single view takes
+   several seconds. Before this notice existed the map simply
+   sat unchanged for that time, which read as a failure
+   rather than as work in progress.
+
+   It is a status message rather than a spinner: the base map
+   underneath is already showing real ground, so nothing is
+   blocked while this is visible. */
+
+.forest-map-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  border-radius: var(--radius-pill);
+  background: #e8f5ec;
+  color: #16834d;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.forest-map-loading::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: forest-map-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes forest-map-pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .forest-map-loading::before {
+    animation: none;
+    opacity: 0.8;
+  }
+}
+
+/* ---------- Narrow screens ----------
+
+   Below this width the three controls stack rather than
+   wrapping into an uneven two-and-one arrangement, and the
+   drawing actions return to the start of the bar because
+   there is no longer a trailing edge to sit against. */
+
+@media (max-width: 700px) {
+  .forest-map-control,
+  .forest-map-toggle {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .forest-map-control select {
+    flex: 1;
+    min-width: 0;
+    margin-left: 10px;
+  }
+
+  .forest-map-actions {
+    margin-left: 0;
+    width: 100%;
+  }
+}
+
+/* ==========================================================
+   DASHBOARD SCENE NOTICE
+   ==========================================================
+
+   Shown when the Sentinel-2 scene lookup fails.
+
+   It replaces a panel that covered the entire map. That
+   panel was misleading: the scene lookup supplies only the
+   acquisition date, the cloud figure and an initial centre,
+   while the imagery comes from the Copernicus proxy and the
+   base layer from Esri. Both keep working when the lookup
+   does not, so hiding the map behind a full-bleed error
+   reported a fault that had not occurred.
+
+   It sits along the top edge instead, over the map but not
+   across it, leaving the map pannable and readable
+   underneath.
+
+   The amber is the same pair already used by
+   .forest-map-warning, because this carries the same
+   meaning: something is degraded, nothing is broken.
+   ========================================================== */
+
+.map-scene-notice {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+
+  /* Above Leaflet's own panes and controls, which sit in
+     the 400-1000 range, but well below a modal. */
+  z-index: 1200;
+
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid #fcd34d;
+  border-radius: var(--radius-sm);
+  background: #fffbeb;
+  color: #78350f;
+  box-shadow: var(--shadow-md);
+}
+
+.map-scene-notice svg {
+  flex-shrink: 0;
+}
+
+.map-scene-notice-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.map-scene-notice-text strong {
+  font-size: 13px;
+}
+
+.map-scene-notice-text span {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: #92400e;
+}
+
+/* The retry control keeps its shared button styling but is
+   scaled down: it sits inside a notice, not on a toolbar. */
+
+.map-scene-notice .refresh-button {
+  flex-shrink: 0;
+  padding: 7px 12px;
+  font-size: 12.5px;
+}
+
+/* ---------- Narrow screens ----------
+
+   Stacked rather than compressed: at this width the three
+   items in a row leave the message about twenty characters
+   wide. */
+
+@media (max-width: 600px) {
+  .map-scene-notice {
+    top: 8px;
+    left: 8px;
+    right: 8px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .map-scene-notice .refresh-button {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
+/* ==========================================================
+   ABOUT PAGE
+   ==========================================================
+
+   Reading matter rather than an operational screen, so it is
+   set differently from the rest of the interface: a single
+   measured column instead of a grid of cards competing for
+   attention, and prose given room rather than compressed.
+
+   It introduces no colour of its own. The forest ramp, the
+   radius scale and the elevation scale are the ones already
+   defined in the refinement block; the only literal values
+   below are the amber pair the map warning already uses.
+   ========================================================== */
+
+.about-card {
+  background: #ffffff;
+  border: 1px solid #e2e8e5;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  padding: 26px 28px;
+  margin-bottom: 18px;
+
+  /* Held to a readable measure. Prose set the full width of
+     a desktop window is hard to track from one line to the
+     next. */
+  max-width: 820px;
+}
+
+.about-card h3 {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0 0 14px;
+  font-size: 16px;
+  color: #073b2a;
+}
+
+.about-card h3 svg {
+  color: var(--forest-600, #198754);
+  flex-shrink: 0;
+}
+
+.about-card p {
+  color: #4b5c53;
+  line-height: 1.7;
+  margin: 0 0 12px;
+}
+
+.about-card p:last-child {
+  margin-bottom: 0;
+}
+
+/* ---------- Identity ---------- */
+
+.about-identity {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.about-identity-mark {
+  width: 62px;
+  height: 62px;
+  min-width: 62px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #e8f5ec;
+  color: #16834d;
+}
+
+.about-identity-text {
+  min-width: 0;
+}
+
+.about-identity h2 {
+  margin: 0 0 4px;
+  color: #073b2a;
+  font-size: 22px;
+}
+
+/* The full dissertation title. Set smaller and lighter than
+   the system name: it is the formal designation, not the
+   name anyone uses day to day. */
+
+.about-title {
+  margin: 0 0 8px !important;
+  font-size: 13.5px;
+  line-height: 1.55 !important;
+  color: #64748b !important;
+  max-width: 60ch;
+}
+
+.about-version {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 11.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Emphasis ----------
+
+   One sentence per page at most. Used for the point an
+   officer must not miss: that the system proposes rather
+   than concludes. */
+
+.about-emphasis {
+  border-left: 3px solid var(--forest-600, #198754);
+  padding-left: 14px;
+  color: #073b2a !important;
+  font-weight: 600;
+}
+
+/* ---------- Steps ----------
+
+   Numbered because detection genuinely is a sequence: each
+   stage consumes what the previous one produced, and the
+   order is the method. */
+
+.about-steps {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+  counter-reset: about-step;
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+}
+
+.about-steps li {
+  counter-increment: about-step;
+  position: relative;
+  padding-left: 38px;
+  color: #4b5c53;
+  line-height: 1.65;
+}
+
+.about-steps li::before {
+  content: counter(about-step);
+  position: absolute;
+  left: 0;
+  top: 1px;
+  width: 25px;
+  height: 25px;
+  border-radius: var(--radius-pill);
+  background: #e8f5ec;
+  color: #16834d;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.about-steps strong {
+  color: #073b2a;
+}
+
+/* ---------- Note ---------- */
+
+.about-note {
+  display: flex;
+  gap: 11px;
+  align-items: flex-start;
+  margin-top: 18px;
+  padding: 14px 16px;
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--forest-600, #198754);
+  background: #f4faf6;
+}
+
+.about-note svg {
+  color: #16834d;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.about-note p {
+  margin: 0 !important;
+  font-size: 13.5px;
+  line-height: 1.65 !important;
+}
+
+.about-note strong {
+  color: #073b2a;
+}
+
+/* The same amber the map warning uses, for the one case
+   where something is actually wrong. */
+
+.about-note--warn {
+  border-left-color: #fcd34d;
+  background: #fffbeb;
+}
+
+.about-note--warn svg {
+  color: #92610b;
+}
+
+.about-note--warn p {
+  color: #78350f !important;
+}
+
+.about-note--warn strong {
+  color: #78350f;
+}
+
+/* ---------- Thresholds ----------
+
+   The figure leads, because that is what is being looked up.
+   The explanation follows for whoever needs it. */
+
+.about-rules {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 14px;
+}
+
+.about-rule {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 15px 16px;
+  border: 1px solid #e6ece8;
+  border-radius: var(--radius-sm);
+  background: #fafcfb;
+}
+
+.about-rule-value {
+  font-size: 19px;
+  font-weight: 700;
+  color: #16834d;
+  font-variant-numeric: tabular-nums;
+}
+
+.about-rule-label {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #073b2a;
+}
+
+.about-rule-note {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #718096;
+}
+
+/* ---------- Fact list ---------- */
+
+.about-facts {
+  margin: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.about-facts > div {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 16px;
+  align-items: baseline;
+}
+
+.about-facts dt {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #718096;
+}
+
+.about-facts dd {
+  margin: 0;
+  color: #4b5c53;
+  line-height: 1.6;
+  min-width: 0;
+}
+
+.about-mono {
+  font-family: ui-monospace, "Cascadia Mono", Menlo,
+    Consolas, monospace;
+  font-size: 13px;
+  word-break: break-all;
+  color: #073b2a !important;
+}
+
+/* ---------- Connection ---------- */
+
+.about-connection {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+
+.about-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 13px;
+  border-radius: var(--radius-pill);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.about-status--checking {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.about-status--online {
+  background: #e8f5ec;
+  color: #16834d;
+}
+
+/* Amber rather than red: the server being unreachable from
+   this browser does not mean anything has been lost. */
+
+.about-status--offline {
+  background: #fffbeb;
+  color: #92610b;
+}
+
+.about-caveat {
+  margin-top: 14px !important;
+  font-size: 12.5px;
+  color: #718096 !important;
+  line-height: 1.6 !important;
+}
+
+/* ---------- Narrow screens ---------- */
+
+@media (max-width: 600px) {
+  .about-card {
+    padding: 20px 18px;
+  }
+
+  .about-identity {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 14px;
+  }
+
+  /* The label stacks above its value rather than taking a
+     fixed 150px column, which at this width leaves the value
+     about twelve characters wide. */
+  .about-facts > div {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+
+  .about-connection {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .about-connection .refresh-button {
+    justify-content: center;
+  }
+}
+
+/* Quoted statutory text on the About page.
+
+   Set apart from the surrounding prose because it is the
+   wording of the Forests Act No. 4 of 2015 and must be
+   readable as a quotation rather than as the project's own
+   description of the law. */
+
+.about-quote {
+  margin: 10px 0;
+  padding: 10px 14px;
+  border-left: 2px solid #cbd5e1;
+  background: #ffffff;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  font-size: 13px;
+  line-height: 1.65;
+  font-style: italic;
+  color: #475569;
+}
+
+/* ==========================================================
+   REPORT DOWNLOAD CONTROLS
+   ==========================================================
+
+   Downloading a report is not a decision about a record, so
+   these controls are kept visually quieter than Verify and
+   Reject, and are placed away from them.
+   ========================================================== */
+
+/* Pushed to the leading edge of the dialog's action row, so
+   it does not sit adjacent to the two controls that change
+   the record. */
+
+.detection-button--report {
+  margin-right: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #475569;
+}
+
+.detection-button--report:hover:not(:disabled) {
+  background: #f1f5f9;
+}
+
+@media (max-width: 600px) {
+  /* The action row stacks at this width, so the automatic
+     margin has nothing to push against and would instead
+     add a gap above the button. */
+  .detection-button--report {
+    margin-right: 0;
+  }
 }

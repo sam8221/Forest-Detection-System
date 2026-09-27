@@ -15,6 +15,30 @@
 
     <meta name="theme-color" content="#166534" />
 
+    <!--
+      Inter was already named as the interface font but was
+      never loaded, so the application silently fell back to
+      whatever the operating system supplied and looked
+      different on every machine.
+
+      Only the weights actually used are requested, and the
+      preconnect hints let the font start downloading before
+      the stylesheet is parsed.
+    -->
+    <link
+      rel="preconnect"
+      href="https://fonts.googleapis.com"
+    />
+    <link
+      rel="preconnect"
+      href="https://fonts.gstatic.com"
+      crossorigin
+    />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+    />
+
     <title>ForestWatch Zambia</title>
   </head>
 
