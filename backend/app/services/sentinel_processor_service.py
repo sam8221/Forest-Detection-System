@@ -37,6 +37,9 @@ import numpy as np
 import rasterio
 from rasterio.crs import CRS
 
+from app.core.constants import NDVI_NODATA
+from app.services.ndvi_service import NDVIService
+
 
 class SentinelProcessorService:
     """
@@ -53,7 +56,31 @@ class SentinelProcessorService:
         extract_directory: str | Path,
     ) -> Path:
         """
-        Extract a Sentinel-2 ZIP product.
+        Extract a downloaded Sentinel-2 ZIP product.
+
+        Args:
+            zip_path:
+                The downloaded product archive, roughly a
+                gigabyte for a full Level-2A tile.
+            extract_directory:
+                Directory to extract into. Created if
+                absent.
+
+        Returns:
+            Path:
+                Root of the extracted SAFE structure.
+
+        Raises:
+            FileNotFoundError:
+                The archive does not exist.
+            zipfile.BadZipFile:
+                The archive is corrupt or incomplete, which
+                normally means the download was truncated.
+
+        Products are distributed as a SAFE directory tree
+        inside the archive, so the bands are not at a fixed
+        path and are located afterwards by find_band rather
+        than by name here.
         """
 
         zip_path = Path(zip_path)
@@ -89,10 +116,34 @@ class SentinelProcessorService:
         band: str,
     ) -> Path:
         """
-        Locate a Sentinel-2 10 m band.
+        Locate one Sentinel-2 10 m band within a product.
 
-        B04 = Red
-        B08 = Near Infrared
+        Args:
+            extracted_directory:
+                Root of an extracted SAFE product, searched
+                recursively because the granule identifier
+                in the path is not known in advance.
+            band:
+                Band identifier as it appears in the file
+                name. The two this system uses are:
+
+                    B04 = Red
+                    B08 = Near Infrared
+
+        Returns:
+            Path:
+                The band file.
+
+        Raises:
+            FileNotFoundError:
+                The directory does not exist, or holds no
+                file for that band at 10 m.
+
+        Both bands are taken at 10 m, their native
+        resolution, so they share a pixel grid and NDVI can
+        be computed without resampling either one. Taking
+        one band at 20 m would require resampling and would
+        put an interpolated value into the ratio.
         """
 
         extracted_directory = Path(
@@ -134,6 +185,22 @@ class SentinelProcessorService:
         """
         Determine the UTM CRS from a Sentinel-2 MGRS tile.
 
+        Args:
+            band_path:
+                Path to a band file whose name carries the
+                MGRS tile identifier, matched case
+                insensitively anywhere in the path.
+
+        Returns:
+            CRS:
+                The UTM coordinate reference system for
+                that tile.
+
+        Raises:
+            ValueError:
+                No MGRS tile identifier appears in the path,
+                so the zone cannot be derived.
+
         Example:
 
             T35LPF
@@ -144,6 +211,16 @@ class SentinelProcessorService:
         For the Copperbelt tile T35LPF:
 
             WGS 84 / UTM Zone 35 South
+
+        Used only when a band file carries no CRS of its
+        own. Deriving it from the tile identifier is exact
+        rather than a guess, because the MGRS grid defines
+        which UTM zone each tile belongs to.
+
+        A projected system is required, not a geographic
+        one: areas are measured in this CRS, and metres
+        convert to hectares by a constant whereas degrees do
+        not.
         """
 
         band_path = Path(
@@ -255,10 +332,30 @@ class SentinelProcessorService:
         """
         Determine the CRS to use for the NDVI output.
 
-        If the Sentinel source bands contain a CRS, use it.
+        Args:
+            red_band_path:
+                Band B04 file.
+            nir_band_path:
+                Band B08 file.
 
-        If they do not contain a CRS, determine the CRS from
-        the Sentinel-2 MGRS tile.
+        Returns:
+            CRS:
+                The coordinate reference system to write on
+                the NDVI raster.
+
+        Raises:
+            ValueError:
+                Neither band declares a CRS and no MGRS tile
+                identifier can be read from either path.
+            rasterio.errors.RasterioIOError:
+                A band cannot be opened.
+
+        A CRS declared by the file itself is preferred, as
+        it is what the data provider recorded. Falling back
+        to the MGRS tile identifier covers products whose
+        JP2 files carry no georeference, which would
+        otherwise produce an NDVI raster that cannot be
+        placed on the ground at all.
         """
 
         red_band_path = Path(
@@ -345,6 +442,27 @@ class SentinelProcessorService:
         """
         Calculate NDVI from Sentinel-2 B04 and B08.
 
+        Args:
+            red_band_path:
+                Band B04 (red) at 10 m.
+            nir_band_path:
+                Band B08 (near-infrared) at 10 m, covering
+                the same tile.
+            output_path:
+                Destination for the NDVI GeoTIFF.
+
+        Returns:
+            Path:
+                The NDVI raster written.
+
+        Raises:
+            ValueError:
+                The bands differ in shape, or no CRS can be
+                determined for the output.
+            rasterio.errors.RasterioIOError:
+                A band cannot be read, or the output cannot
+                be written.
+
         Formula:
 
             NDVI = (NIR - RED) / (NIR + RED)
@@ -352,8 +470,18 @@ class SentinelProcessorService:
         B04 = Red
         B08 = Near Infrared
 
+        Both bands are 10 m, so they share a pixel grid and
+        neither is resampled before the ratio is taken.
+
         Output:
-            Float32 GeoTIFF with geographic CRS.
+            Single-band float32 GeoTIFF in the PROJECTED
+            UTM CRS returned by determine_crs, normally
+            WGS 84 / UTM zone 35S for the Copperbelt.
+            float32 preserves the fractional index and
+            carries the nodata sentinel; a projected CRS
+            means areas derived from this raster are in
+            square metres and convert to hectares by a
+            constant.
         """
 
         red_band_path = Path(
@@ -465,29 +593,20 @@ class SentinelProcessorService:
 
         # -----------------------------------------------------
         # Calculate NDVI
+        #
+        # The formula itself lives in NDVIService so that the
+        # value this pipeline writes to disk and the value
+        # verified by the unit tests come from exactly the
+        # same code.
+        #
+        # NDVIService marks unmeasurable pixels (where
+        # NIR + RED is zero) as NaN; the step below converts
+        # those to this pipeline's NDVI_NODATA sentinel.
         # -----------------------------------------------------
 
-        denominator = (
-            nir + red
-        )
-
-        ndvi = np.full(
-            red.shape,
-            -9999.0,
-            dtype=np.float32,
-        )
-
-        valid_pixels = (
-            denominator != 0
-        )
-
-        ndvi[valid_pixels] = (
-            (
-                nir[valid_pixels]
-                - red[valid_pixels]
-            )
-            /
-            denominator[valid_pixels]
+        ndvi = NDVIService().calculate_ndvi(
+            red_band=red,
+            nir_band=nir,
         )
 
         # -----------------------------------------------------
@@ -497,7 +616,7 @@ class SentinelProcessorService:
         ndvi = np.where(
             np.isfinite(ndvi),
             ndvi,
-            -9999.0,
+            NDVI_NODATA,
         ).astype(
             np.float32
         )
@@ -510,7 +629,7 @@ class SentinelProcessorService:
             driver="GTiff",
             dtype="float32",
             count=1,
-            nodata=-9999.0,
+            nodata=NDVI_NODATA,
             compress="lzw",
             crs=output_crs,
             transform=red_transform,
@@ -543,8 +662,39 @@ class SentinelProcessorService:
         working_directory: str | Path,
     ) -> dict[str, str]:
         """
-        Extract Sentinel-2 product, locate B04/B08,
-        determine CRS, and generate NDVI GeoTIFF.
+        Turn a downloaded product into an NDVI raster.
+
+        Args:
+            zip_path:
+                The downloaded Sentinel-2 Level-2A archive.
+            working_directory:
+                Directory to extract into and write under.
+
+        Returns:
+            dict[str, str]:
+                Paths as strings under the keys "red_band",
+                "nir_band" and "ndvi".
+
+        Raises:
+            FileNotFoundError:
+                The archive is absent, or a required band
+                is not present once extracted.
+            zipfile.BadZipFile:
+                The archive is corrupt or truncated.
+            ValueError:
+                No CRS can be determined for the output.
+            rasterio.errors.RasterioIOError:
+                A band cannot be read, or the output cannot
+                be written.
+
+        Runs the four steps in order: extract the archive,
+        locate B04 and B08, settle the output CRS, and
+        write NDVI.
+
+        The band paths are returned alongside the NDVI so
+        the later cloud-masking stage can work from the same
+        extracted product rather than unpacking it again;
+        a Level-2A tile is roughly a gigabyte.
         """
 
         zip_path = Path(

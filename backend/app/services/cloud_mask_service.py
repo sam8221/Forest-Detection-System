@@ -41,6 +41,8 @@ import rasterio
 from rasterio.enums import Resampling
 from rasterio.warp import reproject
 
+from app.core.constants import NDVI_NODATA
+
 
 class CloudMaskService:
     """
@@ -49,6 +51,15 @@ class CloudMaskService:
 
     # =========================================================
     # SENTINEL-2 SCL CLASSES
+    #
+    # The Scene Classification Layer shipped with every
+    # Sentinel-2 Level-2A product. Each pixel carries one of
+    # these integer labels, assigned by the ESA processor,
+    # at 20 m resolution.
+    #
+    # Level-2A is used rather than Level-1C because the SCL
+    # band is produced as part of the atmospheric correction
+    # and is not available at Level-1C.
     # =========================================================
 
     SCL_NO_DATA = 0
@@ -66,6 +77,41 @@ class CloudMaskService:
 
     # =========================================================
     # CLASSES THAT SHOULD BE MASKED
+    #
+    # A pixel in any of these classes carries no usable
+    # surface reading, so its NDVI is discarded rather than
+    # compared. Cloud, cirrus and snow reflect strongly in
+    # both red and near-infrared and read as low NDVI;
+    # shadow darkens both bands; saturated and no-data
+    # pixels hold no measurement at all. Compared against a
+    # clear baseline, any of them would appear as a sudden
+    # loss of vegetation over ground that was never touched.
+    #
+    # Three classes are deliberately KEPT:
+    #
+    #   WATER (6) reads as negative NDVI on every date, so
+    #   it contributes no CHANGE between two dates and
+    #   cannot raise a detection. Masking it would instead
+    #   remove the shoreline from both periods and make a
+    #   genuine clearing beside a river invisible.
+    #
+    #   BARE_SOIL (5) is the expected appearance of ground
+    #   that has just been cleared. It is the signal this
+    #   system exists to find, not noise.
+    #
+    #   DARK_AREA (2) and UNCLASSIFIED (7) are kept because
+    #   the classifier assigns them to burnt ground and to
+    #   terrain it cannot resolve, both of which occur over
+    #   real miombo woodland.
+    #
+    # NOTE: Keeping DARK_AREA admits some unflagged cloud
+    # shadow, since the classifier does not always separate
+    # the two. That biases the system toward reporting loss
+    # where there is none, which an officer rejects on
+    # review, rather than toward missing a clearing, which
+    # nobody would ever see. The bias direction is
+    # deliberate; its size has not been measured, and
+    # quantifying it belongs in the Chapter Five evaluation.
     # =========================================================
 
     MASKED_CLASSES = {
@@ -87,7 +133,35 @@ class CloudMaskService:
         extracted_directory: str | Path,
     ) -> Path:
         """
-        Locate the Sentinel-2 SCL 20 m band.
+        Locate the SCL 20 m band inside an extracted product.
+
+        Args:
+            extracted_directory:
+                Root of an unzipped Sentinel-2 Level-2A
+                product. Searched recursively, because the
+                band sits several levels down inside the
+                SAFE structure under a granule identifier
+                that is not known in advance.
+
+        Returns:
+            Path:
+                The SCL band file.
+
+        Raises:
+            FileNotFoundError:
+                The directory does not exist, or holds no
+                file matching the SCL 20 m pattern. The
+                second case usually means a Level-1C product
+                was downloaded, which carries no SCL band.
+
+        The 20 m band is used because SCL is not published
+        at 10 m. It is resampled up to the 10 m NDVI grid
+        later, in create_valid_mask.
+
+        NOTE: When several granules match, the first is
+        returned and the rest ignored. Products covering
+        more than one granule would be silently masked using
+        only one of them.
         """
 
         extracted_directory = Path(
@@ -123,8 +197,37 @@ class CloudMaskService:
         scl_band_path: str | Path,
     ) -> dict[int, dict[str, float]]:
         """
-        Calculate the number and percentage of pixels
-        belonging to each SCL class.
+        Report the share of each SCL class in a scene.
+
+        Args:
+            scl_band_path:
+                Path to the SCL 20 m band.
+
+        Returns:
+            dict[int, dict[str, float]]:
+                Keyed by SCL class value. Each entry holds
+                the class name, the pixel count and the
+                percentage of the scene it covers. Classes
+                absent from the scene are omitted rather
+                than reported as zero.
+
+        Raises:
+            FileNotFoundError:
+                The SCL band does not exist.
+            rasterio.errors.RasterioIOError:
+                The file cannot be read as a raster.
+
+        Used to decide whether a scene is worth processing
+        and to explain to an officer why a date with imagery
+        produced no analysis. A scene that is largely cloud
+        leaves too few valid pixels to compare, and saying so
+        distinguishes that from a finding of no deforestation.
+
+        Percentages are of the whole raster, including its
+        no-data margin, not of the ground actually imaged.
+        A tile only partly covered by the satellite swath
+        therefore reports a lower percentage for every real
+        class than its imaged area would suggest.
         """
 
         scl_band_path = Path(
@@ -203,21 +306,50 @@ class CloudMaskService:
         output_path: str | Path,
     ) -> Path:
         """
-        Create a valid-pixel mask from Sentinel-2 SCL.
+        Build a valid-pixel mask on the NDVI grid from SCL.
 
-        SCL resolution:
-            20 m
+        Args:
+            scl_band_path:
+                SCL classification band at 20 m.
+            reference_ndvi_path:
+                NDVI raster at 10 m whose CRS, transform and
+                dimensions the mask must match.
+            output_path:
+                Destination for the mask GeoTIFF. Parent
+                directories are created if absent.
 
-        NDVI resolution:
-            10 m
+        Returns:
+            Path:
+                The mask written, as a single uint8 band
+                where 1 marks a pixel with a usable reading
+                and 0 marks one to discard.
 
-        The SCL is resampled to the exact NDVI grid using
-        nearest-neighbour resampling.
+        Raises:
+            FileNotFoundError:
+                Either input does not exist.
+            rasterio.errors.RasterioIOError:
+                An input cannot be read, or the output
+                cannot be written.
 
-        Output:
+        Resolution:
+            SCL is published at 20 m and NDVI is computed at
+            10 m, so the mask is resampled to the NDVI grid.
+            One 20 m SCL pixel therefore governs four 10 m
+            NDVI pixels.
 
-            1 = valid pixel
-            0 = masked pixel
+        Why nearest-neighbour:
+            SCL values are category labels, not quantities.
+            Interpolating between them would average class 3
+            (cloud shadow) and class 5 (bare soil) into
+            class 4 (vegetation), inventing a class from two
+            neighbours that share no meaning. Nearest
+            neighbour copies a label rather than computing
+            one, so every output pixel carries a class that
+            ESA actually assigned.
+
+        The mask is written on the NDVI grid rather than its
+        own, so the two rasters can be combined pixel by
+        pixel without any further alignment step.
         """
 
         scl_band_path = Path(
@@ -584,9 +716,39 @@ class CloudMaskService:
         output_path: str | Path,
     ) -> Path:
         """
-        Apply the valid-pixel mask to NDVI.
+        Apply a valid-pixel mask to an NDVI raster.
 
-        Invalid pixels are stored as -9999.
+        Args:
+            ndvi_path:
+                NDVI raster at 10 m.
+            valid_mask_path:
+                Mask on the same grid, 1 valid, 0 masked,
+                as produced by create_valid_mask.
+            output_path:
+                Destination for the masked NDVI GeoTIFF.
+
+        Returns:
+            Path:
+                The masked raster written.
+
+        Raises:
+            FileNotFoundError:
+                Either input does not exist.
+            rasterio.errors.RasterioIOError:
+                An input cannot be read, or the output
+                cannot be written.
+
+        Invalid pixels are stored as NDVI_NODATA, which lies
+        outside the range NDVI can take and so cannot be
+        mistaken for a reading. The value is also recorded
+        as the raster's nodata in the profile, so a reader
+        that honours it excludes those pixels without
+        needing to know the sentinel.
+
+        The pixels are overwritten rather than removed, so
+        the raster keeps its shape and grid and stays
+        comparable, pixel for pixel, with the NDVI of the
+        other period.
         """
 
         ndvi_path = Path(
@@ -691,7 +853,7 @@ class CloudMaskService:
                 ~ndvi_invalid
             ),
             ndvi,
-            -9999.0,
+            NDVI_NODATA,
         ).astype(
             np.float32
         )
@@ -705,7 +867,7 @@ class CloudMaskService:
                 masked_ndvi
             ),
             masked_ndvi,
-            -9999.0,
+            NDVI_NODATA,
         ).astype(
             np.float32
         )
@@ -718,7 +880,7 @@ class CloudMaskService:
             driver="GTiff",
             dtype="float32",
             count=1,
-            nodata=-9999.0,
+            nodata=NDVI_NODATA,
             compress="lzw",
         )
 
@@ -747,6 +909,35 @@ class CloudMaskService:
     ) -> dict[str, str]:
         """
         Create a cloud mask and apply it to NDVI.
+
+        Args:
+            scl_band_path:
+                SCL classification band at 20 m.
+            ndvi_path:
+                Unmasked NDVI raster at 10 m.
+            working_directory:
+                Directory to write under. Two
+                subdirectories are created within it,
+                "cloud_mask" and "masked_ndvi".
+
+        Returns:
+            dict[str, str]:
+                Paths as strings under the keys "scl_band",
+                "valid_mask" and "masked_ndvi".
+
+        Raises:
+            FileNotFoundError:
+                An input does not exist.
+            rasterio.errors.RasterioIOError:
+                An input cannot be read, or an output
+                cannot be written.
+
+        The two intermediate rasters are kept rather than
+        discarded. The mask records which pixels were
+        excluded and why, which is what allows a detection
+        to be re-examined later, and allows an officer to
+        see that an area produced no result because it was
+        under cloud rather than because nothing was found.
         """
 
         working_directory = Path(

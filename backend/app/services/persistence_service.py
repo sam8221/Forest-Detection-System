@@ -35,6 +35,10 @@ from pathlib import Path
 import numpy as np
 import rasterio
 
+from app.core.config import get_settings
+from app.core.constants import NDVI_NODATA
+from app.services.ndvi_service import NDVIService
+
 
 class PersistenceService:
     """
@@ -51,7 +55,7 @@ class PersistenceService:
         previous_ndvi_path: str | Path,
         latest_ndvi_path: str | Path,
         working_directory: str | Path,
-        threshold: float = 0.30,
+        threshold: float | None = None,
     ) -> dict[str, str | float]:
         """
         Compare two cloud-masked NDVI rasters.
@@ -73,12 +77,18 @@ class PersistenceService:
                 Directory for generated outputs.
 
             threshold:
-                Minimum NDVI decrease required.
+                Minimum NDVI decrease required. Falls back
+                to the configured default when omitted.
 
         Returns:
             Dictionary containing generated raster paths
             and statistics.
         """
+
+        if threshold is None:
+            threshold = (
+                get_settings().ndvi_threshold
+            )
 
         previous_ndvi_path = Path(
             previous_ndvi_path
@@ -285,9 +295,12 @@ class PersistenceService:
             )
 
         # -----------------------------------------------------
-        # Our cloud-masked NDVI uses -9999.
-        # Make sure these pixels are excluded even if
-        # metadata does not expose nodata correctly.
+        # Cloud-masked NDVI written by this pipeline fills
+        # unusable pixels with NDVI_NODATA. They are
+        # excluded explicitly here as well as by the
+        # raster's declared nodata, because a profile that
+        # lost that declaration would otherwise let the
+        # fill value be read as a real NDVI reading.
         # -----------------------------------------------------
 
         previous_valid &= (
@@ -313,7 +326,7 @@ class PersistenceService:
 
         ndvi_change = np.full(
             previous.shape,
-            -9999.0,
+            NDVI_NODATA,
             dtype=np.float32,
         )
 
@@ -331,21 +344,27 @@ class PersistenceService:
 
         # =====================================================
         # CONFIRMED DEFORESTATION
+        #
+        # The threshold rule itself lives in
+        # NDVIService.flag_change so that the change-detection
+        # decision has one tested definition shared by every
+        # caller.
+        #
+        # Pixels that were not valid on BOTH dates hold the
+        # NDVI_NODATA fill written above, which flag_change
+        # never flags, so persistence is preserved here.
         # =====================================================
 
-        confirmed_deforestation = np.zeros(
-            previous.shape,
-            dtype=np.uint8,
-        )
-
-        confirmed_deforestation[
-            both_dates_valid
-            &
-            (
-                ndvi_change
-                >= threshold
+        confirmed_deforestation = (
+            NDVIService().flag_change(
+                ndvi_decline=np.where(
+                    both_dates_valid,
+                    ndvi_change,
+                    np.nan,
+                ),
+                threshold=threshold,
             )
-        ] = 1
+        )
 
         # =====================================================
         # SAVE NDVI CHANGE
@@ -359,7 +378,7 @@ class PersistenceService:
             driver="GTiff",
             dtype="float32",
             count=1,
-            nodata=-9999.0,
+            nodata=NDVI_NODATA,
             compress="lzw",
         )
 

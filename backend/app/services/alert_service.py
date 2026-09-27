@@ -31,11 +31,13 @@ Version:
 
 from datetime import UTC, datetime
 
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.models.alert import Alert
 from app.models.alert_recipient import AlertRecipient
 from app.models.detection import Detection
+from app.models.district import District
 from app.models.email_queue import EmailQueue
 from app.models.enums import (
     AlertStatus,
@@ -44,6 +46,7 @@ from app.models.enums import (
     PriorityLevel,
     UserRole,
 )
+from app.models.forest_area import ForestArea
 from app.models.user import User
 from app.repositories.alert_repository import AlertRepository
 
@@ -150,15 +153,57 @@ class AlertService:
             else f"Forest Area {detection.forest_area_id}"
         )
 
+        # -----------------------------------------------------
+        # Where the clearing is
+        #
+        # An officer receiving this has to decide whether to
+        # travel, so the district matters as much as the
+        # measurements.
+        # -----------------------------------------------------
+
+        district_name = None
+
+        if (
+            detection.forest_area is not None
+            and detection.forest_area.district is not None
+        ):
+            district_name = (
+                detection.forest_area.district.name
+            )
+
+        location_line = (
+            f"District: {district_name}\n"
+            if district_name
+            else ""
+        )
+
         title = (
             f"{priority.value} Deforestation Alert - "
             f"{forest_name}"
         )
 
+        # -----------------------------------------------------
+        # What this alert claims
+        #
+        # The alert is raised when the analysis confirms a
+        # clearing, BEFORE any officer has looked at it. The
+        # detection is PENDING at this point, so the message
+        # must ask for review rather than report a conclusion.
+        #
+        # Saying it had already been verified would invert
+        # the workflow this system exists to support, and
+        # would present an automated measurement as a
+        # confirmed finding.
+        # -----------------------------------------------------
+
         message = (
             "ForestWatch Zambia Deforestation Alert\n"
             "\n"
+            "Possible deforestation has been detected from "
+            "Sentinel-2 imagery and is awaiting review.\n"
+            "\n"
             f"Forest Area: {forest_name}\n"
+            f"{location_line}"
             f"Detection ID: {detection.id}\n"
             f"Severity: {severity}\n"
             f"Priority: {priority.value}\n"
@@ -173,9 +218,15 @@ class AlertService:
             f"Vegetation Loss: "
             f"{detection.vegetation_loss_percentage:.2f}%\n"
             "\n"
-            "The detection has been verified by a "
-            "Forestry Officer and requires appropriate "
-            "forest-management attention."
+            "This is an automated measurement, not a "
+            "confirmed finding. Sign in to ForestWatch "
+            "Zambia to view the affected area on the map "
+            "and record your assessment.\n"
+            "\n"
+            "The confidence figure combines how much of the "
+            "area could be measured with the severity of "
+            "the vegetation decline. It is not a "
+            "probability."
         )
 
         alert = Alert(
@@ -198,16 +249,91 @@ class AlertService:
         alert: Alert,
     ) -> None:
         """
-        Assign the alert to all active Forestry Officers.
+        Assign the alert to the active Forestry Officers
+        whose jurisdiction covers the affected forest area.
+
+        A district officer receives the alert when the forest
+        area lies in their district; a provincial officer
+        receives it when the area lies anywhere in their
+        province.
+
+        Administrators are deliberately excluded. They
+        provision accounts and configure thresholds but hold
+        no operational alert duties, which is what keeps the
+        audit trail independent of the officers it records.
 
         Existing recipients are not duplicated.
         """
 
+        # -----------------------------------------------------
+        # Locate the affected forest area
+        # -----------------------------------------------------
+
+        forest_area = (
+            self.db.query(ForestArea)
+            .join(
+                Detection,
+                Detection.forest_area_id
+                == ForestArea.id,
+            )
+            .filter(
+                Detection.id
+                == alert.detection_id,
+            )
+            .first()
+        )
+
+        if forest_area is None:
+            raise ValueError(
+                "Alert is not linked to a forest area, "
+                "so its recipients cannot be determined."
+            )
+
+        # -----------------------------------------------------
+        # Resolve the province containing that district
+        # -----------------------------------------------------
+
+        district = (
+            self.db.query(District)
+            .filter(
+                District.id
+                == forest_area.district_id,
+            )
+            .first()
+        )
+
+        if district is None:
+            raise ValueError(
+                "Forest area is not linked to a district, "
+                "so its recipients cannot be determined."
+            )
+
+        # -----------------------------------------------------
+        # Select officers whose jurisdiction covers the area
+        # -----------------------------------------------------
+
         officers = (
             self.db.query(User)
             .filter(
-                User.role == UserRole.FORESTRY_OFFICER,
                 User.is_active.is_(True),
+
+                or_(
+                    and_(
+                        User.role
+                        == UserRole.DISTRICT_FORESTRY_OFFICER,
+
+                        User.district_id
+                        == forest_area.district_id,
+                    ),
+
+                    and_(
+                        User.role
+                        == UserRole.PROVINCIAL_FORESTRY_OFFICER,
+
+                        User.province_id
+                        == district.province_id,
+                    ),
+                ),
             )
             .all()
         )

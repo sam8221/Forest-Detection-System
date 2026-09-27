@@ -14,14 +14,20 @@ Responsibilities:
     - Avoid duplicate satellite-image downloads.
     - Download new Sentinel-2 products.
     - Register imagery in PostgreSQL.
-    - Retrieve latest and previous images.
+    - Search explicit seasonal windows for imagery.
     - Support automatic multi-date analysis.
+
+Note:
+    Selecting which stored images form an analysis pair is
+    the responsibility of SatelliteImageSelectionService,
+    which validates that both images come from the same
+    Sentinel-2 tile.
 
 Author:
     Samuel Bikiloni
 
 Project:
-    Intelligent Deforestation Detection and Alert System
+    Web-Based Deforestation Detection and Alert System
     Using Sentinel-2 Imagery in the Copperbelt, Zambia
 
 Version:
@@ -36,6 +42,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.models.forest_area import ForestArea
 from app.models.satellite_image import SatelliteImage
 
@@ -55,25 +62,6 @@ class SentinelService:
     """
 
     # =========================================================
-    # LOCAL SENTINEL STORAGE
-    # =========================================================
-
-    STORAGE_ROOT = (
-        Path("storage")
-        / "satellite_images"
-    )
-
-    # Maximum cloud coverage accepted for automatic
-    # analysis.
-
-    DEFAULT_MAX_CLOUD_COVER = 30.0
-
-    # Number of days to search backwards when looking
-    # for newly available Sentinel-2 imagery.
-
-    DEFAULT_SEARCH_DAYS = 30
-
-    # =========================================================
     # INITIALIZATION
     # =========================================================
 
@@ -83,9 +71,18 @@ class SentinelService:
     ) -> None:
         """
         Initialize Sentinel service.
+
+        The imagery storage root, the maximum accepted cloud
+        cover and the default search window all come from
+        application settings rather than from constants
+        declared here, so this service and DetectionService
+        cannot disagree about where processed rasters live
+        or which scenes are acceptable.
         """
 
         self.db = db
+
+        self.settings = get_settings()
 
         self.repository = (
             SatelliteImageRepository(db)
@@ -93,6 +90,38 @@ class SentinelService:
 
         self.copernicus = (
             CopernicusService()
+        )
+
+    # =========================================================
+    # LOCAL SENTINEL STORAGE
+    # =========================================================
+
+    @property
+    def storage_root(self) -> Path:
+        """
+        Return the absolute imagery storage root.
+        """
+
+        return (
+            self.settings
+            .satellite_image_storage_path
+        )
+
+    def _resolve_max_cloud_cover(
+        self,
+        max_cloud_cover: float | None,
+    ) -> float:
+        """
+        Return the caller's cloud-cover limit, falling back
+        to the configured default when none was supplied.
+        """
+
+        if max_cloud_cover is not None:
+            return max_cloud_cover
+
+        return (
+            self.settings
+            .max_cloud_cover_percentage
         )
 
     # =========================================================
@@ -221,7 +250,7 @@ class SentinelService:
         # -----------------------------------------------------
 
         destination_folder = (
-            self.STORAGE_ROOT
+            self.storage_root
             / str(forest_area.id)
         )
 
@@ -293,15 +322,41 @@ class SentinelService:
     # FIND NEWEST COPERNICUS PRODUCT
     # =========================================================
 
-    def find_latest_copernicus_product(
+    def find_copernicus_product_in_window(
         self,
         forest_area: ForestArea,
-        max_cloud_cover: float = DEFAULT_MAX_CLOUD_COVER,
-        search_days: int = DEFAULT_SEARCH_DAYS,
+        start_date: date,
+        end_date: date,
+        max_cloud_cover: float | None = None,
     ) -> dict | None:
         """
-        Search Copernicus for the newest suitable
-        Sentinel-2 L2A image covering the forest area.
+        Search Copernicus for the newest suitable Sentinel-2
+        L2A image acquired inside an explicit date window.
+
+        Args:
+            forest_area:
+                Forest area whose geometry bounds the search.
+
+            start_date:
+                First acquisition date to accept.
+
+            end_date:
+                Last acquisition date to accept.
+
+            max_cloud_cover:
+                Maximum accepted cloud cover. Falls back to
+                the configured default when omitted.
+
+        Returns:
+            The newest matching Copernicus product, or None
+            when the window contains no suitable imagery.
+
+        Searching an explicit window (rather than "the last N
+        days") is what makes seasonal comparison possible:
+        miombo woodland NDVI falls across the whole province
+        every dry season, so a baseline must be drawn from the
+        SAME calendar window in an earlier year, never from
+        the months immediately preceding the comparison.
         """
 
         if not forest_area.geometry:
@@ -309,16 +364,15 @@ class SentinelService:
                 "Forest area does not have a valid geometry."
             )
 
-        # -----------------------------------------------------
-        # Search period
-        # -----------------------------------------------------
+        if start_date > end_date:
+            raise ValueError(
+                "Search window start date cannot be after "
+                "its end date."
+            )
 
-        end_date = date.today()
-
-        start_date = (
-            end_date
-            - timedelta(
-                days=search_days
+        max_cloud_cover = (
+            self._resolve_max_cloud_cover(
+                max_cloud_cover
             )
         )
 
@@ -382,14 +436,60 @@ class SentinelService:
         )
 
     # =========================================================
+    # FIND NEWEST PRODUCT IN A RELATIVE WINDOW
+    # =========================================================
+
+    def find_latest_copernicus_product(
+        self,
+        forest_area: ForestArea,
+        max_cloud_cover: float | None = None,
+        search_days: int | None = None,
+    ) -> dict | None:
+        """
+        Search Copernicus for the newest suitable Sentinel-2
+        L2A image acquired within the last `search_days`.
+
+        This is a convenience wrapper over
+        find_copernicus_product_in_window for callers that
+        only want "something recent" and do not need a
+        specific seasonal window.
+        """
+
+        if search_days is None:
+            search_days = (
+                self.settings.image_search_days
+            )
+
+        end_date = date.today()
+
+        start_date = (
+            end_date
+            - timedelta(
+                days=search_days
+            )
+        )
+
+        return (
+            self.find_copernicus_product_in_window(
+                forest_area=forest_area,
+
+                start_date=start_date,
+
+                end_date=end_date,
+
+                max_cloud_cover=max_cloud_cover,
+            )
+        )
+
+    # =========================================================
     # DISCOVER AND REGISTER LATEST IMAGE
     # =========================================================
 
     def discover_latest_image(
         self,
         forest_area: ForestArea,
-        max_cloud_cover: float = DEFAULT_MAX_CLOUD_COVER,
-        search_days: int = DEFAULT_SEARCH_DAYS,
+        max_cloud_cover: float | None = None,
+        search_days: int | None = None,
     ) -> SatelliteImage | None:
         """
         Automatically search Copernicus for the newest
@@ -418,6 +518,99 @@ class SentinelService:
 
         if product is None:
             return None
+
+        return (
+            self._register_discovered_product(
+                forest_area=forest_area,
+
+                product=product,
+            )
+        )
+
+    # =========================================================
+    # DISCOVER AND REGISTER AN IMAGE IN A SEASONAL WINDOW
+    # =========================================================
+
+    def discover_image_in_window(
+        self,
+        forest_area: ForestArea,
+        start_date: date,
+        end_date: date,
+        max_cloud_cover: float | None = None,
+    ) -> SatelliteImage | None:
+        """
+        Search Copernicus for a suitable Sentinel-2 image
+        inside an explicit date window, then download and
+        register it.
+
+        Args:
+            forest_area:
+                Forest area whose geometry bounds the search.
+
+            start_date:
+                First acquisition date to accept.
+
+            end_date:
+                Last acquisition date to accept.
+
+            max_cloud_cover:
+                Maximum accepted cloud cover. Falls back to
+                the configured default when omitted.
+
+        Returns:
+            The registered SatelliteImage, or None when no
+            suitable imagery exists in the window.
+
+        This is the entry point used for seasonal analysis,
+        where the baseline and comparison periods are fixed
+        calendar windows in different years.
+        """
+
+        product = (
+            self.find_copernicus_product_in_window(
+                forest_area=forest_area,
+
+                start_date=start_date,
+
+                end_date=end_date,
+
+                max_cloud_cover=max_cloud_cover,
+            )
+        )
+
+        # -----------------------------------------------------
+        # Window contains no suitable imagery
+        # -----------------------------------------------------
+
+        if product is None:
+            return None
+
+        return (
+            self._register_discovered_product(
+                forest_area=forest_area,
+
+                product=product,
+            )
+        )
+
+    # =========================================================
+    # REGISTER A DISCOVERED COPERNICUS PRODUCT
+    # =========================================================
+
+    def _register_discovered_product(
+        self,
+        forest_area: ForestArea,
+        product: dict,
+    ) -> SatelliteImage:
+        """
+        Convert a raw Copernicus product into a registered
+        SatelliteImage record.
+
+        Already-registered products are returned from the
+        database instead of being downloaded again, so a
+        baseline image shared by many analyses is fetched
+        only once.
+        """
 
         # -----------------------------------------------------
         # Convert Copernicus metadata
@@ -573,8 +766,8 @@ class SentinelService:
     def update_latest_image(
         self,
         forest_area: ForestArea,
-        max_cloud_cover: float = DEFAULT_MAX_CLOUD_COVER,
-        search_days: int = DEFAULT_SEARCH_DAYS,
+        max_cloud_cover: float | None = None,
+        search_days: int | None = None,
     ) -> SatelliteImage | None:
         """
         Check Copernicus for a newer Sentinel-2 image.
@@ -609,113 +802,3 @@ class SentinelService:
             image
         )
 
-    # =========================================================
-    # GET LATEST IMAGE
-    # =========================================================
-
-    def get_latest_image(
-        self,
-        forest_area_id: int,
-    ) -> SatelliteImage | None:
-        """
-        Retrieve the latest downloaded image
-        for a forest area.
-        """
-
-        return (
-            self.repository.get_latest_image(
-                forest_area_id
-            )
-        )
-
-    # =========================================================
-    # GET PREVIOUS IMAGE
-    # =========================================================
-
-    def get_previous_image(
-        self,
-        forest_area_id: int,
-        latest_image_id: int,
-    ) -> SatelliteImage | None:
-        """
-        Retrieve the previous downloaded image
-        before the latest image.
-        """
-
-        return (
-            self.db.query(
-                SatelliteImage
-            )
-            .filter(
-                SatelliteImage.forest_area_id
-                == forest_area_id,
-
-                SatelliteImage.id
-                != latest_image_id,
-
-                SatelliteImage.is_downloaded.is_(
-                    True
-                ),
-
-                SatelliteImage.is_active.is_(
-                    True
-                ),
-            )
-            .order_by(
-                SatelliteImage.acquisition_date.desc(),
-                SatelliteImage.id.desc(),
-            )
-            .first()
-        )
-
-    # =========================================================
-    # GET IMAGE PAIR
-    # =========================================================
-
-    def get_image_pair(
-        self,
-        forest_area_id: int,
-    ) -> tuple[
-        SatelliteImage,
-        SatelliteImage,
-    ]:
-        """
-        Return:
-
-            previous_image,
-            latest_image
-
-        for a forest area.
-        """
-
-        latest_image = (
-            self.get_latest_image(
-                forest_area_id
-            )
-        )
-
-        if latest_image is None:
-            raise ValueError(
-                "No downloaded Sentinel-2 image "
-                "is available."
-            )
-
-        previous_image = (
-            self.get_previous_image(
-                forest_area_id=forest_area_id,
-
-                latest_image_id=latest_image.id,
-            )
-        )
-
-        if previous_image is None:
-            raise ValueError(
-                "A previous Sentinel-2 image is "
-                "required before change detection "
-                "can be performed."
-            )
-
-        return (
-            previous_image,
-            latest_image,
-        )

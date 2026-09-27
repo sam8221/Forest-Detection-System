@@ -22,7 +22,7 @@ Author:
     Samuel Bikiloni
 
 Project:
-    Intelligent Deforestation Detection and Alert System
+    Web-Based Deforestation Detection and Alert System
     Using Sentinel-2 Imagery in the Copperbelt, Zambia
 
 Version:
@@ -544,6 +544,44 @@ class CopernicusService:
     # PRODUCT METADATA
     # =====================================================
 
+    @staticmethod
+    def normalise_tile_id(
+        tile_id: str | None,
+    ) -> str | None:
+        """
+        Return a Sentinel-2 tile identifier in one form.
+
+        Args:
+            tile_id:
+                Identifier as supplied by Copernicus, which
+                may be "35LPF" or "T35LPF".
+
+        Returns:
+            The identifier as "T35LPF", or None when it
+            cannot be recognised.
+
+        Two images can only be compared pixel by pixel when
+        they come from the same tile, and that comparison is
+        a string equality. Storing the same tile under two
+        spellings silently prevented every such pair from
+        being found.
+        """
+
+        if not tile_id:
+            return None
+
+        cleaned = tile_id.strip().upper()
+
+        match = re.search(
+            r"(\d{2}[A-Z]{3})",
+            cleaned,
+        )
+
+        if not match:
+            return None
+
+        return f"T{match.group(1)}"
+
     def get_product_metadata(
         self,
         product: dict[str, Any],
@@ -618,6 +656,26 @@ class CopernicusService:
                 tile_id = (
                     f"T{match.group(1)}"
                 )
+
+        # -------------------------------------------------
+        # Normalise the tile identifier
+        #
+        # Copernicus reports the same tile in two different
+        # forms depending on which route the value came
+        # from. The tileId attribute gives "35LPF" while the
+        # product name gives "T35LPF".
+        #
+        # Analysis pairs two images by comparing their tile
+        # identifiers exactly, so the two spellings never
+        # matched. Images of the same ground were treated as
+        # different tiles and every analysis over them
+        # failed with "no compatible previous image".
+        #
+        # One canonical form is stored: T followed by the
+        # MGRS reference, upper case.
+        # -------------------------------------------------
+
+        tile_id = self.normalise_tile_id(tile_id)
 
         return {
 
