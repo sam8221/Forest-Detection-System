@@ -26,7 +26,9 @@ Version:
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from datetime import date
+
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from app.models.enums import (
     AnalysisJobStatus,
@@ -53,9 +55,102 @@ class AnalysisJobBase(BaseModel):
 class AnalysisJobCreate(AnalysisJobBase):
     """
     Schema used when creating a new analysis job.
+
+    The four window fields select which seasonal periods are
+    compared. They are optional: when omitted, equivalent
+    windows one year apart are derived automatically, so a
+    caller that supplies nothing still gets a seasonally
+    valid comparison.
+
+    Supply all four to target a specific period, such as the
+    May to July dry season in two consecutive years.
     """
 
     started_by: int | None = None
+
+    baseline_start: date | None = None
+    baseline_end: date | None = None
+    comparison_start: date | None = None
+    comparison_end: date | None = None
+
+
+# ---------------------------------------------------------
+# Seasonal Window Request Schema
+# ---------------------------------------------------------
+class SeasonalWindowRequest(BaseModel):
+    """
+    Optional seasonal windows supplied when starting an
+    analysis from the API.
+
+    All four dates must be given together, or none at all.
+    A half-specified comparison is rejected rather than
+    silently completed, because the officer's intent would
+    be ambiguous.
+    """
+
+    baseline_start: date | None = None
+    baseline_end: date | None = None
+    comparison_start: date | None = None
+    comparison_end: date | None = None
+
+    @model_validator(mode="after")
+    def validate_window_pair(self) -> "SeasonalWindowRequest":
+        """
+        Ensure the windows are complete, ordered and
+        non-overlapping.
+        """
+
+        supplied = [
+            self.baseline_start,
+            self.baseline_end,
+            self.comparison_start,
+            self.comparison_end,
+        ]
+
+        # -------------------------------------------------
+        # Nothing supplied: defaults will be derived later
+        # -------------------------------------------------
+
+        if all(value is None for value in supplied):
+            return self
+
+        # -------------------------------------------------
+        # Partially supplied: reject
+        # -------------------------------------------------
+
+        if any(value is None for value in supplied):
+            raise ValueError(
+                "Provide all four window dates together, "
+                "or none of them."
+            )
+
+        # -------------------------------------------------
+        # Ordering
+        # -------------------------------------------------
+
+        if self.baseline_start > self.baseline_end:
+            raise ValueError(
+                "Baseline window start date cannot be "
+                "after its end date."
+            )
+
+        if self.comparison_start > self.comparison_end:
+            raise ValueError(
+                "Comparison window start date cannot be "
+                "after its end date."
+            )
+
+        # -------------------------------------------------
+        # The two windows must not overlap
+        # -------------------------------------------------
+
+        if self.baseline_end >= self.comparison_start:
+            raise ValueError(
+                "The baseline window must end before the "
+                "comparison window begins."
+            )
+
+        return self
 
 
 # ---------------------------------------------------------

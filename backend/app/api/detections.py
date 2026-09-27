@@ -77,15 +77,19 @@ router = APIRouter(
 )
 def get_detections(
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """
-    Return all detections.
+    Return the detections within the officer's jurisdiction.
+
+    Requirement FR-04. The jurisdiction filter is applied in
+    the repository, so detections outside the officer's
+    district or province are not retrieved at all.
     """
 
     repository = DetectionRepository(db)
 
-    return repository.get_all()
+    return repository.get_all_for_user(current_user)
 
 
 # =========================================================
@@ -98,15 +102,19 @@ def get_detections(
 )
 def get_pending_detections(
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """
-    Return all pending detections.
+    Return pending detections within the officer's
+    jurisdiction.
     """
 
     repository = DetectionRepository(db)
 
-    return repository.get_pending()
+    return repository.get_by_status_for_user(
+        status=DetectionStatus.PENDING,
+        user=current_user,
+    )
 
 
 # =========================================================
@@ -119,15 +127,19 @@ def get_pending_detections(
 )
 def get_verified_detections(
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """
-    Return all verified detections.
+    Return verified detections within the officer's
+    jurisdiction.
     """
 
     repository = DetectionRepository(db)
 
-    return repository.get_verified()
+    return repository.get_by_status_for_user(
+        status=DetectionStatus.VERIFIED,
+        user=current_user,
+    )
 
 
 # =========================================================
@@ -141,16 +153,21 @@ def get_verified_detections(
 def get_forest_detections(
     forest_area_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """
-    Return detections belonging to one forest area.
+    Return detections belonging to one forest area, if that
+    forest area is within the officer's jurisdiction.
+
+    Requesting a forest area in another district returns an
+    empty list rather than its detections.
     """
 
     repository = DetectionRepository(db)
 
-    return repository.get_by_forest_area(
-        forest_area_id,
+    return repository.get_by_forest_area_for_user(
+        forest_area_id=forest_area_id,
+        user=current_user,
     )
 
 
@@ -165,16 +182,26 @@ def get_forest_detections(
 def get_detection(
     detection_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """
-    Retrieve one detection.
+    Retrieve one detection, if it is within the officer's
+    jurisdiction.
+
+    This is the direct-URL case described by requirement
+    FR-04: an officer who types the identifier of a
+    detection in another district receives 404, and the same
+    response as for an identifier that does not exist. The
+    two are indistinguishable on purpose, so that the
+    response cannot be used to confirm that a detection
+    exists elsewhere.
     """
 
     repository = DetectionRepository(db)
 
-    detection = repository.get_by_id(
-        detection_id,
+    detection = repository.get_by_id_for_user(
+        detection_id=detection_id,
+        user=current_user,
     )
 
     if detection is None:
@@ -214,8 +241,9 @@ def verify_detection(
 
     repository = DetectionRepository(db)
 
-    detection = repository.get_by_id(
-        detection_id,
+    detection = repository.get_by_id_for_user(
+        detection_id=detection_id,
+        user=current_user,
     )
 
     if detection is None:
@@ -285,8 +313,9 @@ def reject_detection(
 
     repository = DetectionRepository(db)
 
-    detection = repository.get_by_id(
-        detection_id,
+    detection = repository.get_by_id_for_user(
+        detection_id=detection_id,
+        user=current_user,
     )
 
     if detection is None:
@@ -344,8 +373,9 @@ def close_detection(
 
     repository = DetectionRepository(db)
 
-    detection = repository.get_by_id(
-        detection_id,
+    detection = repository.get_by_id_for_user(
+        detection_id=detection_id,
+        user=current_user,
     )
 
     if detection is None:
@@ -392,18 +422,23 @@ def close_detection(
 def delete_detection(
     detection_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(get_admin_user),
+    current_user: User = Depends(get_admin_user),
 ):
     """
     Permanently delete a detection.
 
-    Only Administrators can perform this action.
+    Only Administrators can perform this action, and an
+    administrator's jurisdiction is national, so the scoped
+    lookup below never restricts them. It is used anyway so
+    that every path to a detection goes through the same
+    jurisdiction check.
     """
 
     repository = DetectionRepository(db)
 
-    detection = repository.get_by_id(
-        detection_id,
+    detection = repository.get_by_id_for_user(
+        detection_id=detection_id,
+        user=current_user,
     )
 
     if detection is None:

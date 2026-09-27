@@ -12,7 +12,7 @@ Responsibilities:
     - Retrieve user details
     - Create users
     - Update users
-    - Deactivate users
+    - Activate and deactivate users
     - Retrieve current user profile
     - Change current user password
 
@@ -256,38 +256,97 @@ def update_user(
 
 
 # =========================================================
+# ACTIVATE USER
+# =========================================================
+# Withdrawing and restoring access are separate, named
+# actions rather than a field on the update endpoint, so
+# that each one is a deliberate request and can be recorded
+# as its own entry in the audit trail.
+# =========================================================
+
+@router.post(
+    "/{user_id}/activate",
+    response_model=UserResponse,
+    status_code=status.HTTP_200_OK,
+)
+def activate_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(get_admin_user),
+):
+    """
+    Restore a deactivated account.
+
+    The officer can sign in again and sees the records of
+    the jurisdiction still assigned to their account.
+
+    Only Administrators can activate users.
+    """
+
+    auth_service = AuthService(db)
+
+    try:
+        return auth_service.set_account_active(
+            user_id=user_id,
+            is_active=True,
+            performed_by=current_admin,
+        )
+
+    except ValueError as ex:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(ex),
+        )
+
+
+# =========================================================
 # DEACTIVATE USER
 # =========================================================
 
-@router.delete(
-    "/{user_id}",
+@router.post(
+    "/{user_id}/deactivate",
+    response_model=UserResponse,
     status_code=status.HTTP_200_OK,
 )
-def delete_user(
+def deactivate_user(
     user_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(get_admin_user),
+    current_admin: User = Depends(get_admin_user),
 ):
     """
-    Deactivate a user account.
+    Withdraw an account's access.
+
+    The account is kept rather than deleted, because the
+    detections it verified and the alerts it acted on stay
+    attributed to it.
+
+    Refused when it would leave nobody able to administer
+    the system.
 
     Only Administrators can deactivate users.
     """
 
-    repository = UserRepository(db)
+    auth_service = AuthService(db)
 
-    user = repository.get_by_id(user_id)
-
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found.",
+    try:
+        return auth_service.set_account_active(
+            user_id=user_id,
+            is_active=False,
+            performed_by=current_admin,
         )
 
-    user.is_active = False
+    except ValueError as ex:
 
-    repository.update(user)
+        # "User not found" is a missing record; the other
+        # refusals are requests the administrator is not
+        # permitted to make, which is a different answer.
+        is_missing = "not found" in str(ex).lower()
 
-    return {
-        "message": "User account deactivated successfully."
-    }
+        raise HTTPException(
+            status_code=(
+                status.HTTP_404_NOT_FOUND
+                if is_missing
+                else status.HTTP_409_CONFLICT
+            ),
+            detail=str(ex),
+        )

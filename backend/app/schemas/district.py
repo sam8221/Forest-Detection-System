@@ -39,9 +39,26 @@ from pydantic import (
 class DistrictBase(BaseModel):
     """
     Common District fields.
+
+    The field limits mirror the columns in app/models/district.py,
+    so a value the schema accepts is always one the database can
+    store.
+
+    `province_id` is required rather than optional because
+    the corresponding column is a non-null foreign key: a
+    district cannot be stored without the province it
+    belongs to.
+
+    NOTE: Nothing currently imports this module. The
+    districts router at app/api/districts.py returns ORM
+    objects directly and declares no response_model, so
+    these schemas are not yet on any request or response
+    path. Either wire them into that router or remove the
+    module; leaving it unreferenced means errors in it are
+    never surfaced at import time.
     """
 
-    district: DistrictSummary
+    province_id: int
 
     name: str = Field(
         ...,
@@ -49,10 +66,13 @@ class DistrictBase(BaseModel):
         max_length=100,
     )
 
+    # String(20) on the model. This was limited to 10 here,
+    # which would have rejected district codes the database
+    # accepts.
     code: str = Field(
         ...,
         min_length=2,
-        max_length=10,
+        max_length=20,
     )
 
 
@@ -85,9 +105,6 @@ class DistrictUpdate(BaseModel):
 # ---------------------------------------------------------
 # Response Schema
 # ---------------------------------------------------------
-# ---------------------------------------------------------
-# Response Schema
-# ---------------------------------------------------------
 class DistrictResponse(DistrictBase):
     """
     District returned by the API.
@@ -104,6 +121,8 @@ class DistrictResponse(DistrictBase):
     created_at: datetime
 
     updated_at: datetime
+
+
 # ---------------------------------------------------------
 # Summary Schema
 # ---------------------------------------------------------

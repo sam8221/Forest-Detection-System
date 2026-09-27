@@ -2,16 +2,17 @@
 ===========================================================
 ForestWatch Zambia
 -----------------------------------------------------------
-Module: District API
+Module: Province API
 
 Purpose:
-    Provides API endpoints for retrieving districts used
+    Provides API endpoints for retrieving provinces used
     by the ForestWatch Zambia application.
 
 Responsibilities:
-    - Retrieve active districts.
-    - Return district names and codes.
-    - Provide data for Forest Area registration forms.
+    - Retrieve active provinces.
+    - Return province names and codes.
+    - Provide the options shown when assigning a
+      Provincial Forestry Officer a jurisdiction.
 
 Author:
     Samuel Bikiloni
@@ -29,13 +30,13 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_active_user
 from app.database.session import get_db
-from app.models.district import District
+from app.models.province import Province
 from app.models.user import User
 
 
 router = APIRouter(
-    prefix="/districts",
-    tags=["Districts"],
+    prefix="/provinces",
+    tags=["Provinces"],
 )
 
 
@@ -43,34 +44,33 @@ router = APIRouter(
     "",
     status_code=status.HTTP_200_OK,
 )
-def get_districts(
+def get_provinces(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_active_user),
 ):
     """
-    Retrieve all active districts ordered alphabetically.
+    Retrieve all active provinces ordered alphabetically.
 
-    The endpoint is used by the frontend when selecting
-    a district while registering or managing a Forest Area.
+    Used when an administrator assigns a jurisdiction to a
+    Provincial Forestry Officer.
 
     Requires an authenticated user. The system is restricted
     to authorised Forestry Department officers, so even
     reference data is not served anonymously.
     """
 
-    districts = (
-        db.query(District)
-        .filter(District.is_active.is_(True))
-        .order_by(District.name.asc())
+    provinces = (
+        db.query(Province)
+        .filter(Province.is_active.is_(True))
+        .order_by(Province.name.asc())
         .all()
     )
 
     return [
         {
-            "id": district.id,
-            "name": district.name,
-            "code": district.code,
-            "province_id": district.province_id,
+            "id": province.id,
+            "name": province.name,
+            "code": province.code,
         }
-        for district in districts
+        for province in provinces
     ]

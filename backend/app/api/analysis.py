@@ -18,7 +18,7 @@ Author:
     Samuel Bikiloni
 
 Project:
-    Intelligent Deforestation Detection and Alert System
+    Web-Based Deforestation Detection and Alert System
     Using Sentinel-2 Imagery in the Copperbelt, Zambia
 ===========================================================
 """
@@ -34,13 +34,19 @@ from fastapi import (
 
 from sqlalchemy.orm import Session
 
+from app.api.deps import (
+    get_current_active_user,
+    get_forestry_officer,
+)
 from app.database.session import get_db
 
 from app.models.analysis_job import AnalysisJob
 from app.models.enums import AnalysisJobType
 
 from app.models.forest_area import ForestArea
+from app.models.user import User
 
+from app.schemas.analysis import SeasonalWindowRequest
 from app.services.analysis_service import AnalysisService
 
 
@@ -138,7 +144,9 @@ def run_analysis_background(
 def run_analysis(
     forest_id: int,
     background_tasks: BackgroundTasks,
+    windows: SeasonalWindowRequest | None = None,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_forestry_officer),
 ):
     """
     Start a forest analysis.
@@ -148,6 +156,15 @@ def run_analysis(
 
     The actual Sentinel-2 acquisition and deforestation
     analysis runs in the background.
+
+    Requires an authenticated Forestry Officer. Running an
+    analysis downloads Sentinel-2 products from Copernicus
+    and is recorded against the officer who started it, so
+    it must never be reachable anonymously.
+
+    An optional request body may specify the baseline and
+    comparison windows. When omitted, equivalent windows one
+    year apart are derived automatically.
     """
 
     # -----------------------------------------------------
@@ -217,11 +234,47 @@ def run_analysis(
 
             satellite_image_id=latest_image.id,
 
-            started_by=None,
+            started_by=current_user.id,
 
-            job_type=AnalysisJobType.AUTOMATIC,
+            job_type=AnalysisJobType.MANUAL,
 
+            baseline_start=(
+                windows.baseline_start
+                if windows is not None
+                else None
+            ),
+
+            baseline_end=(
+                windows.baseline_end
+                if windows is not None
+                else None
+            ),
+
+            comparison_start=(
+                windows.comparison_start
+                if windows is not None
+                else None
+            ),
+
+            comparison_end=(
+                windows.comparison_end
+                if windows is not None
+                else None
+            ),
         )
+
+    except ValueError as exc:
+
+        # -------------------------------------------------
+        # Invalid seasonal windows
+        # -------------------------------------------------
+
+        db.rollback()
+
+        raise HTTPException(
+            status_code=422,
+            detail=str(exc),
+        ) from exc
 
     except Exception as exc:
 
@@ -261,7 +314,7 @@ def run_analysis(
 
         "status": "PENDING",
 
-        "job_type": "AUTOMATIC",
+        "job_type": "MANUAL",
 
         "note": (
             "Sentinel-2 acquisition and deforestation "
@@ -277,9 +330,12 @@ def run_analysis(
 @router.get("/jobs")
 def get_analysis_jobs(
     db: Session = Depends(get_db),
+    _: User = Depends(get_current_active_user),
 ):
     """
     Return all analysis jobs.
+
+    Requires an authenticated user.
     """
 
     jobs = (
@@ -346,6 +402,10 @@ def get_analysis_jobs(
                 job.error_message
             ),
 
+            "execution_log": (
+                job.execution_log
+            ),
+
             "created_at": (
                 job.created_at
             ),
@@ -367,9 +427,12 @@ def get_analysis_jobs(
 def get_analysis_job(
     job_id: int,
     db: Session = Depends(get_db),
+    _: User = Depends(get_current_active_user),
 ):
     """
     Return details of one analysis job.
+
+    Requires an authenticated user.
     """
 
     job = (
@@ -440,6 +503,16 @@ def get_analysis_job(
 
         "error_message": (
             job.error_message
+        ),
+
+        # What the run is doing right now. A full analysis
+        # downloads two Sentinel-2 products and processes
+        # roughly 120 million pixels twice, so it runs for
+        # several minutes. Without this the interface can
+        # only show RUNNING, which looks identical to a job
+        # that has hung.
+        "execution_log": (
+            job.execution_log
         ),
 
         "created_at": (

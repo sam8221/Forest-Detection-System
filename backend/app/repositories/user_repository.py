@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
+from app.models.enums import UserRole
 from app.models.user import User
 
 
@@ -239,6 +240,40 @@ class UserRepository:
             self.db.query(User)
             .filter(
                 User.is_active.is_(True),
+            )
+            .count()
+        )
+
+    # ---------------------------------------------------------
+    # COUNT OTHER ACTIVE ADMINISTRATORS
+    # ---------------------------------------------------------
+    def count_other_active_admins(
+        self,
+        user_id: int,
+    ) -> int:
+        """
+        Count active administrators other than one account.
+
+        Args:
+            user_id:
+                Account to leave out of the count.
+
+        Returns:
+            Number of remaining active administrators.
+
+        Used before an account is deactivated, to establish
+        whether it is the last administrator able to sign
+        in. Deactivating that account would leave the
+        system with no way to provision accounts at all,
+        which can only be undone from the server console.
+        """
+
+        return (
+            self.db.query(User)
+            .filter(
+                User.role == UserRole.ADMIN,
+                User.is_active.is_(True),
+                User.id != user_id,
             )
             .count()
         )

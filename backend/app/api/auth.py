@@ -62,13 +62,65 @@ def login(
     db: Session = Depends(get_db),
 ):
     """
-    Authenticate a user using OAuth2 password form data
-    and return a JWT access token.
+    Authenticate an officer and issue a JWT access token.
 
-    Swagger/OpenAPI sends:
+    Args:
+        form_data:
+            OAuth2 password-form credentials. The
+            specification names the identifier field
+            "username"; this system identifies officers by
+            email address, so the email is carried in that
+            field.
+        db:
+            Database session.
 
-        username = user's email
-        password = user's password
+    Returns:
+        Token:
+            A bearer access token, carried in the
+            Authorization header on subsequent requests.
+
+    Raises:
+        HTTPException:
+            401 when the email is unknown or the password
+            does not match.
+
+    Security:
+        The submitted password is compared against a stored
+        hash, never against a stored password. The database
+        holds no recoverable passwords, so a copy of the
+        users table does not yield credentials, and the
+        comparison is done by the hashing library so that it
+        does not return early on the first differing
+        character.
+
+        The 401 message is deliberately the same for an
+        unknown email and a wrong password. Distinguishing
+        them would let an unauthenticated caller confirm
+        which email addresses hold accounts, which for this
+        system means confirming which officers can see
+        detection locations.
+
+    NOTE: A deactivated account is issued a token here,
+    because authentication checks only the credentials. Every
+    subsequent request is then refused with 403 by
+    get_current_active_user, so access is withdrawn in
+    practice, but the officer sees a successful sign-in
+    followed by errors everywhere rather than being told the
+    account is disabled. Rejecting an inactive account at
+    this point would state the reason once, plainly.
+
+    NOTE: must_change_password is set when an account is
+    provisioned but is not enforced here. An officer is never
+    required to replace the password their administrator
+    chose, so until they change it voluntarily that
+    administrator can sign in as them, and an action in the
+    audit trail cannot be attributed to the officer alone.
+
+    NOTE: AuthService.update_last_login exists but is not
+    called, so User.last_login stays null for every account.
+    FR-19 requires logins to be recorded with user and
+    timestamp; neither that column nor an audit_logs entry
+    is written on a successful sign-in.
     """
 
     auth_service = AuthService(db)
@@ -107,9 +159,14 @@ def get_current_user(
     Return the currently authenticated active user.
 
     The user's identity comes from the JWT access token.
+
+    The response includes the officer's jurisdiction, with
+    the district and province resolved to names, so the
+    interface can show what the account covers without
+    having to translate identifiers itself.
     """
 
-    return current_user
+    return UserResponse.from_user(current_user)
 
 
 # =========================================================
