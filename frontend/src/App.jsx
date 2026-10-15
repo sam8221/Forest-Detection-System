@@ -88,6 +88,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Clock,
+  BarChart3,
   LayoutDashboard,
   Leaf,
   LogOut,
@@ -104,6 +105,7 @@ import {
 } from "lucide-react";
 
 import Analysis from "./pages/Analysis";
+import Analytics from "./pages/Analytics";
 import Alerts from "./pages/Alerts";
 import Dashboard from "./pages/Dashboard";
 import Detections from "./pages/Detections";
@@ -209,6 +211,10 @@ function App() {
     {
       name: "Analysis",
       icon: Satellite,
+    },
+    {
+      name: "Analytics",
+      icon: BarChart3,
     },
     {
       name: "Detections",
@@ -1034,6 +1040,10 @@ function App() {
 
           {activePage === "Analysis" && (
             <Analysis />
+          )}
+
+          {activePage === "Analytics" && (
+            <Analytics />
           )}
 
           {activePage === "Forest Areas" && (
