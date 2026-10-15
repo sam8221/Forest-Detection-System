@@ -42,8 +42,15 @@ import rasterio
 from rasterio.crs import CRS
 from rasterio.transform import from_origin
 
+from geoalchemy2.shape import to_shape
+from rasterio.warp import transform_geom
+from shapely.geometry import Polygon, box, shape
+
 from app.core.config import get_settings
-from app.services.detection_service import DetectionService
+from app.services.detection_service import (
+    WGS84_CRS,
+    DetectionService,
+)
 
 
 # =========================================================
@@ -281,6 +288,7 @@ def extract(
     confirmed: np.ndarray | None = None,
     ndvi_before: float = 0.80,
     ndvi_after: float = 0.30,
+    boundary=None,
 ) -> list[dict]:
     """
     Run the real patch extraction over a built scene.
@@ -301,6 +309,7 @@ def extract(
         previous_ndvi_path=scene["previous"],
         latest_ndvi_path=scene["latest"],
         confirmed_mask_path=scene["confirmed"],
+        boundary=boundary,
     )
 
 
@@ -579,3 +588,189 @@ def test_no_confirmed_pixels_is_a_valid_zero_result(
 
     assert statistics["detected_area_hectares"] == 0.0
     assert statistics["confirmed_pixels"] == 0.0
+
+
+# =========================================================
+# FOREST AREA BOUNDARY
+#
+# A Sentinel-2 tile is about 110 km square while a monitored
+# forest area is a small part of it. Without restricting the
+# mask to the area the analysis was commissioned for, a
+# clearing anywhere in the tile is recorded against whichever
+# area triggered the run, and carries that area's district
+# with it.
+# =========================================================
+
+def boundary_from_utm(
+    west: float,
+    south: float,
+    east: float,
+    north: float,
+):
+    """
+    Build a boundary polygon in EPSG:4326 from UTM bounds.
+
+    The test rasters are written in UTM 35S, while
+    ForestArea.geometry is stored in EPSG:4326 and the
+    service reprojects it. Expressing the box in the
+    rasters' own coordinates and converting keeps the test
+    readable in metres, which is what the pixel maths uses.
+    """
+
+    projected = box(west, south, east, north)
+
+    return shape(
+        transform_geom(
+            TEST_CRS,
+            WGS84_CRS,
+            projected.__geo_interface__,
+        )
+    )
+
+
+def block(rows: range, columns: range) -> np.ndarray:
+    """Mark a rectangular block of pixels as confirmed."""
+
+    confirmed = np.zeros(
+        (RASTER_HEIGHT, RASTER_WIDTH),
+        dtype="uint8",
+    )
+
+    for row in rows:
+        for column in columns:
+            confirmed[row][column] = 1
+
+    return confirmed
+
+
+def test_clearing_inside_the_boundary_is_kept(
+    tmp_path,
+) -> None:
+    """
+    A clearing within the monitored area is reported.
+    """
+
+    patches = extract(
+        tmp_path,
+        confirmed=block(range(0, 5), range(0, 10)),
+        boundary=boundary_from_utm(
+            500000.0, 8599900.0, 500200.0, 8600000.0
+        ),
+    )
+
+    assert len(patches) == 1
+
+    assert np.isclose(
+        patches[0]["detected_area_hectares"],
+        0.5,
+        atol=1e-6,
+    )
+
+
+def test_clearing_outside_the_boundary_is_excluded(
+    tmp_path,
+) -> None:
+    """
+    A clearing elsewhere in the tile is not reported.
+
+    This is the case that put detections tens of kilometres
+    from the forest area they were recorded against, and
+    with them into the wrong district.
+    """
+
+    patches = extract(
+        tmp_path,
+        confirmed=block(range(0, 5), range(0, 10)),
+        boundary=boundary_from_utm(
+            500100.0, 8599800.0, 500200.0, 8599900.0
+        ),
+    )
+
+    assert patches == []
+
+
+def test_clearing_straddling_the_boundary_is_measured_inside(
+    tmp_path,
+) -> None:
+    """
+    Only the part inside the monitored area is measured.
+
+    The clearing is 100 pixels, one hectare, and the
+    boundary covers the left half of it. Clipping before
+    grouping reports the half hectare inside rather than
+    crediting the whole hectare to the area it merely
+    touches.
+    """
+
+    patches = extract(
+        tmp_path,
+        confirmed=block(range(0, 10), range(0, 10)),
+        boundary=boundary_from_utm(
+            500000.0, 8599900.0, 500050.0, 8600000.0
+        ),
+    )
+
+    assert len(patches) == 1
+
+    assert np.isclose(
+        patches[0]["detected_area_hectares"],
+        0.5,
+        atol=1e-6,
+    )
+
+
+def test_without_a_boundary_the_whole_raster_is_analysed(
+    tmp_path,
+) -> None:
+    """
+    Omitting the boundary leaves the previous behaviour.
+
+    The unit tests above build a synthetic mask that is
+    entirely the study area, so they pass no boundary.
+    """
+
+    patches = extract(
+        tmp_path,
+        confirmed=block(range(0, 5), range(0, 10)),
+    )
+
+    assert len(patches) == 1
+
+
+# =========================================================
+# GEOMETRY VALIDITY
+# =========================================================
+
+def test_stored_outline_is_valid_after_repair() -> None:
+    """
+    A self-intersecting outline is repaired before storage.
+
+    Polygonising a raster produces a ring that closes on
+    itself where two parts of a clearing meet at a single
+    pixel corner. PostGIS calls that a ring self-intersection
+    and gives undefined results from ST_Contains and
+    ST_Intersects on it, which is what a jurisdiction or
+    reserve-boundary test is built on.
+    """
+
+    bowtie = Polygon(
+        [
+            (0.0, 0.0),
+            (10.0, 10.0),
+            (10.0, 0.0),
+            (0.0, 10.0),
+            (0.0, 0.0),
+        ]
+    )
+
+    assert bowtie.is_valid is False
+
+    stored = DetectionService.to_multipolygon(
+        bowtie,
+        srid=32735,
+    )
+
+    repaired = to_shape(stored)
+
+    assert repaired.is_valid is True
+    assert repaired.geom_type == "MultiPolygon"

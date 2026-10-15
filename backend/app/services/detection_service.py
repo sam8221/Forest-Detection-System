@@ -46,8 +46,11 @@ from pathlib import Path
 
 import numpy as np
 import rasterio
-from geoalchemy2.shape import from_shape
+from geoalchemy2.shape import from_shape, to_shape
+from rasterio.crs import CRS
 from rasterio.features import geometry_mask, shapes
+from rasterio.warp import transform_geom
+from shapely import make_valid
 from shapely.geometry import MultiPolygon, Polygon, shape
 from sqlalchemy.orm import Session
 
@@ -62,6 +65,30 @@ from app.repositories.detection_repository import (
 )
 
 from app.services.alert_service import AlertService
+
+
+# =========================================================
+# GEOGRAPHIC COORDINATE SYSTEM
+#
+# ForestArea.geometry is stored in WGS 84 geographic
+# coordinates, which the boundary has to be read as before
+# it can be reprojected onto a raster.
+#
+# Built from a PROJ definition rather than the EPSG code,
+# for the same reason SentinelProcessorService avoids EPSG
+# lookups: a PostGIS installation on the developer machine
+# puts an older proj.db ahead of the one rasterio expects,
+# and resolving "EPSG:4326" then fails with
+#
+#     proj.db contains DATABASE.LAYOUT.VERSION.MINOR = 2
+#     whereas a number >= 6 is expected
+#
+# A PROJ string is self-contained and needs no database.
+# =========================================================
+
+WGS84_CRS = CRS.from_proj4(
+    "+proj=longlat +datum=WGS84 +no_defs"
+)
 
 
 # =========================================================
@@ -377,6 +404,7 @@ class DetectionService:
         previous_ndvi_path: str | Path,
         latest_ndvi_path: str | Path,
         confirmed_mask_path: str | Path,
+        boundary: Polygon | MultiPolygon | None = None,
     ) -> list[dict]:
         """
         Split the confirmed deforestation mask into
@@ -391,6 +419,38 @@ class DetectionService:
 
             confirmed_mask_path:
                 Persistence-confirmed deforestation mask.
+
+            boundary:
+                Outline of the forest area being analysed,
+                in EPSG:4326 as ForestArea.geometry stores
+                it. It is reprojected here to the rasters'
+                own coordinate system, because that system
+                is only known once the mask has been opened.
+                Confirmed pixels outside it are dropped
+                before clearings are formed, so every
+                detection lies inside the area the analysis
+                was commissioned for.
+
+                A Sentinel-2 tile is about 110 km square
+                while a monitored forest area is a small
+                part of it, so without this the mask reports
+                clearing from anywhere in the tile and
+                attributes it to whichever area triggered the
+                run. A detection then carries the district of
+                a reserve it may be tens of kilometres from,
+                and jurisdiction, district totals and the map
+                all inherit that error.
+
+                Clipping before grouping rather than
+                filtering afterwards also means a clearing
+                straddling the boundary is measured on the
+                part inside it, instead of contributing its
+                whole area to the area it merely touches.
+
+                None analyses the whole raster. That is what
+                the unit tests use, since they build a small
+                synthetic mask that is entirely the study
+                area.
 
         Returns:
             One dictionary per clearing that reaches the
@@ -442,6 +502,34 @@ class DetectionService:
         srid = self.utm_srid_from_crs(crs)
 
         confirmed = confirmed_mask == 1
+
+        # -------------------------------------------------
+        # Restrict to the forest area being analysed
+        #
+        # The outline is stored in EPSG:4326 and the rasters
+        # are in a projected system, so it is reprojected
+        # before it can mask them. geometry_mask with
+        # invert=True marks the pixels inside the outline,
+        # so the AND keeps confirmed pixels that fall within
+        # the monitored area and drops the rest of the tile.
+        # -------------------------------------------------
+
+        if boundary is not None:
+
+            boundary_in_raster_crs = transform_geom(
+                WGS84_CRS,
+                crs,
+                boundary.__geo_interface__,
+            )
+
+            inside_area = geometry_mask(
+                [boundary_in_raster_crs],
+                out_shape=confirmed.shape,
+                transform=transform,
+                invert=True,
+            )
+
+            confirmed = confirmed & inside_area
 
         if not np.any(confirmed):
             return []
@@ -686,13 +774,63 @@ class DetectionService:
         as EPSG:4326 would give an area in square degrees,
         which varies with latitude and cannot be converted
         to hectares by a constant.
+
+        Validity:
+            The outline is repaired with make_valid before it
+            is stored. Outlines come from polygonising a
+            raster, and where two parts of a clearing meet at
+            a single pixel corner the ring closes on itself:
+            PostGIS calls that a ring self-intersection and
+            treats the geometry as invalid. An invalid
+            geometry gives undefined results from ST_Contains
+            and ST_Intersects, which is what a jurisdiction
+            or reserve-boundary test is built on, and some
+            map clients refuse to draw it.
+
+            make_valid can return a collection when it splits
+            such a shape, so only the polygonal parts are
+            kept. Repair nudges the boundary by less than one
+            pixel and does not change the measured area,
+            which is counted from pixels rather than from
+            this outline.
         """
 
-        if isinstance(polygon, MultiPolygon):
-            multipolygon = polygon
+        repaired = make_valid(polygon)
+
+        if isinstance(repaired, (Polygon, MultiPolygon)):
+            cleaned = repaired
 
         else:
-            multipolygon = MultiPolygon([polygon])
+            # A GeometryCollection: keep only the polygonal
+            # parts, discarding any stray line or point the
+            # repair produced.
+            parts = [
+                geom
+                for geom in getattr(repaired, "geoms", [])
+                if isinstance(geom, (Polygon, MultiPolygon))
+            ]
+
+            cleaned = (
+                MultiPolygon(
+                    [
+                        piece
+                        for geom in parts
+                        for piece in (
+                            geom.geoms
+                            if isinstance(geom, MultiPolygon)
+                            else [geom]
+                        )
+                    ]
+                )
+                if parts
+                else polygon
+            )
+
+        if isinstance(cleaned, MultiPolygon):
+            multipolygon = cleaned
+
+        else:
+            multipolygon = MultiPolygon([cleaned])
 
         return from_shape(multipolygon, srid=srid)
 
@@ -1338,10 +1476,25 @@ class DetectionService:
         # large enough to report. The job still completes.
         # -------------------------------------------------
 
+        # The analysis is commissioned for one forest area,
+        # so the mask is restricted to it. Without this the
+        # clearings come from anywhere in the 110 km tile and
+        # are recorded against whichever area triggered the
+        # run, which puts a detection in the wrong district
+        # and takes the map, the district totals and the
+        # jurisdiction check with it.
+        boundary = None
+
+        if job.forest_area is not None and (
+            job.forest_area.geometry is not None
+        ):
+            boundary = to_shape(job.forest_area.geometry)
+
         patches = self.extract_detection_patches(
             previous_ndvi_path=previous_ndvi,
             latest_ndvi_path=latest_ndvi,
             confirmed_mask_path=confirmed_mask,
+            boundary=boundary,
         )
 
         if not patches:
