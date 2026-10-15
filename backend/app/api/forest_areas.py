@@ -50,6 +50,9 @@ from app.database.session import get_db
 from app.models.forest_area import ForestArea
 from app.models.satellite_image import SatelliteImage
 from app.models.user import User
+from app.repositories.forest_area_repository import (
+    ForestAreaRepository,
+)
 
 from app.schemas.forest_area import (
     ForestAreaCreate,
@@ -128,22 +131,34 @@ def build_forest_area_response(
 )
 def get_forest_areas(
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_active_user),
+    current_user: User = Depends(
+        get_current_active_user
+    ),
 ):
     """
-    Return all active Forest Areas ordered by name.
+    Return the active Forest Areas the officer may see.
+
+    Args:
+        db:
+            Database session.
+        current_user:
+            The authenticated officer. Their jurisdiction
+            decides which rows the query can return.
+
+    Returns:
+        list[ForestAreaResponse]:
+            Active forest areas inside the officer's
+            district or province, ordered by name. Empty
+            when no jurisdiction is assigned.
+
+    The filter is applied in the repository, so an area
+    outside the officer's jurisdiction is not returned by
+    this endpoint under any request. See FR-04.
     """
 
-    forests = (
-        db.query(ForestArea)
-        .filter(
-            ForestArea.is_active.is_(True)
-        )
-        .order_by(
-            ForestArea.name
-        )
-        .all()
-    )
+    forests = ForestAreaRepository(
+        db
+    ).get_all_active_for_user(current_user)
 
     return [
         build_forest_area_response(forest)
@@ -162,18 +177,46 @@ def get_forest_areas(
 def get_forest_area(
     forest_area_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_active_user),
+    current_user: User = Depends(
+        get_current_active_user
+    ),
 ):
     """
-    Retrieve a single Forest Area by its identifier.
+    Retrieve one Forest Area the officer may see.
+
+    Args:
+        forest_area_id:
+            Identifier requested.
+        db:
+            Database session.
+        current_user:
+            The authenticated officer.
+
+    Returns:
+        ForestAreaResponse:
+            The forest area, when it exists inside the
+            officer's jurisdiction.
+
+    Raises:
+        HTTPException:
+            404 when the area does not exist, or lies
+            outside the officer's jurisdiction.
+
+    The two cases return the same 404 on purpose. Answering
+    403 would confirm that a forest area is registered in a
+    district the officer does not cover, which is itself
+    information about where the department is watching.
+
+    Requesting the identifier directly is the case FR-04
+    exists for, so the jurisdiction filter is part of the
+    query rather than a check on the row after loading it.
     """
 
-    forest = (
-        db.query(ForestArea)
-        .filter(
-            ForestArea.id == forest_area_id
-        )
-        .first()
+    forest = ForestAreaRepository(
+        db
+    ).get_by_id_for_user(
+        forest_area_id=forest_area_id,
+        user=current_user,
     )
 
     if forest is None:
@@ -261,18 +304,22 @@ def update_forest_area(
     forest_area_id: int,
     forest_data: ForestAreaUpdate,
     db: Session = Depends(get_db),
-    _: User = Depends(get_forestry_officer),
+    current_user: User = Depends(get_forestry_officer),
 ):
     """
     Update an existing Forest Area.
+
+    Scoped to the officer's jurisdiction, so an officer
+    cannot alter the record of a forest area in a district
+    they do not cover. FR-04 governs writes as well as
+    reads: editing a boundary or a monitoring setting in
+    another district would change what that district's
+    officers are shown.
     """
 
-    forest = (
-        db.query(ForestArea)
-        .filter(
-            ForestArea.id == forest_area_id
-        )
-        .first()
+    forest = ForestAreaRepository(db).get_by_id_for_user(
+        forest_area_id=forest_area_id,
+        user=current_user,
     )
 
     if forest is None:
@@ -347,21 +394,24 @@ def update_forest_area(
 def delete_forest_area(
     forest_area_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(get_forestry_officer),
+    current_user: User = Depends(get_forestry_officer),
 ):
     """
     Deactivate a Forest Area.
 
     The record is retained in the database so historical
     analysis and detection records remain available.
+
+    Scoped to the officer's jurisdiction, so an officer
+    cannot deactivate a forest area in a district they do
+    not cover. Deactivation removes the area from the lists
+    its own district's officers work from, which is why the
+    restriction matters more here than on a read.
     """
 
-    forest = (
-        db.query(ForestArea)
-        .filter(
-            ForestArea.id == forest_area_id
-        )
-        .first()
+    forest = ForestAreaRepository(db).get_by_id_for_user(
+        forest_area_id=forest_area_id,
+        user=current_user,
     )
 
     if forest is None:
@@ -403,7 +453,7 @@ def delete_forest_area(
 def get_satellite_images(
     forest_area_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """
     Return satellite images associated with a Forest Area.
@@ -411,18 +461,22 @@ def get_satellite_images(
     Only direct SatelliteImage fields are returned to avoid
     unnecessary relationship loading and PostGIS geometry
     serialization problems.
+
+    Scoped to the officer's jurisdiction. The imagery
+    holdings for an area disclose which ground the
+    department has acquired coverage of, and over which
+    dates, so they are restricted on the same basis as the
+    detections drawn from them. See FR-04.
     """
 
     # -----------------------------------------------------
-    # Verify that the Forest Area exists.
+    # Verify that the Forest Area exists and that this
+    # officer covers it.
     # -----------------------------------------------------
 
-    forest = (
-        db.query(ForestArea)
-        .filter(
-            ForestArea.id == forest_area_id
-        )
-        .first()
+    forest = ForestAreaRepository(db).get_by_id_for_user(
+        forest_area_id=forest_area_id,
+        user=current_user,
     )
 
     if forest is None:
@@ -497,15 +551,18 @@ def run_analysis(
     """
 
     # -----------------------------------------------------
-    # Verify that the Forest Area exists.
+    # Verify that the Forest Area exists and that this
+    # officer covers it.
+    #
+    # FR-04 restricts reading a detection and ordering the
+    # work that produces one alike: without this an officer
+    # could commission processing over another district and
+    # read the result through the job they submitted.
     # -----------------------------------------------------
 
-    forest = (
-        db.query(ForestArea)
-        .filter(
-            ForestArea.id == forest_area_id
-        )
-        .first()
+    forest = ForestAreaRepository(db).get_by_id_for_user(
+        forest_area_id=forest_area_id,
+        user=current_user,
     )
 
     if forest is None:

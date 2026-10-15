@@ -27,10 +27,13 @@ Version:
 ===========================================================
 """
 
-from sqlalchemy.orm import Session
+from sqlalchemy import false
+from sqlalchemy.orm import Query, Session
 
-from app.models.enums import ProtectedStatus
+from app.models.district import District
+from app.models.enums import ProtectedStatus, UserRole
 from app.models.forest_area import ForestArea
+from app.models.user import User
 
 
 class ForestAreaRepository:
@@ -43,6 +46,163 @@ class ForestAreaRepository:
         db: Session,
     ):
         self.db = db
+
+    # ---------------------------------------------------------
+    # Jurisdiction Scoping
+    # ---------------------------------------------------------
+    def scope_to_jurisdiction(
+        self,
+        query: Query,
+        user: User,
+    ) -> Query:
+        """
+        Restrict a forest area query to a user's jurisdiction.
+
+        Args:
+            query:
+                Query selecting ForestArea rows.
+
+            user:
+                Officer whose jurisdiction applies.
+
+        Returns:
+            The query with the jurisdiction filter applied.
+
+        This is the enforcement point for requirement FR-04.
+        Filtering here rather than in the endpoint means an
+        out-of-jurisdiction forest area cannot be returned by
+        any caller of these methods, whatever the request
+        asked for, including a request that names the record
+        by its identifier. A user interface that merely hides
+        rows is not access control.
+
+        An officer with no jurisdiction assigned matches
+        nothing. That case is rejected explicitly rather than
+        left to a NULL comparison: SQLAlchemy renders
+        `column == None` as `IS NULL`, which would match rows
+        whose district is unset instead of matching none. An
+        unassigned account is treated as not yet authorised.
+        """
+
+        # -----------------------------------------------------
+        # Administrators are unrestricted
+        # -----------------------------------------------------
+
+        if user.role == UserRole.ADMIN:
+            return query
+
+        # -----------------------------------------------------
+        # Provincial officers: every district in the province
+        #
+        # The join is needed only here, because a forest area
+        # records its district directly but not its province.
+        # -----------------------------------------------------
+
+        if user.role == UserRole.PROVINCIAL_FORESTRY_OFFICER:
+
+            if user.province_id is None:
+                return query.filter(false())
+
+            return (
+                query
+                .join(
+                    District,
+                    District.id
+                    == ForestArea.district_id,
+                )
+                .filter(
+                    District.province_id
+                    == user.province_id,
+                )
+            )
+
+        # -----------------------------------------------------
+        # District officers: their district only
+        # -----------------------------------------------------
+
+        if user.role == UserRole.DISTRICT_FORESTRY_OFFICER:
+
+            if user.district_id is None:
+                return query.filter(false())
+
+            return query.filter(
+                ForestArea.district_id
+                == user.district_id,
+            )
+
+        # -----------------------------------------------------
+        # Unknown role: return nothing
+        # -----------------------------------------------------
+
+        return query.filter(false())
+
+    # ---------------------------------------------------------
+    # Get Active within Jurisdiction
+    # ---------------------------------------------------------
+    def get_all_active_for_user(
+        self,
+        user: User,
+    ) -> list[ForestArea]:
+        """
+        Retrieve active forest areas the user may see.
+
+        Args:
+            user:
+                Officer making the request.
+
+        Returns:
+            Active forest areas inside the officer's
+            jurisdiction, ordered by name. Empty when the
+            officer has no jurisdiction assigned.
+        """
+
+        query = self.db.query(ForestArea).filter(
+            ForestArea.is_active.is_(True),
+        )
+
+        return (
+            self.scope_to_jurisdiction(query, user)
+            .order_by(ForestArea.name)
+            .all()
+        )
+
+    # ---------------------------------------------------------
+    # Get by ID within Jurisdiction
+    # ---------------------------------------------------------
+    def get_by_id_for_user(
+        self,
+        forest_area_id: int,
+        user: User,
+    ) -> ForestArea | None:
+        """
+        Retrieve one forest area the user may see.
+
+        Args:
+            forest_area_id:
+                Identifier requested.
+
+            user:
+                Officer making the request.
+
+        Returns:
+            The forest area, or None when it does not exist
+            OR lies outside the officer's jurisdiction.
+
+        The two cases are deliberately not distinguished.
+        Answering "it exists but is not yours" would confirm
+        to an officer that a forest area is registered in a
+        district they do not cover, which is itself
+        information about where the department is watching.
+        """
+
+        query = self.db.query(ForestArea).filter(
+            ForestArea.id == forest_area_id,
+        )
+
+        return self.scope_to_jurisdiction(
+            query,
+            user,
+        ).first()
 
     # ---------------------------------------------------------
     # Create

@@ -132,7 +132,7 @@ def search_sentinel_images_for_forest(
     cloud_cover: float = 30.0,
     limit: int = 20,
     db: Session = Depends(get_db),
-    _: User = Depends(
+    current_user: User = Depends(
         get_current_active_user
     ),
 ):
@@ -214,8 +214,9 @@ def search_sentinel_images_for_forest(
     )
 
     forest = (
-        forest_repository.get_by_id(
-            forest_area_id
+        forest_repository.get_by_id_for_user(
+            forest_area_id=forest_area_id,
+            user=current_user,
         )
     )
 
@@ -395,7 +396,7 @@ def download_sentinel_product(
     forest_area_id: int,
     request: SatelliteDownloadRequest,
     db: Session = Depends(get_db),
-    _: User = Depends(
+    current_user: User = Depends(
         get_current_active_user
     ),
 ):
@@ -413,8 +414,9 @@ def download_sentinel_product(
     )
 
     forest = (
-        forest_repository.get_by_id(
-            forest_area_id
+        forest_repository.get_by_id_for_user(
+            forest_area_id=forest_area_id,
+            user=current_user,
         )
     )
 
@@ -519,7 +521,7 @@ def download_sentinel_product(
 )
 def get_satellite_images(
     db: Session = Depends(get_db),
-    _: User = Depends(
+    current_user: User = Depends(
         get_current_active_user
     ),
 ):
@@ -531,7 +533,7 @@ def get_satellite_images(
         SatelliteImageRepository(db)
     )
 
-    return repository.get_all()
+    return repository.get_all_for_user(current_user)
 
 
 # =========================================================
@@ -547,7 +549,7 @@ def get_satellite_images(
 def get_images_by_forest_area(
     forest_area_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(
+    current_user: User = Depends(
         get_current_active_user
     ),
 ):
@@ -561,8 +563,9 @@ def get_images_by_forest_area(
     )
 
     forest = (
-        forest_repository.get_by_id(
-            forest_area_id
+        forest_repository.get_by_id_for_user(
+            forest_area_id=forest_area_id,
+            user=current_user,
         )
     )
 
@@ -593,7 +596,7 @@ def get_images_by_forest_area(
 def get_latest_image(
     forest_area_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(
+    current_user: User = Depends(
         get_current_active_user
     ),
 ):
@@ -607,8 +610,9 @@ def get_latest_image(
     )
 
     forest = (
-        forest_repository.get_by_id(
-            forest_area_id
+        forest_repository.get_by_id_for_user(
+            forest_area_id=forest_area_id,
+            user=current_user,
         )
     )
 
@@ -650,7 +654,7 @@ def get_latest_image(
 def get_satellite_image(
     image_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(
+    current_user: User = Depends(
         get_current_active_user
     ),
 ):
@@ -663,8 +667,9 @@ def get_satellite_image(
     )
 
     image = (
-        repository.get_by_id(
-            image_id
+        repository.get_by_id_for_user(
+            image_id=image_id,
+            user=current_user,
         )
     )
 
@@ -690,7 +695,7 @@ def get_satellite_image(
 def register_satellite_image(
     request: SatelliteImageCreate,
     db: Session = Depends(get_db),
-    _: User = Depends(
+    current_user: User = Depends(
         get_current_active_user
     ),
 ):
@@ -767,7 +772,7 @@ def register_satellite_image(
 def mark_image_processed(
     image_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(
+    current_user: User = Depends(
         get_current_active_user
     ),
 ):
@@ -780,8 +785,9 @@ def mark_image_processed(
     )
 
     image = (
-        repository.get_by_id(
-            image_id
+        repository.get_by_id_for_user(
+            image_id=image_id,
+            user=current_user,
         )
     )
 
@@ -829,8 +835,9 @@ def delete_satellite_image(
     )
 
     image = (
-        repository.get_by_id(
-            image_id
+        repository.get_by_id_for_user(
+            image_id=image_id,
+            user=current_user,
         )
     )
 
@@ -861,13 +868,19 @@ def delete_satellite_image(
 def get_image_by_product_id(
     product_id: str,
     db: Session = Depends(get_db),
-    _: User = Depends(
+    current_user: User = Depends(
         get_current_active_user
     ),
 ):
     """
     Retrieve a satellite image by
     Sentinel product ID.
+
+    Scoped to the officer's jurisdiction. A Sentinel product
+    identifier is predictable from the catalogue, so without
+    the check this route would answer questions about
+    imagery held for districts the officer does not cover,
+    whatever the other routes refuse. See FR-04.
     """
 
     repository = (
@@ -879,6 +892,15 @@ def get_image_by_product_id(
             product_id
         )
     )
+
+    # Resolved first, then re-fetched through the scoped
+    # lookup: the same 404 covers "no such product" and
+    # "not yours", so neither can be told from the other.
+    if image is not None:
+        image = repository.get_by_id_for_user(
+            image_id=image.id,
+            user=current_user,
+        )
 
     if image is None:
 

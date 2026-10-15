@@ -45,6 +45,12 @@ from app.models.enums import AnalysisJobType
 
 from app.models.forest_area import ForestArea
 from app.models.user import User
+from app.repositories.analysis_repository import (
+    AnalysisRepository,
+)
+from app.repositories.forest_area_repository import (
+    ForestAreaRepository,
+)
 
 from app.schemas.analysis import SeasonalWindowRequest
 from app.services.analysis_service import AnalysisService
@@ -171,16 +177,23 @@ def run_analysis(
     # Find forest area
     # -----------------------------------------------------
 
-    forest = (
-        db.query(ForestArea)
-        .filter(
-            ForestArea.id == forest_id,
-            ForestArea.is_active.is_(True),
-        )
-        .first()
+    # Scoped to the officer's jurisdiction, so an analysis
+    # cannot be started over a forest area the officer does
+    # not cover. Reading a detection and commissioning the
+    # work that produces one are both restricted by FR-04;
+    # an unscoped lookup here would let an officer queue
+    # processing for another district and learn the result
+    # through the job they submitted.
+    forest = ForestAreaRepository(db).get_by_id_for_user(
+        forest_area_id=forest_id,
+        user=current_user,
     )
 
-    if forest is None:
+    # Absent, inactive and out-of-jurisdiction all answer
+    # 404, so the response does not distinguish a forest
+    # area that exists elsewhere from one that does not
+    # exist at all.
+    if forest is None or not forest.is_active:
 
         raise HTTPException(
             status_code=404,
@@ -330,20 +343,20 @@ def run_analysis(
 @router.get("/jobs")
 def get_analysis_jobs(
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """
-    Return all analysis jobs.
+    Return the analysis jobs the officer may see.
 
-    Requires an authenticated user.
+    Scoped to the officer's jurisdiction in the repository.
+    An analysis job records which forest area was examined
+    and over which seasonal windows, so the history shows
+    where the department has been looking even where nothing
+    was found. See FR-04.
     """
 
-    jobs = (
-        db.query(AnalysisJob)
-        .order_by(
-            AnalysisJob.created_at.desc(),
-        )
-        .all()
+    jobs = AnalysisRepository(db).get_all_for_user(
+        current_user
     )
 
     return [
@@ -427,20 +440,25 @@ def get_analysis_jobs(
 def get_analysis_job(
     job_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """
-    Return details of one analysis job.
+    Return details of one analysis job the officer may see.
 
-    Requires an authenticated user.
+    Raises:
+        HTTPException:
+            404 when the job does not exist, or was run over
+            a forest area outside the officer's
+            jurisdiction.
+
+    The two cases return the same 404 on purpose, so that
+    requesting identifiers in sequence reveals nothing about
+    analyses in other districts. See FR-04.
     """
 
-    job = (
-        db.query(AnalysisJob)
-        .filter(
-            AnalysisJob.id == job_id,
-        )
-        .first()
+    job = AnalysisRepository(db).get_by_id_for_user(
+        job_id=job_id,
+        user=current_user,
     )
 
     if job is None:

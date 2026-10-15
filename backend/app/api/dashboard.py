@@ -18,7 +18,7 @@ Project:
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, case
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import get_current_active_user
@@ -31,6 +31,9 @@ from app.models.forest_area import ForestArea
 from app.models.detection import Detection
 from app.models.alert import Alert
 from app.models.satellite_image import SatelliteImage
+from app.repositories.forest_area_repository import (
+    ForestAreaRepository,
+)
 
 from app.schemas.dashboard import (
     AlertStatistics,
@@ -58,7 +61,9 @@ router = APIRouter(
 )
 def get_dashboard(
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_active_user),
+    current_user: User = Depends(
+        get_current_active_user
+    ),
 ):
     """
     Return dashboard summary statistics.
@@ -82,16 +87,56 @@ def get_dashboard(
     whole dashboard costs a small fixed number of round
     trips regardless of how many records exist.
 
-    NOTE: The counts are system-wide and are not scoped to
-    the signed-in officer's district or province. A District
-    Forestry Officer therefore sees national figures, and
-    the recent detection and alert lists may name forest
-    areas outside their jurisdiction. This does not satisfy
-    FR-04. The district breakdown endpoint below applies the
-    jurisdiction rule and is the pattern to follow: filter
-    in the query, so that a record outside the officer's
-    area cannot be returned at all.
+    Every figure is scoped to the officer's jurisdiction, so
+    two officers signing in at the same moment are shown
+    different totals: a district officer sees their district,
+    a provincial officer sees every district in their
+    province, and an administrator sees national figures
+    because administration holds no jurisdiction.
+
+    The permitted set of forest areas is derived once from
+    ForestAreaRepository.scope_to_jurisdiction and applied as
+    a subquery inside each aggregate. Reusing that method
+    rather than restating the rule here means the dashboard
+    cannot disagree with the forest area and detection
+    endpoints about what an officer may see. This is
+    requirement FR-04, enforced in the query: a record
+    outside the officer's area is not counted, not listed,
+    and cannot be returned.
     """
+
+    # =====================================================
+    # JURISDICTION SCOPE
+    #
+    # Every figure below is restricted to the forest areas
+    # this officer is responsible for. The permitted set is
+    # derived once, from ForestAreaRepository, so the
+    # dashboard cannot drift from the rule the forest area
+    # and detection endpoints enforce: there is one
+    # definition of a jurisdiction, not four.
+    #
+    # It is kept as a subquery rather than a list of
+    # identifiers so the restriction is applied by the
+    # database inside each aggregate, rather than by first
+    # fetching every area the officer may see.
+    #
+    # An administrator is unrestricted, so no filter is
+    # built and the counts stay national. That is correct
+    # for the role: administration has no jurisdiction.
+    # =====================================================
+
+    permitted_forest_areas = None
+
+    if current_user.role != UserRole.ADMIN:
+
+        permitted_forest_areas = (
+            ForestAreaRepository(db)
+            .scope_to_jurisdiction(
+                db.query(ForestArea.id),
+                current_user,
+            )
+            .subquery()
+        )
 
     # =====================================================
     # FOREST STATISTICS
@@ -117,7 +162,16 @@ def get_dashboard(
                 )
             )
         ).label("protected_forests"),
-    ).one()
+    )
+
+    if permitted_forest_areas is not None:
+        forest_stats = forest_stats.filter(
+            ForestArea.id.in_(
+                select(permitted_forest_areas.c.id)
+            )
+        )
+
+    forest_stats = forest_stats.one()
 
     # =====================================================
     # DETECTION STATISTICS
@@ -154,7 +208,16 @@ def get_dashboard(
                 )
             )
         ).label("rejected_detections"),
-    ).one()
+    )
+
+    if permitted_forest_areas is not None:
+        detection_stats = detection_stats.filter(
+            Detection.forest_area_id.in_(
+                select(permitted_forest_areas.c.id)
+            )
+        )
+
+    detection_stats = detection_stats.one()
 
     # =====================================================
     # ALERT STATISTICS
@@ -209,7 +272,21 @@ def get_dashboard(
                 )
             )
         ).label("resolved_alerts"),
-    ).one()
+    )
+
+    # An alert is raised about a detection, so its
+    # jurisdiction is the jurisdiction of that detection.
+    if permitted_forest_areas is not None:
+        alert_stats = alert_stats.join(
+            Detection,
+            Detection.id == Alert.detection_id,
+        ).filter(
+            Detection.forest_area_id.in_(
+                select(permitted_forest_areas.c.id)
+            )
+        )
+
+    alert_stats = alert_stats.one()
 
     # =====================================================
     # SATELLITE STATISTICS
@@ -237,19 +314,41 @@ def get_dashboard(
                 )
             )
         ).label("unprocessed_images"),
-    ).one()
+    )
+
+    if permitted_forest_areas is not None:
+        satellite_stats = satellite_stats.filter(
+            SatelliteImage.forest_area_id.in_(
+                select(permitted_forest_areas.c.id)
+            )
+        )
+
+    satellite_stats = satellite_stats.one()
 
     # =====================================================
     # RECENT DETECTIONS
     # =====================================================
 
-    recent_detection_records = (
+    recent_detection_query = (
         db.query(Detection)
         .options(
             selectinload(
                 Detection.forest_area
             )
         )
+    )
+
+    if permitted_forest_areas is not None:
+        recent_detection_query = (
+            recent_detection_query.filter(
+                Detection.forest_area_id.in_(
+                    select(permitted_forest_areas.c.id)
+                )
+            )
+        )
+
+    recent_detection_records = (
+        recent_detection_query
         .order_by(
             Detection.created_at.desc()
         )
@@ -284,8 +383,20 @@ def get_dashboard(
     # RECENT ALERTS
     # =====================================================
 
+    recent_alert_query = db.query(Alert)
+
+    if permitted_forest_areas is not None:
+        recent_alert_query = recent_alert_query.join(
+            Detection,
+            Detection.id == Alert.detection_id,
+        ).filter(
+            Detection.forest_area_id.in_(
+                select(permitted_forest_areas.c.id)
+            )
+        )
+
     recent_alert_records = (
-        db.query(Alert)
+        recent_alert_query
         .order_by(
             Alert.created_at.desc()
         )

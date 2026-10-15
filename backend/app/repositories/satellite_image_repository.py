@@ -12,8 +12,16 @@ Responsibilities:
     - Register downloaded images.
     - Retrieve satellite images.
     - Update processing status.
+    - Restrict results to an officer's jurisdiction.
     - Count satellite images.
     - Delete satellite images.
+
+Note:
+    Methods whose name ends in _for_user apply jurisdiction
+    scoping (requirement FR-04) and are what the API layer
+    calls. The unscoped methods remain for system-level
+    work, such as the download worker registering a product
+    it has just fetched.
 
 Author:
     Samuel Bikiloni
@@ -27,9 +35,14 @@ Version:
 ===========================================================
 """
 
-from sqlalchemy.orm import Session
+from sqlalchemy import false
+from sqlalchemy.orm import Query, Session
 
+from app.models.district import District
+from app.models.enums import UserRole
+from app.models.forest_area import ForestArea
 from app.models.satellite_image import SatelliteImage
+from app.models.user import User
 
 
 class SatelliteImageRepository:
@@ -42,6 +55,146 @@ class SatelliteImageRepository:
         db: Session,
     ):
         self.db = db
+
+    # ---------------------------------------------------------
+    # Jurisdiction Scoping
+    # ---------------------------------------------------------
+    def scope_to_jurisdiction(
+        self,
+        query: Query,
+        user: User,
+    ) -> Query:
+        """
+        Restrict a satellite image query to a jurisdiction.
+
+        Args:
+            query:
+                Query selecting SatelliteImage rows.
+
+            user:
+                Officer whose jurisdiction applies.
+
+        Returns:
+            The query with the jurisdiction filter applied.
+
+        An image is acquired for a forest area, which belongs
+        to a district, which belongs to a province, so scoping
+        joins through both.
+
+        This is the enforcement point for requirement FR-04.
+        The imagery holdings for an area disclose which ground
+        the department has acquired coverage of and over which
+        dates, so they are restricted on the same basis as the
+        detections drawn from them.
+
+        An officer with no jurisdiction assigned matches
+        nothing. That case is rejected explicitly rather than
+        left to a NULL comparison: SQLAlchemy renders
+        `column == None` as `IS NULL`, which would match rows
+        whose district is unset instead of matching none.
+        """
+
+        # -----------------------------------------------------
+        # Administrators are unrestricted
+        # -----------------------------------------------------
+
+        if user.role == UserRole.ADMIN:
+            return query
+
+        query = (
+            query
+            .join(
+                ForestArea,
+                ForestArea.id
+                == SatelliteImage.forest_area_id,
+            )
+            .join(
+                District,
+                District.id
+                == ForestArea.district_id,
+            )
+        )
+
+        # -----------------------------------------------------
+        # Provincial officers: every district in the province
+        # -----------------------------------------------------
+
+        if user.role == UserRole.PROVINCIAL_FORESTRY_OFFICER:
+
+            if user.province_id is None:
+                return query.filter(false())
+
+            return query.filter(
+                District.province_id
+                == user.province_id,
+            )
+
+        # -----------------------------------------------------
+        # District officers: their district only
+        # -----------------------------------------------------
+
+        if user.role == UserRole.DISTRICT_FORESTRY_OFFICER:
+
+            if user.district_id is None:
+                return query.filter(false())
+
+            return query.filter(
+                ForestArea.district_id
+                == user.district_id,
+            )
+
+        # -----------------------------------------------------
+        # Unknown role: return nothing
+        # -----------------------------------------------------
+
+        return query.filter(false())
+
+    # ---------------------------------------------------------
+    # Get All within Jurisdiction
+    # ---------------------------------------------------------
+    def get_all_for_user(
+        self,
+        user: User,
+    ) -> list[SatelliteImage]:
+        """
+        Retrieve all satellite images the user may see.
+        """
+
+        query = self.db.query(SatelliteImage)
+
+        return (
+            self.scope_to_jurisdiction(query, user)
+            .order_by(
+                SatelliteImage.acquisition_date.desc(),
+            )
+            .all()
+        )
+
+    # ---------------------------------------------------------
+    # Get by ID within Jurisdiction
+    # ---------------------------------------------------------
+    def get_by_id_for_user(
+        self,
+        image_id: int,
+        user: User,
+    ) -> SatelliteImage | None:
+        """
+        Retrieve one satellite image the user may see.
+
+        Returns None when the image does not exist OR lies
+        outside the user's jurisdiction, so that probing for
+        identifiers reveals nothing about imagery held for
+        other districts.
+        """
+
+        query = self.db.query(SatelliteImage).filter(
+            SatelliteImage.id == image_id,
+        )
+
+        return (
+            self.scope_to_jurisdiction(query, user)
+            .first()
+        )
 
     # ---------------------------------------------------------
     # Create
