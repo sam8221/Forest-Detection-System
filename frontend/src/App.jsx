@@ -89,6 +89,7 @@ import {
   ChevronDown,
   Clock,
   BarChart3,
+  Map as MapIcon,
   LayoutDashboard,
   Leaf,
   LogOut,
@@ -106,6 +107,7 @@ import {
 
 import Analysis from "./pages/Analysis";
 import Analytics from "./pages/Analytics";
+import Monitoring from "./pages/Monitoring";
 import Alerts from "./pages/Alerts";
 import Dashboard from "./pages/Dashboard";
 import Detections from "./pages/Detections";
@@ -215,6 +217,10 @@ function App() {
     {
       name: "Analytics",
       icon: BarChart3,
+    },
+    {
+      name: "Monitoring Map",
+      icon: MapIcon,
     },
     {
       name: "Detections",
@@ -1044,6 +1050,10 @@ function App() {
 
           {activePage === "Analytics" && (
             <Analytics />
+          )}
+
+          {activePage === "Monitoring Map" && (
+            <Monitoring />
           )}
 
           {activePage === "Forest Areas" && (

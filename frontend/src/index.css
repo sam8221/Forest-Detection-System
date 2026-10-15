@@ -9171,3 +9171,251 @@ textarea:focus {
     min-width: 0;
   }
 }
+
+/* =========================================================
+   FOREST MONITORING MAP
+
+   A map column with its layer control and legend beside a
+   facts column, with the two charts below. The map needs a
+   fixed height because OpenLayers sizes to its container.
+========================================================= */
+
+.monitoring-page {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.monitoring-picker {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.monitoring-picker label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #5c6f64;
+}
+
+.monitoring-picker select {
+  padding: 8px 10px;
+  border: 1px solid #cfdcd4;
+  border-radius: 7px;
+  font-size: 13px;
+  background: #ffffff;
+  color: #1d3326;
+  min-width: 200px;
+}
+
+.monitoring-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 2.1fr) minmax(280px, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.monitoring-main {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.monitoring-side {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* --------------------------------------------------------
+   Map
+-------------------------------------------------------- */
+
+.monitoring-map-wrapper {
+  position: relative;
+  border: 1px solid #e3ebe6;
+  border-radius: 11px;
+  overflow: hidden;
+}
+
+.monitoring-map {
+  width: 100%;
+  height: 520px;
+  background: #0d1a12;
+}
+
+.monitoring-map-sampling {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  padding: 6px 11px;
+  border-radius: 7px;
+  background: rgba(20, 49, 31, 0.88);
+  color: #ffffff;
+  font-size: 12px;
+  z-index: 5;
+}
+
+/* --------------------------------------------------------
+   Layer control
+-------------------------------------------------------- */
+
+.monitoring-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.monitoring-layer-list {
+  display: flex;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.monitoring-layer {
+  padding: 7px 12px;
+  border: 1px solid #cfdcd4;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #3d5247;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.monitoring-layer:hover:not(:disabled) {
+  background: #eef4f0;
+}
+
+.monitoring-layer-active {
+  background: #166534;
+  border-color: #166534;
+  color: #ffffff;
+}
+
+.monitoring-layer-missing {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.monitoring-opacity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.monitoring-opacity label {
+  font-size: 11px;
+  color: #5c6f64;
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------
+   Legend
+-------------------------------------------------------- */
+
+.monitoring-legend {
+  padding: 13px 15px;
+  background: #ffffff;
+  border: 1px solid #e3ebe6;
+  border-radius: 10px;
+}
+
+.monitoring-legend strong {
+  font-size: 13px;
+  color: #14311f;
+}
+
+.monitoring-legend-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: #6b7f73;
+}
+
+.monitoring-legend-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.monitoring-legend-swatches span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: #4b6155;
+}
+
+.monitoring-legend-swatches i {
+  width: 15px;
+  height: 15px;
+  border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+}
+
+/* --------------------------------------------------------
+   Facts list
+-------------------------------------------------------- */
+
+.monitoring-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 7px 14px;
+  margin: 0;
+  font-size: 12.5px;
+}
+
+.monitoring-facts dt {
+  color: #6b7f73;
+}
+
+.monitoring-facts dd {
+  margin: 0;
+  color: #1d3326;
+  font-weight: 600;
+  text-align: right;
+}
+
+.monitoring-no-reading {
+  color: #9aa8a0;
+  font-weight: 400;
+  font-style: italic;
+}
+
+/* --------------------------------------------------------
+   Charts
+-------------------------------------------------------- */
+
+.monitoring-charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 16px;
+}
+
+@media (max-width: 1100px) {
+  .monitoring-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .monitoring-page {
+    padding: 14px;
+  }
+
+  .monitoring-map {
+    height: 380px;
+  }
+}
