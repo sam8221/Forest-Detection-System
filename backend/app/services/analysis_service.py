@@ -5,7 +5,7 @@ ForestWatch Zambia
 Module: Analysis Service
 
 Purpose:
-    Coordinates the complete intelligent deforestation
+    Coordinates the complete automated deforestation
     detection workflow using Sentinel-2 imagery.
 
 Workflow:

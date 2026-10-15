@@ -160,7 +160,7 @@ function Login({ onLogin }) {
           <span>ZAMBIA</span>
 
           <p>
-            Intelligent Deforestation Detection
+            Automated Deforestation Detection
             and Alert System Using Sentinel-2
             Imagery in the Copperbelt, Zambia.
           </p>
@@ -169,7 +169,7 @@ function Login({ onLogin }) {
             <Leaf size={18} />
 
             <span>
-              Intelligent forest monitoring
+              Automated forest monitoring
             </span>
           </div>
 

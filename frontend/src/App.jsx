@@ -1141,7 +1141,7 @@ function App() {
           </span>
 
           <span>
-            Intelligent Forest Monitoring
+            Automated Forest Monitoring
           </span>
         </footer>
       </div>
