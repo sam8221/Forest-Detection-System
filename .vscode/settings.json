@@ -1,3 +1,13 @@
 {
-    "python-envs.defaultEnvManager": "ms-python.python:system"
+    "python-envs.defaultEnvManager": "ms-python.python:venv",
+    "python.defaultInterpreterPath": "D:/forest-detection-system/backend/.venv/Scripts/python.exe",
+    "python.analysis.extraPaths": [
+        "backend"
+    ],
+    "python.analysis.exclude": [
+        "backend/Forest-Detection-System/**"
+    ],
+    "files.exclude": {
+        "backend/Forest-Detection-System": true
+    }
 }
