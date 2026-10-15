@@ -116,11 +116,13 @@ def login(
     administrator can sign in as them, and an action in the
     audit trail cannot be attributed to the officer alone.
 
-    NOTE: AuthService.update_last_login exists but is not
-    called, so User.last_login stays null for every account.
-    FR-19 requires logins to be recorded with user and
-    timestamp; neither that column nor an audit_logs entry
-    is written on a successful sign-in.
+    A successful sign-in is recorded twice, as FR-19
+    requires: User.last_login is updated, and a LOGIN row is
+    written to audit_logs with the user and a timestamp. Both
+    happen in one transaction inside AuthService.login. A
+    failed attempt writes neither, because it raises before a
+    token is issued, so the trail records granted access
+    rather than refused attempts.
     """
 
     auth_service = AuthService(db)

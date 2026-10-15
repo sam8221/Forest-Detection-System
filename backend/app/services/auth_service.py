@@ -202,6 +202,40 @@ class AuthService:
             }
         )
 
+        # -----------------------------------------------------
+        # Record the sign-in (requirement FR-19)
+        #
+        # FR-19 requires every login to be recorded with the
+        # user and a timestamp. Two records are written for
+        # one event, and they answer different questions:
+        # last_login answers "when was this account last
+        # used", which the user administration screen shows,
+        # while the audit entry is the permanent trail and
+        # survives the next sign-in overwriting the column.
+        #
+        # Only successful sign-ins reach this point. A failed
+        # attempt raises above, before a token exists, so the
+        # trail records access that was granted rather than
+        # access that was refused.
+        #
+        # update_last_login commits, so the audit row added
+        # here is written in the same transaction: a sign-in
+        # cannot be recorded in one place and lost in the
+        # other.
+        # -----------------------------------------------------
+
+        self.db.add(
+            AuditLog(
+                user_id=user.id,
+                action="LOGIN",
+                entity_type="User",
+                entity_id=user.id,
+                detail=f"Successful sign-in by {user.email}.",
+            )
+        )
+
+        self.update_last_login(user)
+
         return Token(
             access_token=token,
             token_type="bearer",
