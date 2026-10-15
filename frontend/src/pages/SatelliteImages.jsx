@@ -71,6 +71,7 @@ import {
   CheckCircle2,
   Globe,
   Database,
+  Download,
 } from "lucide-react";
 
 const API_URL = CONFIG_API_URL;
@@ -91,6 +92,13 @@ export default function SatelliteImages() {
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState("");
   const [searchError, setSearchError] = useState("");
+
+  // Product identifier currently being acquired, so only the
+  // row that was clicked shows a spinner rather than every
+  // row in the table.
+  const [acquiringId, setAcquiringId] = useState("");
+  const [acquireError, setAcquireError] = useState("");
+  const [acquireNotice, setAcquireNotice] = useState("");
 
   // =========================================================
   // AUTHENTICATION
@@ -299,6 +307,91 @@ export default function SatelliteImages() {
       );
     } finally {
       setSearching(false);
+    }
+  };
+
+  // =========================================================
+  // ACQUIRE A PRODUCT
+  //
+  // Searching the catalogue only lists what Copernicus
+  // holds. Nothing can be analysed until a product has been
+  // downloaded and registered against the forest area,
+  // because an analysis job is created from a registered
+  // image. This is the step that turns a catalogue entry
+  // into an image the system owns.
+  //
+  // The download runs on the server and takes minutes for a
+  // full tile, so the request is slow by nature rather than
+  // stalled. The list is refreshed afterwards so the new
+  // record appears without a page reload.
+  // =========================================================
+
+  const handleAcquireProduct = async (product) => {
+    setAcquireError("");
+    setAcquireNotice("");
+
+    if (!selectedForestArea) {
+      setAcquireError(
+        "Select a forest area before acquiring imagery."
+      );
+      return;
+    }
+
+    setAcquiringId(product.product_id);
+
+    try {
+      const response = await fetch(
+        `${API_URL}/api/v1/satellite-images/forest/` +
+          `${selectedForestArea}/download`,
+        {
+          method: "POST",
+          headers: getHeaders(),
+          body: JSON.stringify({
+            product_id: product.product_id,
+            product_name:
+              product.product_name || product.name,
+            tile_id: product.tile_id,
+            acquisition_date:
+              product.acquisition_date,
+            cloud_cover: Number(
+              product.cloud_cover_percentage ??
+                product.cloud_cover ??
+                0
+            ),
+          }),
+        }
+      );
+
+      const data = await response
+        .json()
+        .catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(
+          data?.detail ||
+            "The product could not be acquired. " +
+              `Server returned ${response.status}.`
+        );
+      }
+
+      setAcquireNotice(
+        `${
+          product.product_name || product.product_id
+        } is registered. You can now run an analysis ` +
+          "for this forest area."
+      );
+
+      // Show the newly registered image in the lower table.
+      await fetchSatelliteImages();
+    } catch (err) {
+      console.error("Acquire Error:", err);
+
+      setAcquireError(
+        err.message ||
+          "The product could not be acquired."
+      );
+    } finally {
+      setAcquiringId("");
     }
   };
 
@@ -683,6 +776,30 @@ export default function SatelliteImages() {
           </div>
         )}
 
+        {acquireError && (
+          <div className="sentinel-search-error">
+
+            <AlertCircle size={18} />
+
+            <span>
+              {acquireError}
+            </span>
+
+          </div>
+        )}
+
+        {acquireNotice && (
+          <div className="sentinel-acquire-notice">
+
+            <CheckCircle2 size={18} />
+
+            <span>
+              {acquireNotice}
+            </span>
+
+          </div>
+        )}
+
       </div>
 
       {/* =====================================================
@@ -727,6 +844,7 @@ export default function SatelliteImages() {
                   <th>Cloud Cover</th>
                   <th>Processing</th>
                   <th>Availability</th>
+                  <th>Action</th>
                 </tr>
 
               </thead>
@@ -842,6 +960,41 @@ export default function SatelliteImages() {
                             </span>
                           </strong>
                         )}
+
+                      </td>
+
+                      <td>
+
+                        <button
+                          type="button"
+                          className="acquire-button"
+                          onClick={() =>
+                            handleAcquireProduct(
+                              product
+                            )
+                          }
+                          disabled={
+                            acquiringId !== ""
+                          }
+                        >
+
+                          {acquiringId ===
+                          product.product_id ? (
+                            <>
+                              <RefreshCw
+                                size={15}
+                                className="refresh-spinning"
+                              />
+                              Acquiring…
+                            </>
+                          ) : (
+                            <>
+                              <Download size={15} />
+                              Acquire
+                            </>
+                          )}
+
+                        </button>
 
                       </td>
 

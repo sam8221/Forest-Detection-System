@@ -2390,6 +2390,51 @@ button {
   font-size: 12px;
 }
 
+/* Confirmation that a catalogue product has been downloaded
+   and registered, which is what makes a forest area ready
+   for its first analysis. */
+
+.sentinel-acquire-notice {
+  margin: 0 20px 20px;
+  padding: 12px 14px;
+  border-radius: 9px;
+  background: #eaf7ee;
+  color: #1c6b36;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+/* Acquire action in the catalogue results table. Disabled
+   while any product is downloading, because the server
+   handles one download at a time and a second request would
+   queue behind the first with no feedback. */
+
+.acquire-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border: none;
+  border-radius: 7px;
+  background: #166534;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.acquire-button:hover:not(:disabled) {
+  background: #14532d;
+}
+
+.acquire-button:disabled {
+  background: #9cb3a3;
+  cursor: not-allowed;
+}
+
 /* =========================================================
    SENTINEL RESULTS
 ========================================================= */
