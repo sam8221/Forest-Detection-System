@@ -35,6 +35,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from app.api.alerts import router as alerts_router
 from app.api.analysis import router as analysis_router
 from app.api.auth import router as auth_router
+from app.api.analytics import router as analytics_router
 from app.api.dashboard import router as dashboard_router
 from app.api.detections import router as detections_router
 from app.api.reports import router as reports_router
@@ -270,6 +271,11 @@ def create_application() -> FastAPI:
 
     app.include_router(
         dashboard_router,
+        prefix=settings.api_v1_prefix,
+    )
+
+    app.include_router(
+        analytics_router,
         prefix=settings.api_v1_prefix,
     )
 
