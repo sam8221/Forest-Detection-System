@@ -156,27 +156,44 @@ class NDVIService:
             counted as a number it would read as severe
             loss.
 
-        NOTE: np.seterr is called here and changes NumPy's
-        error handling for the whole process, not only for
-        this calculation. A divide or overflow warning
-        raised by unrelated code elsewhere is silenced as a
-        side effect. Scoping it with np.errstate as a
-        context manager would confine it to this operation.
+        Input dtype:
+            Both bands are converted to float32 before any
+            arithmetic. read_band already returns float32,
+            so for the imagery pipeline this costs nothing
+            and copies nothing. It matters for any other
+            caller, because Sentinel-2 reflectance is
+            distributed as unsigned 16-bit integers, and on
+            an unsigned array NIR - RED wraps around instead
+            of going negative: a cleared pixel would read as
+            strong vegetation rather than as loss. Marking
+            the undefined pixels also requires a float array,
+            since no integer array can hold np.nan.
+
+        Error state:
+            The divide and invalid warnings are suppressed
+            with np.errstate as a context manager, which
+            confines the change to this calculation. np.seterr
+            would alter NumPy's behaviour for the whole
+            process, silencing a genuine numeric warning
+            raised by unrelated code elsewhere.
         """
 
-        np.seterr(
+        red = np.asarray(red_band, dtype="float32")
+        nir = np.asarray(nir_band, dtype="float32")
+
+        with np.errstate(
             divide="ignore",
             invalid="ignore",
-        )
+        ):
 
-        denominator = nir_band + red_band
+            # A fresh array from the sum, so writing the
+            # undefined pixels here cannot reach back into
+            # either band the caller passed in.
+            denominator = nir + red
 
-        denominator[denominator == 0] = np.nan
+            denominator[denominator == 0] = np.nan
 
-        ndvi = (
-            (nir_band - red_band)
-            / denominator
-        )
+            ndvi = (nir - red) / denominator
 
         return ndvi
 
