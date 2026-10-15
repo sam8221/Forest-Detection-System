@@ -187,20 +187,30 @@ def create_application() -> FastAPI:
         ),
     )
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=[
-            "http://localhost:5173",
-            "http://127.0.0.1:5173",
-        ],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
+    # Order matters, and is the reverse of the order these
+    # calls appear in: Starlette inserts each new middleware
+    # at the front of the stack, so the one added last runs
+    # outermost. TrustedHostMiddleware is therefore added
+    # first and CORSMiddleware second, which puts CORS on
+    # the outside.
+    #
+    # That way a request rejected for its Host still carries
+    # the CORS headers on the way out. With the order
+    # reversed, a rejection returns a bare 400 the browser
+    # discards before any script can read it, and the
+    # interface reports the server as unreachable rather
+    # than reporting the refusal.
     app.add_middleware(
         TrustedHostMiddleware,
         allowed_hosts=settings.allowed_hosts,
+    )
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     app.include_router(

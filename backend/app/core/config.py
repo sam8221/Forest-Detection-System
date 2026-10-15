@@ -194,6 +194,41 @@ class Settings(BaseSettings):
             if host.strip()
         ]
 
+    cors_origins_raw: str = Field(
+        default=(
+            "http://localhost:5173,"
+            "http://127.0.0.1:5173,"
+            "http://[::1]:5173"
+        ),
+        alias="CORS_ORIGINS",
+    )
+
+    @property
+    def cors_origins(self) -> list[str]:
+        """
+        Return the browser origins permitted to call the API.
+
+        A browser compares origins as literal strings, so
+        `http://localhost:5173` and `http://[::1]:5173` are
+        two different origins even when they reach the same
+        server. The development server binds whichever of
+        them the host resolves `localhost` to, so all three
+        forms are permitted by default: omitting one makes
+        the interface fail with a message about the backend
+        being unreachable, which sends the officer looking
+        for a stopped server rather than a refused origin.
+
+        Listing them in configuration rather than in the
+        application means a deployment can name its own
+        origin without editing code.
+        """
+
+        return [
+            origin.strip()
+            for origin in self.cors_origins_raw.split(",")
+            if origin.strip()
+        ]
+
     @property
     def is_development(self) -> bool:
         """Check whether the application is running in development."""
