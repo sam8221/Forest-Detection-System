@@ -107,6 +107,45 @@ def resolve_forest_area(
     return forest
 
 
+def resolve_job(
+    forest_area_id: int,
+    job_id: int | None,
+    db: Session,
+) -> AnalysisJob | None:
+    """
+    Choose which analysis job's outputs to read.
+
+    An explicit job_id is honoured, but only when it belongs
+    to this forest area: accepting another area's job would
+    let an officer read outputs from a district they cannot
+    see by naming a job instead of an area.
+
+    With no job_id the most recently completed job is used,
+    which is what opening the map means by "the analysis".
+
+    Returns None when the area has no completed job at all,
+    and the caller then reports no layers rather than
+    drawing something.
+    """
+
+    statement = select(AnalysisJob).where(
+        AnalysisJob.forest_area_id == forest_area_id,
+    )
+
+    if job_id is not None:
+        statement = statement.where(AnalysisJob.id == job_id)
+    else:
+        statement = statement.where(
+            AnalysisJob.status == AnalysisJobStatus.COMPLETED,
+        )
+
+    return db.execute(
+        statement.order_by(
+            AnalysisJob.completed_at.desc().nullslast()
+        ).limit(1)
+    ).scalars().first()
+
+
 # =========================================================
 # LAYERS AND BOUNDARY
 # =========================================================
@@ -114,6 +153,13 @@ def resolve_forest_area(
 @router.get("/{forest_area_id}/layers")
 def get_layers(
     forest_area_id: int,
+    job_id: int | None = Query(
+        default=None,
+        description=(
+            "Read the outputs of this analysis job. Omitted, "
+            "the most recent completed job is used."
+        ),
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
@@ -136,7 +182,16 @@ def get_layers(
 
     service = RasterRenderService()
 
-    layers = service.available_layers(forest_area_id)
+    # Which job's outputs to read. An explicit job_id wins;
+    # otherwise the most recent completed job, which is what
+    # an officer opening the map means by "the analysis".
+    job = resolve_job(forest_area_id, job_id, db)
+
+    effective_job_id = job.id if job is not None else None
+
+    layers = service.available_layers(
+        forest_area_id, effective_job_id
+    )
 
     # Bounds come from whichever layer exists; they describe
     # the same tile, so the first available one is enough.
@@ -146,7 +201,9 @@ def get_layers(
         if not entry["available"]:
             continue
 
-        rendered = service.render(forest_area_id, entry["key"])
+        rendered = service.render(
+            forest_area_id, entry["key"], effective_job_id
+        )
 
         if rendered is not None:
             bounds = rendered[1]
@@ -157,15 +214,7 @@ def get_layers(
     if forest.geometry is not None:
         boundary = mapping(to_shape(forest.geometry))
 
-    latest_job = db.execute(
-        select(AnalysisJob)
-        .where(
-            AnalysisJob.forest_area_id == forest_area_id,
-            AnalysisJob.status == AnalysisJobStatus.COMPLETED,
-        )
-        .order_by(AnalysisJob.completed_at.desc())
-        .limit(1)
-    ).scalars().first()
+    latest_job = job
 
     return {
         "forest_area": {
@@ -191,6 +240,16 @@ def get_layers(
                 "cloud_cover_percentage": (
                     latest_job.cloud_cover_percentage
                 ),
+                "status": latest_job.status.value,
+                # NULL output_directory means this job ran
+                # before outputs were separated per job, so
+                # its rasters are the shared ones and may
+                # belong to a later analysis of the same
+                # area. The interface says so rather than
+                # presenting them as this job's own.
+                "is_legacy_storage": (
+                    latest_job.output_directory is None
+                ),
             }
         ),
     }
@@ -204,6 +263,7 @@ def get_layers(
 def get_overlay(
     forest_area_id: int,
     layer: str,
+    job_id: int | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_map_imagery_user),
 ):
@@ -231,7 +291,13 @@ def get_overlay(
             ),
         )
 
-    rendered = RasterRenderService().render(forest_area_id, layer)
+    job = resolve_job(forest_area_id, job_id, db)
+
+    rendered = RasterRenderService().render(
+        forest_area_id,
+        layer,
+        job.id if job is not None else None,
+    )
 
     if rendered is None:
         raise HTTPException(
@@ -270,6 +336,7 @@ def get_histogram(
     forest_area_id: int,
     layer: str = Query(default="ndvi_current"),
     bins: int = Query(default=40, ge=5, le=120),
+    job_id: int | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
@@ -284,10 +351,13 @@ def get_histogram(
 
     resolve_forest_area(forest_area_id, db, current_user)
 
+    job = resolve_job(forest_area_id, job_id, db)
+
     result = RasterRenderService().histogram(
         forest_area_id=forest_area_id,
         layer=layer,
         bins=bins,
+        job_id=job.id if job is not None else None,
     )
 
     if result is None:
@@ -311,6 +381,7 @@ def sample_point(
     forest_area_id: int,
     longitude: float = Query(ge=-180.0, le=180.0),
     latitude: float = Query(ge=-90.0, le=90.0),
+    job_id: int | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
@@ -326,10 +397,13 @@ def sample_point(
 
     resolve_forest_area(forest_area_id, db, current_user)
 
+    job = resolve_job(forest_area_id, job_id, db)
+
     return RasterRenderService().sample(
         forest_area_id=forest_area_id,
         longitude=longitude,
         latitude=latitude,
+        job_id=job.id if job is not None else None,
     )
 
 

@@ -69,6 +69,7 @@ from app.services.sentinel_processor_service import (
     SentinelProcessorService,
 )
 from app.services.sentinel_service import SentinelService
+from app.services.storage_paths import job_output_root
 
 
 class AnalysisService:
@@ -997,11 +998,30 @@ class AnalysisService:
         these locations, so both sides must agree.
         """
 
-        forest_area_directory = (
-            self.settings
-            .satellite_image_storage_path
-            / str(job.forest_area_id)
+        # Outputs belong to the JOB, not to the forest area.
+        #
+        # Writing them under the area meant every analysis
+        # overwrote the one before it, so only the newest
+        # rasters survived and an older job reported the
+        # newest rasters under its own observation dates.
+        # The job identifier is fixed before processing
+        # starts, so this directory is immutable: a later
+        # analysis of the same area cannot reach it.
+        forest_area_directory = job_output_root(
+            forest_area_id=job.forest_area_id,
+            job_id=job.id,
         )
+
+        forest_area_directory.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        # Recorded on the job so its outputs can be found
+        # again without recomputing a directory name, and so
+        # a NULL plainly means "written under the old shared
+        # layout".
+        job.output_directory = str(forest_area_directory)
 
         # -----------------------------------------------------
         # Cloud-masked NDVI for the baseline date

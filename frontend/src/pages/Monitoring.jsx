@@ -305,6 +305,26 @@ export default function Monitoring() {
         </div>
       )}
 
+      {/*
+        Outputs used to be stored per forest area, so each
+        analysis overwrote the one before it. A job from
+        that era shows rasters that may belong to a LATER
+        analysis of the same area, while the dates beside
+        them belong to this job. Saying so is the only
+        honest option short of re-running the analysis.
+      */}
+      {analysis?.is_legacy_storage && (
+        <div className="analytics-caution">
+          <AlertTriangle size={15} />
+          These layers were produced before results were
+          stored per analysis, when each run overwrote the
+          last. They are the most recent rasters for this
+          area and may not be the ones this job produced,
+          although the observation dates shown are its own.
+          Run a new analysis for results tied to their job.
+        </div>
+      )}
+
       {detail && (
         <div className="monitoring-layout">
           {/* ============ MAP COLUMN ============ */}

@@ -65,6 +65,7 @@ from app.repositories.detection_repository import (
 )
 
 from app.services.alert_service import AlertService
+from app.services.storage_paths import resolve_output_root
 
 
 # =========================================================
@@ -1394,17 +1395,19 @@ class DetectionService:
         # always agree on one location.
         # -------------------------------------------------
 
-        storage_root = (
-            self.settings.satellite_image_storage_path
-        )
-
         # -------------------------------------------------
-        # Forest-area processing directory
+        # This job's processing directory
+        #
+        # Resolved through storage_paths so the writer and
+        # every reader agree on one location. A job that
+        # predates per-job outputs falls back to the old
+        # shared directory, which is still the only record
+        # of that analysis.
         # -------------------------------------------------
 
-        forest_area_directory = (
-            storage_root
-            / str(job.forest_area_id)
+        forest_area_directory, _ = resolve_output_root(
+            forest_area_id=job.forest_area_id,
+            job_id=job.id,
         )
 
         # -------------------------------------------------

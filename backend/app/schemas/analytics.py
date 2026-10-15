@@ -154,6 +154,19 @@ class NDVIChangeStatistics(BaseModel):
 
     rasters_available: bool
 
+    is_legacy_storage: bool = Field(
+        default=False,
+        description=(
+            "True when these figures come from the shared "
+            "pre-job directory rather than this job's own "
+            "outputs. Those runs overwrote each other, so "
+            "the rasters may belong to a LATER analysis of "
+            "the same area while the dates below belong to "
+            "this job. Present the figures as current for "
+            "the area, not historical for the job."
+        ),
+    )
+
     mean_ndvi_before: float | None = None
 
     mean_ndvi_after: float | None = None

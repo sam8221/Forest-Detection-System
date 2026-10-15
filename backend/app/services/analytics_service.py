@@ -61,6 +61,7 @@ from app.models.district import District
 from app.models.enums import AnalysisJobStatus, UserRole
 from app.models.forest_area import ForestArea
 from app.models.user import User
+from app.services.storage_paths import resolve_output_root
 
 
 class AnalyticsService:
@@ -643,9 +644,16 @@ class AnalyticsService:
             pipeline writes per-job directories.
         """
 
-        directory = (
-            self.settings.satellite_image_storage_path
-            / str(job.forest_area_id)
+        # Resolved for THIS job. A job with its own outputs
+        # reports its own rasters; one that predates per-job
+        # storage falls back to the shared directory, and
+        # is_legacy below tells the caller which happened.
+        directory, is_legacy = resolve_output_root(
+            forest_area_id=job.forest_area_id,
+            job_id=job.id,
+            storage_root=(
+                self.settings.satellite_image_storage_path
+            ),
         )
 
         previous_path = (
@@ -670,6 +678,13 @@ class AnalyticsService:
             "completed_at": job.completed_at,
             "ndvi_threshold": job.ndvi_threshold,
             "cloud_cover_percentage": job.cloud_cover_percentage,
+            # True when these rasters come from the shared
+            # pre-job directory rather than this job's own.
+            # The figures may then describe a LATER analysis
+            # of the same area, because those runs overwrote
+            # each other. The caller must say so rather than
+            # presenting them as this job's measurements.
+            "is_legacy_storage": is_legacy,
         }
 
         if not previous_path.exists() or not latest_path.exists():

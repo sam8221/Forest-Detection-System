@@ -265,6 +265,21 @@ class AnalysisJob(AuditMixin, Base):
     )
 
     # =========================================================
+    # OUTPUTS
+    # =========================================================
+
+    output_directory: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+        comment=(
+            "Directory holding this job's raster outputs. "
+            "NULL for jobs written under the pre-job shared "
+            "layout, where every analysis of an area "
+            "overwrote the one before it."
+        ),
+    )
+
+    # =========================================================
     # RELATIONSHIPS
     # =========================================================
 

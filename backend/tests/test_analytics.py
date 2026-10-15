@@ -112,8 +112,16 @@ def write_ndvi(
 
 @dataclass
 class StubJob:
-    """Stands in for an AnalysisJob, carrying only what is read."""
+    """Stands in for an AnalysisJob, carrying only what is read.
 
+    id matters now that outputs are stored per job: the
+    service looks for this job's own directory first and
+    falls back to the shared pre-job location. These
+    fixtures write to the shared location, so they exercise
+    the fallback path.
+    """
+
+    id: int = 1
     forest_area_id: int = 1
     ndvi_threshold: float = 0.30
     cloud_cover_percentage: float = 4.0

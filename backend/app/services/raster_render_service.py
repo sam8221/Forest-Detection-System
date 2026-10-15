@@ -56,6 +56,7 @@ from rasterio.warp import transform_bounds
 
 from app.core.config import get_settings
 from app.core.constants import NDVI_NODATA
+from app.services.storage_paths import resolve_layer
 
 
 # =========================================================
@@ -275,6 +276,7 @@ class RasterRenderService:
         self,
         forest_area_id: int,
         layer: str,
+        job_id: int | None = None,
     ) -> Path | None:
         """
         Return the file for a layer, or None if absent.
@@ -289,15 +291,25 @@ class RasterRenderService:
         if definition is None:
             return None
 
-        path = (
-            self.settings.satellite_image_storage_path
-            / str(forest_area_id)
-            / definition.relative_path
+        path, _ = resolve_layer(
+            forest_area_id=forest_area_id,
+            job_id=job_id,
+            relative_path=definition.relative_path,
+            # This service's own configured root, rather
+            # than letting the resolver read the settings
+            # again, so writer and readers cannot diverge.
+            storage_root=(
+                self.settings.satellite_image_storage_path
+            ),
         )
 
-        return path if path.exists() else None
+        return path
 
-    def available_layers(self, forest_area_id: int) -> list[dict]:
+    def available_layers(
+        self,
+        forest_area_id: int,
+        job_id: int | None = None,
+    ) -> list[dict]:
         """
         Report which layers exist for a forest area.
 
@@ -309,7 +321,9 @@ class RasterRenderService:
         available = []
 
         for definition in LAYERS.values():
-            path = self.layer_path(forest_area_id, definition.key)
+            path = self.layer_path(
+                forest_area_id, definition.key, job_id
+            )
 
             available.append(
                 {
@@ -331,6 +345,7 @@ class RasterRenderService:
         self,
         forest_area_id: int,
         layer: str,
+        job_id: int | None = None,
     ) -> tuple[bytes, list[float], dict] | None:
         """
         Colour a layer and return it as a PNG with bounds.
@@ -352,7 +367,7 @@ class RasterRenderService:
         """
 
         definition = LAYERS.get(layer)
-        path = self.layer_path(forest_area_id, layer)
+        path = self.layer_path(forest_area_id, layer, job_id)
 
         if definition is None or path is None:
             return None
@@ -485,6 +500,7 @@ class RasterRenderService:
         forest_area_id: int,
         layer: str,
         bins: int = 40,
+        job_id: int | None = None,
     ) -> dict | None:
         """
         Return the distribution of valid pixels in a layer.
@@ -496,7 +512,7 @@ class RasterRenderService:
         """
 
         definition = LAYERS.get(layer)
-        path = self.layer_path(forest_area_id, layer)
+        path = self.layer_path(forest_area_id, layer, job_id)
 
         if definition is None or path is None:
             return None
@@ -573,6 +589,7 @@ class RasterRenderService:
         forest_area_id: int,
         longitude: float,
         latitude: float,
+        job_id: int | None = None,
     ) -> dict:
         """
         Read every available layer under one coordinate.
@@ -594,7 +611,9 @@ class RasterRenderService:
 
         for definition in LAYERS.values():
 
-            path = self.layer_path(forest_area_id, definition.key)
+            path = self.layer_path(
+                forest_area_id, definition.key, job_id
+            )
 
             if path is None:
                 readings[definition.key] = None
