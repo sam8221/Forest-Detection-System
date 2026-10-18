@@ -149,6 +149,8 @@ class Recommendation:
     )
 
     def as_dict(self) -> dict:
+        """Return the recommendation as a response body."""
+
         return {
             "rule": self.rule,
             "priority": self.priority.value,

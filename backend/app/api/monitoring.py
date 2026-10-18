@@ -216,7 +216,85 @@ def get_layers(
 
     latest_job = job
 
+    # -----------------------------------------------------
+    # Why there are no layers, when there are none
+    #
+    # "No completed analysis" covers several situations that
+    # an officer must act on differently: one that has never
+    # been attempted needs starting, one still running needs
+    # waiting for, and one that failed needs its reason read
+    # and the work resubmitted. Returning the same empty
+    # response for all three would hide that difference.
+    #
+    # The newest attempt of any status is examined, so a
+    # failure that happened after a success is still
+    # reported as the current situation.
+    # -----------------------------------------------------
+
+    newest_attempt = db.execute(
+        select(AnalysisJob)
+        .where(AnalysisJob.forest_area_id == forest_area_id)
+        .order_by(AnalysisJob.created_at.desc())
+        .limit(1)
+    ).scalars().first()
+
+    if newest_attempt is None:
+        analysis_state = "NEVER_ANALYSED"
+        analysis_detail = (
+            "No analysis has been started for this forest "
+            "area. Acquire a Sentinel-2 product for it and "
+            "run an analysis."
+        )
+
+    elif newest_attempt.status in (
+        AnalysisJobStatus.PENDING,
+        AnalysisJobStatus.RUNNING,
+    ):
+        analysis_state = "IN_PROGRESS"
+        analysis_detail = (
+            "An analysis is queued or running. Layers appear "
+            "when it completes."
+        )
+
+    elif (
+        newest_attempt.status == AnalysisJobStatus.FAILED
+        and latest_job is None
+    ):
+        analysis_state = "FAILED"
+        analysis_detail = (
+            newest_attempt.error_message
+            or "The most recent analysis failed."
+        )
+
+    elif latest_job is None:
+        analysis_state = "NO_RESULTS"
+        analysis_detail = (
+            "No completed analysis is available for this "
+            "forest area."
+        )
+
+    elif not any(entry["available"] for entry in layers):
+        # A job completed but left nothing to draw. Areas 17
+        # and 18 are in this position: an early run finished
+        # before it produced rasters, or its outputs are no
+        # longer on disk. Reporting it as COMPLETED alongside
+        # an empty layer list would read as "analysed, and
+        # there is nothing to see", which is the opposite of
+        # the truth.
+        analysis_state = "COMPLETED_NO_OUTPUTS"
+        analysis_detail = (
+            "An analysis completed for this forest area but "
+            "left no raster outputs on disk. Run a new "
+            "analysis to produce the map layers."
+        )
+
+    else:
+        analysis_state = "COMPLETED"
+        analysis_detail = None
+
     return {
+        "analysis_state": analysis_state,
+        "analysis_detail": analysis_detail,
         "forest_area": {
             "id": forest.id,
             "name": forest.name,

@@ -306,6 +306,29 @@ export default function Monitoring() {
       )}
 
       {/*
+        Why there are no layers, when there are none.
+        "Never analysed", "still running", "failed" and
+        "completed but produced nothing" call for different
+        responses from the officer, so the server names
+        which one applies and the reason is shown rather
+        than leaving an empty map to be interpreted.
+      */}
+      {detail &&
+        detail.analysis_state !== "COMPLETED" && (
+          <div className="analytics-panel-empty">
+            <Info size={17} />
+            <span>
+              <strong>
+                {detail.analysis_state.replaceAll("_", " ")}
+              </strong>
+              {detail.analysis_detail
+                ? ` — ${detail.analysis_detail}`
+                : ""}
+            </span>
+          </div>
+        )}
+
+      {/*
         Outputs used to be stored per forest area, so each
         analysis overwrote the one before it. A job from
         that era shows rasters that may belong to a LATER
