@@ -36,8 +36,12 @@ from fastapi import (
     status,
 )
 
+import logging
+
 from geoalchemy2 import WKTElement
 
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import (
@@ -68,6 +72,9 @@ from app.services.analysis_service import AnalysisService
 # =========================================================
 # ROUTER CONFIGURATION
 # =========================================================
+
+logger = logging.getLogger(__name__)
+
 
 router = APIRouter(
     prefix="/forest-areas",
@@ -265,6 +272,35 @@ def create_forest_area(
             detail=f"Invalid geometry: {str(exc)}",
         )
 
+    # -----------------------------------------------------
+    # The boundary must be a valid polygon
+    #
+    # WKTElement only parses the text; it does not check that
+    # the ring makes sense. A self-intersecting "bowtie" was
+    # accepted and stored, and an invalid boundary gives
+    # undefined results from ST_Contains and ST_Intersects,
+    # which is what detection clipping and jurisdiction
+    # testing are built on. Better to refuse it at the door
+    # than to find out when an analysis reports nothing.
+    # -----------------------------------------------------
+
+    reason = db.execute(
+        select(
+            func.ST_IsValid(geometry),
+            func.ST_IsValidReason(geometry),
+        )
+    ).one()
+
+    if not reason[0]:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "The boundary is not a valid polygon: "
+                f"{reason[1]}. Redraw it without crossing "
+                "its own edges."
+            ),
+        )
+
     forest = ForestArea(
         **data,
         geometry=geometry,
@@ -277,16 +313,71 @@ def create_forest_area(
         db.commit()
         db.refresh(forest)
 
+    except IntegrityError as exc:
+        # A constraint the officer can do something about.
+        #
+        # These were reported as 500 with the raw psycopg
+        # message and the INSERT statement attached, which
+        # told the officer nothing they could act on and put
+        # the schema and SQL in front of the browser. A
+        # duplicate forest code is the common case and simply
+        # means "choose another code".
+        db.rollback()
+
+        constraint = getattr(
+            getattr(exc, "orig", None), "diag", None
+        )
+
+        name = getattr(constraint, "constraint_name", "") or ""
+
+        if "forest_code" in name:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "That forest code is already in use. "
+                    "Forest codes identify an area uniquely, "
+                    "so please choose a different one."
+                ),
+            ) from exc
+
+        if "district_id" in name:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "That district does not exist. Choose a "
+                    "district from the list."
+                ),
+            ) from exc
+
+        logger.exception(
+            "Forest area creation violated a constraint for "
+            "user %s",
+            current_user.id,
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "The forest area could not be saved because "
+                "it conflicts with an existing record."
+            ),
+        ) from exc
+
     except Exception as exc:
         db.rollback()
 
+        # Logged in full; the officer is told only that it
+        # failed. The previous message returned the database
+        # error and the SQL to the browser.
+        logger.exception(
+            "Forest area creation failed for user %s",
+            current_user.id,
+        )
+
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=(
-                f"Could not create forest area: "
-                f"{str(exc)}"
-            ),
-        )
+            detail="The forest area could not be saved.",
+        ) from exc
 
     return build_forest_area_response(forest)
 
