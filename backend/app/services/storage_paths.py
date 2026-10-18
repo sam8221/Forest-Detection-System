@@ -125,7 +125,7 @@ def job_output_root(
 
 def shared_extract_root(
     forest_area_id: int,
-    product_file_name: str,
+    satellite_image_id: int,
     storage_root: Path | None = None,
 ) -> Path:
     """
@@ -149,18 +149,26 @@ def shared_extract_root(
     same product cannot interfere, and a product can always
     be unpacked again from the .SAFE.zip that is retained
     beside it.
+
+    The directory is named after the satellite image's row
+    id, not its product name. A Sentinel-2 product name is
+    about 60 characters and the .SAFE folder inside the
+    archive already repeats it, so naming the directory after
+    the product too pushed paths past the 260-character limit
+    Windows enforces by default:
+
+        [WinError 206] The filename or extension is too long
+
+    An id keeps the directory short while staying unique per
+    product and traceable to the row that describes it. Each
+    product still unpacks into its own .SAFE folder beneath,
+    so band lookups cannot stray into a different product.
     """
-
-    stem = Path(product_file_name).name
-
-    for suffix in (".zip", ".SAFE"):
-        if stem.endswith(suffix):
-            stem = stem[: -len(suffix)]
 
     return (
         forest_area_root(forest_area_id, storage_root)
         / "extracted"
-        / stem
+        / f"img{satellite_image_id}"
     )
 
 

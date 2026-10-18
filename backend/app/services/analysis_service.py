@@ -1106,7 +1106,7 @@ class AnalysisService:
                 # Shared per product, not copied per job.
                 extract_directory=shared_extract_root(
                     forest_area_id=previous_image.forest_area_id,
-                    product_file_name=previous_image.file_name,
+                    satellite_image_id=previous_image.id,
                 ),
             )
         )
@@ -1126,7 +1126,7 @@ class AnalysisService:
 
                 extract_directory=shared_extract_root(
                     forest_area_id=latest_image.forest_area_id,
-                    product_file_name=latest_image.file_name,
+                    satellite_image_id=latest_image.id,
                 ),
             )
         )
