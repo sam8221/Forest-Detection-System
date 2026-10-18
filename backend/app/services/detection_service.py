@@ -1264,9 +1264,14 @@ class DetectionService:
         # Forest-area processing directory
         # -------------------------------------------------
 
+        # Must match AnalysisService.prepare_analysis_rasters:
+        # every job owns its derived rasters, so retries and historical
+        # jobs cannot read or overwrite another run's outputs.
         forest_area_directory = (
             storage_root
             / str(job.forest_area_id)
+            / "jobs"
+            / str(job.id)
         )
 
         # -------------------------------------------------
@@ -1312,10 +1317,9 @@ class DetectionService:
         existing_detections = (
             self.db.query(Detection)
             .filter(
-                Detection.forest_area_id
-                == job.forest_area_id,
-                Detection.satellite_image_id
-                == job.satellite_image_id,
+                Detection.analysis_job_id == job.id,
+                Detection.forest_area_id == job.forest_area_id,
+                Detection.satellite_image_id == job.satellite_image_id,
             )
             .order_by(
                 Detection.detected_area_hectares.desc(),

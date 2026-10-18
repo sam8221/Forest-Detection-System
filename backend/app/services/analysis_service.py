@@ -333,6 +333,45 @@ class AnalysisService:
                 "is not measuring change over time."
             )
 
+        # Comparing different seasons confounds vegetation loss with
+        # the Copperbelt's normal wet/dry cycle. Require matching
+        # calendar boundaries in different years before any job can run.
+        baseline_start_boundary = (
+            baseline_start.month,
+            baseline_start.day,
+        )
+        comparison_start_boundary = (
+            comparison_start.month,
+            comparison_start.day,
+        )
+        baseline_end_boundary = (
+            baseline_end.month,
+            baseline_end.day,
+        )
+        comparison_end_boundary = (
+            comparison_end.month,
+            comparison_end.day,
+        )
+
+        if (
+            baseline_start_boundary != comparison_start_boundary
+            or baseline_end_boundary != comparison_end_boundary
+        ):
+            raise ValueError(
+                "Baseline and comparison windows must cover the same "
+                "calendar season (matching start and end month/day) "
+                "in different years."
+            )
+
+        if (
+            baseline_start.year >= comparison_start.year
+            or baseline_end.year >= comparison_end.year
+        ):
+            raise ValueError(
+                "The comparison window must be in a later year than "
+                "the baseline window."
+            )
+
         job = AnalysisJob(
             forest_area_id=forest_area_id,
 
@@ -997,10 +1036,17 @@ class AnalysisService:
         these locations, so both sides must agree.
         """
 
+        # Keep all derived rasters isolated by analysis job. A
+        # forest-area-only directory lets a later run overwrite the
+        # baseline, comparison and change mask used by an earlier job.
+        # Per-job storage also prevents concurrent jobs from mixing
+        # outputs while preserving the original products and history.
         forest_area_directory = (
             self.settings
             .satellite_image_storage_path
             / str(job.forest_area_id)
+            / "jobs"
+            / str(job.id)
         )
 
         # -----------------------------------------------------
@@ -1237,11 +1283,6 @@ class AnalysisService:
                 "the comparison period.",
             )
 
-            self.report_progress(
-                job,
-                "Searching Copernicus for imagery covering "
-                "the comparison period.",
-            )
             if baseline_available is None:
 
                 raise ValueError(
