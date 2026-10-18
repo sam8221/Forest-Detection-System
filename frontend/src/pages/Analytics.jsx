@@ -48,6 +48,7 @@ import {
   AlertTriangle,
   BarChart3,
   CalendarRange,
+  Download,
   Info,
   Leaf,
   MapPin,
@@ -76,6 +77,26 @@ import { API_V1 } from "../config";
 // and the sort agree with the advice they describe.
 // =========================================================
 
+// Sections a report may contain. The keys match what the
+// backend accepts, so an unknown one is rejected there
+// rather than silently dropped.
+const REPORT_SECTIONS = [
+  { key: "summary", label: "Executive summary" },
+  { key: "forest_loss", label: "Forest-loss trend" },
+  { key: "ndvi", label: "NDVI change analysis" },
+  { key: "detections", label: "Detection details" },
+  { key: "districts", label: "District comparison" },
+  { key: "alerts", label: "Alert statistics" },
+  { key: "recommendations", label: "Recommendations" },
+  { key: "history", label: "Analysis history" },
+];
+
+const REPORT_FORMATS = [
+  { key: "pdf", label: "PDF", hint: "for printing and review" },
+  { key: "xlsx", label: "Excel", hint: "one sheet per section" },
+  { key: "csv", label: "CSV", hint: "for further analysis" },
+];
+
 const PRIORITY_CLASS = {
   CRITICAL: "priority-critical",
   HIGH: "priority-high",
@@ -98,6 +119,25 @@ export default function Analytics() {
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+
+  // ---------------------------------------------------
+  // Report download
+  //
+  // The report is generated and returned by one request, so
+  // there is no job to poll. The button stays in its
+  // generating state until the bytes have actually arrived.
+  // Announcing a download before the file exists would be a
+  // success message for something that may still fail.
+  // ---------------------------------------------------
+
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportFormat, setReportFormat] = useState("pdf");
+  const [reportSections, setReportSections] = useState(
+    REPORT_SECTIONS.map((one) => one.key)
+  );
+  const [generating, setGenerating] = useState(false);
+  const [reportError, setReportError] = useState("");
+  const [reportNotice, setReportNotice] = useState("");
 
   const token = () =>
     localStorage.getItem("access_token") ||
@@ -226,6 +266,121 @@ export default function Analytics() {
       .catch(() => setForestAreas([]));
   }, []);
 
+  // =======================================================
+  // GENERATE AND DOWNLOAD
+  // =======================================================
+
+  const toggleSection = (key) => {
+    setReportSections((current) =>
+      current.includes(key)
+        ? current.filter((one) => one !== key)
+        : [...current, key]
+    );
+  };
+
+  const generateReport = async () => {
+    setReportError("");
+    setReportNotice("");
+
+    if (reportSections.length === 0) {
+      setReportError(
+        "Select at least one section to include."
+      );
+      return;
+    }
+
+    setGenerating(true);
+
+    try {
+      const response = await fetch(
+        `${API_V1}/reports/analytics`,
+        {
+          method: "POST",
+          headers: {
+            ...headers(),
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            format: reportFormat,
+            sections: reportSections,
+            // The dashboard filters are the report filters,
+            // so the document matches what is on screen.
+            start_date: startDate || null,
+            end_date: endDate || null,
+            district_id: districtId ? Number(districtId) : null,
+            forest_area_id: forestAreaId
+              ? Number(forestAreaId)
+              : null,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        // The error body is JSON even though a success is a
+        // file, so it is read as text and parsed leniently.
+        const raw = await response.text();
+
+        let detail = "";
+
+        try {
+          const parsed = JSON.parse(raw);
+          detail = Array.isArray(parsed?.detail)
+            ? parsed.detail
+                .map((one) => one.msg || one)
+                .join("; ")
+            : parsed?.detail || "";
+        } catch {
+          detail = "";
+        }
+
+        throw new Error(
+          detail ||
+            `The report could not be generated (${response.status}).`
+        );
+      }
+
+      const blob = await response.blob();
+
+      // Prefer the filename the server chose: it carries the
+      // real generation date and the scope.
+      const disposition =
+        response.headers.get("Content-Disposition") || "";
+
+      const match = disposition.match(
+        /filename="?([^"]+)"?/
+      );
+
+      const filename =
+        match?.[1] ||
+        `Forest_Analytics_${new Date()
+          .toISOString()
+          .slice(0, 10)}.${reportFormat}`;
+
+      const url = URL.createObjectURL(blob);
+
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+
+      URL.revokeObjectURL(url);
+
+      // Only now, with the bytes in hand.
+      setReportNotice(`${filename} downloaded.`);
+    } catch (requestError) {
+      console.error("Report error:", requestError);
+
+      setReportError(
+        requestError?.message ||
+          "The report could not be generated."
+      );
+    } finally {
+      setGenerating(false);
+    }
+  };
+
   const clearFilters = () => {
     setStartDate("");
     setEndDate("");
@@ -273,19 +428,135 @@ export default function Analytics() {
           </p>
         </div>
 
-        <button
-          type="button"
-          className="acquire-button"
-          onClick={load}
-          disabled={loading}
-        >
-          <RefreshCw
-            size={15}
-            className={loading ? "refresh-spinning" : ""}
-          />
-          Refresh
-        </button>
+        <div className="analytics-header-actions">
+          <button
+            type="button"
+            className="analytics-clear"
+            onClick={() => setReportOpen((open) => !open)}
+            aria-expanded={reportOpen}
+          >
+            <Download size={15} />
+            Download report
+          </button>
+
+          <button
+            type="button"
+            className="acquire-button"
+            onClick={load}
+            disabled={loading}
+          >
+            <RefreshCw
+              size={15}
+              className={loading ? "refresh-spinning" : ""}
+            />
+            Refresh
+          </button>
+        </div>
       </div>
+
+      {/* ================= REPORT PANEL ================= */}
+
+      {reportOpen && (
+        <div className="analytics-panel report-panel">
+          <div className="analytics-panel-header">
+            <h2>Generate a report</h2>
+            <span className="analytics-unit">
+              uses the filters above
+            </span>
+          </div>
+
+          <div className="report-formats">
+            {REPORT_FORMATS.map((one) => (
+              <button
+                key={one.key}
+                type="button"
+                className={
+                  "report-format" +
+                  (reportFormat === one.key
+                    ? " report-format-active"
+                    : "")
+                }
+                onClick={() => setReportFormat(one.key)}
+              >
+                <strong>{one.label}</strong>
+                <span>{one.hint}</span>
+              </button>
+            ))}
+          </div>
+
+          <fieldset className="report-sections">
+            <legend>Sections to include</legend>
+
+            {REPORT_SECTIONS.map((one) => (
+              <label key={one.key}>
+                <input
+                  type="checkbox"
+                  checked={reportSections.includes(one.key)}
+                  onChange={() => toggleSection(one.key)}
+                />
+                {one.label}
+              </label>
+            ))}
+          </fieldset>
+
+          <div className="report-actions">
+            <button
+              type="button"
+              className="acquire-button"
+              onClick={generateReport}
+              disabled={generating}
+            >
+              {generating ? (
+                <>
+                  <RefreshCw
+                    size={15}
+                    className="refresh-spinning"
+                  />
+                  Generating…
+                </>
+              ) : (
+                <>
+                  <Download size={15} />
+                  Generate {reportFormat.toUpperCase()}
+                </>
+              )}
+            </button>
+
+            <button
+              type="button"
+              className="analytics-clear"
+              onClick={() =>
+                setReportSections(
+                  REPORT_SECTIONS.map((one) => one.key)
+                )
+              }
+            >
+              Select all
+            </button>
+          </div>
+
+          {reportError && (
+            <div className="sentinel-search-error">
+              <AlertCircle size={17} />
+              <span>{reportError}</span>
+            </div>
+          )}
+
+          {reportNotice && (
+            <div className="sentinel-acquire-notice">
+              <Download size={17} />
+              <span>{reportNotice}</span>
+            </div>
+          )}
+
+          <p className="analytics-footnote">
+            <Info size={14} />
+            The report contains only the forest areas you are
+            authorised to see, and states where a figure
+            could not be measured rather than writing a zero.
+          </p>
+        </div>
+      )}
 
       {error && (
         <div className="sentinel-search-error">
