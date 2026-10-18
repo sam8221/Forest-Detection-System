@@ -466,6 +466,22 @@ class AnalysisService:
             AnalysisJobStatus.COMPLETED
         )
 
+        # A job that completes carries no error.
+        #
+        # This is not merely tidiness. Analyses run outside
+        # the API process, and the startup recovery marks any
+        # job still RUNNING as abandoned, because it cannot
+        # tell a crashed run from one proceeding elsewhere.
+        # Restarting the API while an analysis is in flight
+        # therefore writes a failure message onto a job that
+        # then finishes normally, leaving a COMPLETED record
+        # that reads as failed to anyone inspecting it.
+        #
+        # Observed: job 64 finished in 100 seconds with all
+        # eight rasters written, while carrying "the server
+        # stopped while it was running".
+        job.error_message = None
+
         if job.started_at is not None:
 
             job.duration_seconds = (
