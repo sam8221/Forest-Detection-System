@@ -123,6 +123,47 @@ def job_output_root(
     )
 
 
+def shared_extract_root(
+    forest_area_id: int,
+    product_file_name: str,
+    storage_root: Path | None = None,
+) -> Path:
+    """
+    Return where one product's extracted bands are kept.
+
+    Extraction is shared per product rather than copied into
+    each job, because the unpacked bands are identical
+    whichever analysis reads them. A Level-2A product unpacks
+    to roughly a gigabyte, so copying it per job filled the
+    volume at a rate of about two gigabytes a run: one
+    analysis of one forest area consumed 3.7 GB, of which
+    1.9 GB was two copies of imagery already on disk.
+
+    Only the DERIVED rasters belong to a job, and those stay
+    under its own directory. They are the outputs an audit
+    needs, and they are a few hundred megabytes rather than
+    gigabytes.
+
+    Sharing is safe because the extracted bands are read-only
+    inputs. Nothing writes into them, so two jobs reading the
+    same product cannot interfere, and a product can always
+    be unpacked again from the .SAFE.zip that is retained
+    beside it.
+    """
+
+    stem = Path(product_file_name).name
+
+    for suffix in (".zip", ".SAFE"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+
+    return (
+        forest_area_root(forest_area_id, storage_root)
+        / "extracted"
+        / stem
+    )
+
+
 def legacy_output_root(
     forest_area_id: int,
     storage_root: Path | None = None,

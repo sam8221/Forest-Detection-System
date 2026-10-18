@@ -660,6 +660,7 @@ class SentinelProcessorService:
         self,
         zip_path: str | Path,
         working_directory: str | Path,
+        extract_directory: str | Path | None = None,
     ) -> dict[str, str]:
         """
         Turn a downloaded product into an NDVI raster.
@@ -705,9 +706,16 @@ class SentinelProcessorService:
             working_directory
         )
 
+        # Extraction can be shared between jobs. The unpacked
+        # bands are read-only inputs and identical whichever
+        # analysis reads them, so copying a gigabyte of them
+        # into every job directory only consumes the volume.
+        # Derived rasters still go under working_directory,
+        # which is the job's own.
         extracted_directory = (
-            working_directory
-            / "extracted"
+            Path(extract_directory)
+            if extract_directory is not None
+            else working_directory / "extracted"
         )
 
         ndvi_directory = (

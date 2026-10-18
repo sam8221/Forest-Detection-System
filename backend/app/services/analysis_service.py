@@ -69,7 +69,10 @@ from app.services.sentinel_processor_service import (
     SentinelProcessorService,
 )
 from app.services.sentinel_service import SentinelService
-from app.services.storage_paths import job_output_root
+from app.services.storage_paths import (
+    job_output_root,
+    shared_extract_root,
+)
 
 
 class AnalysisService:
@@ -550,6 +553,64 @@ class AnalysisService:
     # AUTOMATIC SENTINEL ACQUISITION
     # =========================================================
 
+    def _usable_local_image(
+        self,
+        image_id: int | None,
+    ) -> SatelliteImage | None:
+        """
+        Return a named observation if it can be used offline.
+
+        Args:
+            image_id:
+                Identifier recorded on the job, or None.
+
+        Returns:
+            The image when it is active, marked downloaded
+            and its product is readable on disk. None
+            otherwise, which sends the caller to Copernicus
+            instead.
+
+        The file is checked, not just the flag. The database
+        has carried rows marked downloaded whose storage path
+        pointed at a directory that does not exist, seeded
+        with checksums beginning "TEST-". Trusting the flag
+        would start a run that fails much later, inside
+        rasterio, with a message that says nothing about the
+        real problem.
+        """
+
+        if image_id is None:
+            return None
+
+        image = self.db.get(SatelliteImage, image_id)
+
+        if image is None:
+            return None
+
+        if not image.is_active or not image.is_downloaded:
+            return None
+
+        product = (
+            self.settings.satellite_image_storage_path
+            / str(image.forest_area_id)
+            / image.file_name
+        )
+
+        extracted = (
+            self.settings.satellite_image_storage_path
+            / str(image.forest_area_id)
+        )
+
+        # Either the downloaded archive or an already
+        # extracted copy of it is enough to proceed.
+        if product.exists():
+            return image
+
+        if any(extracted.rglob(f"{Path(image.file_name).stem}*")):
+            return image
+
+        return None
+
     def acquire_latest_satellite_image(
         self,
         forest_area_id: int,
@@ -864,6 +925,7 @@ class AnalysisService:
         self,
         image: SatelliteImage,
         working_directory: Path,
+        extract_directory: Path | None = None,
     ) -> Path:
         """
         Turn a downloaded Sentinel-2 product into a
@@ -922,6 +984,8 @@ class AnalysisService:
                 zip_path=image.storage_path,
 
                 working_directory=working_directory,
+
+                extract_directory=extract_directory,
             )
         )
 
@@ -933,10 +997,13 @@ class AnalysisService:
         # Locate the Scene Classification Layer
         # -----------------------------------------------------
 
+        # The SCL lives beside the other bands, so it is
+        # looked for wherever the product was extracted.
         scl_band_path = (
             self.cloud_mask_service.find_scl_band(
-                working_directory
-                / "extracted"
+                extract_directory
+                if extract_directory is not None
+                else working_directory / "extracted"
             )
         )
 
@@ -1035,6 +1102,12 @@ class AnalysisService:
                     forest_area_directory
                     / "processing_previous"
                 ),
+
+                # Shared per product, not copied per job.
+                extract_directory=shared_extract_root(
+                    forest_area_id=previous_image.forest_area_id,
+                    product_file_name=previous_image.file_name,
+                ),
             )
         )
 
@@ -1049,6 +1122,11 @@ class AnalysisService:
                 working_directory=(
                     forest_area_directory
                     / "processing"
+                ),
+
+                extract_directory=shared_extract_root(
+                    forest_area_id=latest_image.forest_area_id,
+                    product_file_name=latest_image.file_name,
                 ),
             )
         )
@@ -1235,33 +1313,72 @@ class AnalysisService:
                 comparison_end,
             ) = self.resolve_job_windows(job)
 
-            baseline_available = (
-                self.sentinel_service
-                .discover_image_in_window(
-                    forest_area=forest,
+            # -------------------------------------------------
+            # Observations named on the job are used as given
+            #
+            # A job created with both observations already
+            # chosen is a request to analyse THOSE two, not a
+            # request to go looking for newer ones. Searching
+            # anyway cost an earlier run eight hours and two
+            # gigabyte downloads for products that were
+            # already extracted on disk, and the second
+            # transfer was reset by the provider, so the job
+            # failed having changed nothing.
+            #
+            # Both must be usable locally before the search is
+            # skipped: a row marked downloaded whose file is
+            # missing would otherwise send the run on to fail
+            # later, in rasterio, with a far less clear
+            # message. That case is real; the database carried
+            # four such rows.
+            # -------------------------------------------------
 
-                    start_date=baseline_start,
+            named_previous = self._usable_local_image(
+                job.previous_satellite_image_id
+            )
 
-                    end_date=baseline_end,
+            named_latest = self._usable_local_image(
+                job.satellite_image_id
+            )
 
-                    max_cloud_cover=(
-                        self.settings
-                        .max_cloud_cover_percentage
-                    ),
+            if named_previous is not None and named_latest is not None:
+
+                self.report_progress(
+                    job,
+                    "Using the two observations named on this "
+                    "job. Both are already held locally, so no "
+                    "download is required.",
                 )
-            )
 
-            self.report_progress(
-                job,
-                "Searching Copernicus for imagery covering "
-                "the comparison period.",
-            )
+                baseline_available = named_previous
+                comparison_available = named_latest
 
-            self.report_progress(
-                job,
-                "Searching Copernicus for imagery covering "
-                "the comparison period.",
-            )
+            else:
+
+                baseline_available = (
+                    self.sentinel_service
+                    .discover_image_in_window(
+                        forest_area=forest,
+
+                        start_date=baseline_start,
+
+                        end_date=baseline_end,
+
+                        max_cloud_cover=(
+                            self.settings
+                            .max_cloud_cover_percentage
+                        ),
+                    )
+                )
+
+                self.report_progress(
+                    job,
+                    "Searching Copernicus for imagery covering "
+                    "the comparison period.",
+                )
+
+                comparison_available = None
+
             if baseline_available is None:
 
                 raise ValueError(
@@ -1272,21 +1389,23 @@ class AnalysisService:
                     f"{baseline_end}."
                 )
 
-            comparison_available = (
-                self.sentinel_service
-                .discover_image_in_window(
-                    forest_area=forest,
+            if comparison_available is None:
 
-                    start_date=comparison_start,
+                comparison_available = (
+                    self.sentinel_service
+                    .discover_image_in_window(
+                        forest_area=forest,
 
-                    end_date=comparison_end,
+                        start_date=comparison_start,
 
-                    max_cloud_cover=(
-                        self.settings
-                        .max_cloud_cover_percentage
-                    ),
+                        end_date=comparison_end,
+
+                        max_cloud_cover=(
+                            self.settings
+                            .max_cloud_cover_percentage
+                        ),
+                    )
                 )
-            )
 
             if comparison_available is None:
 
