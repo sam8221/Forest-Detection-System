@@ -386,18 +386,55 @@ button {
   width: 36px;
   height: 36px;
   margin-left: 6px;
-  border: 1px solid var(--border-color, #e5e7eb);
+  border: 1px solid #fca5a5;
   border-radius: 8px;
-  background: transparent;
-  color: var(--text-muted, #6b7280);
+  background: #fee2e2;
+  color: #b91c1c;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease,
+    border-color 0.15s ease;
 }
 
+/* Filled on hover, so the control still answers the pointer
+   now that red is its resting state rather than its
+   hover state. */
 .sign-out-button:hover {
-  background: #fee2e2;
-  border-color: #fca5a5;
-  color: #b91c1c;
+  background: #b91c1c;
+  border-color: #b91c1c;
+  color: #ffffff;
+}
+
+/* Keyboard focus matches the hover fill, and keeps a visible
+   ring: signing out is the one destructive control in the
+   header and must not be reachable by tab without showing
+   where the focus is. */
+.sign-out-button:focus-visible {
+  background: #b91c1c;
+  border-color: #b91c1c;
+  color: #ffffff;
+  outline: 2px solid #b91c1c;
+  outline-offset: 2px;
+}
+
+/* Dark theme. The light red fill above would glare against a
+   dark header, so the same intent is carried by a deep red
+   ground with a pale red glyph, matching
+   .remove-forest-button. The hover stays the solid red, which
+   reads on either theme. */
+[data-theme="dark"] .sign-out-button,
+.dark-mode .sign-out-button {
+  background: #3b1717;
+  border-color: #7f1d1d;
+  color: #fca5a5;
+}
+
+[data-theme="dark"] .sign-out-button:hover,
+.dark-mode .sign-out-button:hover,
+[data-theme="dark"] .sign-out-button:focus-visible,
+.dark-mode .sign-out-button:focus-visible {
+  background: #b91c1c;
+  border-color: #b91c1c;
+  color: #ffffff;
 }
 
 /* ----------------------------------------------------------
@@ -2388,6 +2425,24 @@ button {
   align-items: center;
   gap: 8px;
   font-size: 12px;
+}
+
+.satellite-status-retry {
+  margin-left: auto;
+  padding: 6px 10px;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  background: #ffffff;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.satellite-status-retry:disabled {
+  cursor: wait;
+  opacity: 0.65;
 }
 
 /* Confirmation that a catalogue product has been downloaded
@@ -9521,4 +9576,546 @@ textarea:focus {
   .report-format {
     min-width: 0;
   }
+}
+/* Selected Sentinel-2 comparison viewer */
+.satellite-pair-panel,
+.satellite-comparison {
+  margin-top: 1.5rem;
+  padding: 1.25rem;
+  border: 1px solid #dbe3ea;
+  border-radius: 16px;
+  background: #fff;
+}
+
+.satellite-scientific-figure {
+  margin: 1rem 0 1.25rem;
+  padding: 1rem;
+  border: 1px solid #dbe3ea;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.satellite-scientific-figure-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.satellite-scientific-figure-heading h4 {
+  margin: 0;
+  color: #123b2b;
+}
+
+.satellite-scientific-figure-heading p {
+  margin: 0.25rem 0 0;
+  color: #64748b;
+  font-size: 0.85rem;
+}
+
+.satellite-scientific-figure-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.satellite-scientific-figure-actions a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #166534;
+  border-radius: 8px;
+  color: #166534;
+  background: #fff;
+  font-size: 0.84rem;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.satellite-scientific-figure-actions a:first-child {
+  color: #fff;
+  background: #166534;
+}
+
+.satellite-scientific-panels {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+
+.satellite-scientific-panels figure {
+  min-width: 0;
+  margin: 0;
+  padding: 0.75rem;
+  border: 1px solid #dbe3ea;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.satellite-scientific-panels figcaption {
+  display: grid;
+  gap: 0.25rem;
+  min-height: 3.25rem;
+  margin-bottom: 0.5rem;
+  color: #0f172a;
+}
+
+.satellite-scientific-panels figcaption span {
+  color: #64748b;
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
+.satellite-scientific-panels img {
+  display: block;
+  width: 100%;
+  max-height: 440px;
+  object-fit: contain;
+  background: #f8fafc;
+}
+
+.satellite-scientific-ndvi-legend,
+.satellite-scientific-difference-legend {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 0.85rem;
+  padding: 0.75rem;
+  border: 1px solid #dbe3ea;
+  border-radius: 8px;
+  color: #334155;
+  background: #fff;
+  font-size: 0.82rem;
+}
+
+.satellite-scientific-ndvi-legend > div,
+.satellite-scientific-difference-legend > div:last-of-type {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+}
+
+.satellite-scientific-ndvi-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.satellite-scientific-ndvi-legend i {
+  width: 1rem;
+  height: 1rem;
+  border: 1px solid rgba(15, 23, 42, 0.2);
+}
+
+.satellite-scientific-difference-gradient {
+  width: 100%;
+  height: 14px;
+  border: 1px solid #94a3b8;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #b2182b 0%, #f7f7f7 50%, #1a9850 100%);
+}
+
+.satellite-scientific-difference-legend small {
+  color: #64748b;
+}
+
+.satellite-pair-selectors {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr)) auto;
+  align-items: end;
+  gap: 1rem;
+}
+
+.satellite-pair-selectors label,
+.satellite-change-select {
+  display: grid;
+  gap: 0.45rem;
+  color: #334155;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.satellite-pair-selectors select,
+.satellite-change-select select {
+  min-height: 42px;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  color: #0f172a;
+  background: #fff;
+}
+
+.satellite-comparison-hint,
+.satellite-comparison-note {
+  margin: 0.85rem 0 0;
+  color: #64748b;
+  font-size: 0.85rem;
+}
+
+.satellite-comparison-summary {
+  margin: 0.75rem 0 0;
+  color: #0f3d30;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.satellite-comparison-status {
+  margin: 1rem 0;
+  padding: 0.8rem 1rem;
+  border-radius: 9px;
+  color: #1e3a8a;
+  background: #eff6ff;
+}
+
+.satellite-comparison-error {
+  margin: 0.75rem 0;
+  padding: 0.8rem 1rem;
+  border-radius: 9px;
+  color: #991b1b;
+  background: #fef2f2;
+}
+
+.satellite-comparison-heading,
+.satellite-comparison-modes,
+.satellite-comparison-dates {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.satellite-comparison-heading h3 {
+  margin: 0;
+}
+
+.satellite-comparison-heading p {
+  margin: 0.3rem 0 0;
+  color: #64748b;
+}
+
+.satellite-comparison-modes button {
+  padding: 0.55rem 0.8rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.satellite-comparison-modes button[aria-pressed="true"] {
+  border-color: #166534;
+  color: #fff;
+  background: #166534;
+}
+
+.satellite-comparison-dates {
+  align-items: end;
+  margin: 1rem 0;
+  padding: 0.85rem 0;
+  border-top: 1px solid #e2e8f0;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.satellite-comparison-dates > div {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.satellite-comparison-dates span {
+  color: #64748b;
+  font-size: 0.82rem;
+}
+
+.satellite-comparison-observation-maps {
+  position: relative;
+  height: 460px;
+  min-height: 460px;
+  overflow: hidden;
+  border-radius: 12px;
+  background: #17212b;
+}
+
+.satellite-comparison-side-by-side {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 3px;
+}
+
+.satellite-comparison-panel {
+  position: relative;
+  min-width: 0;
+  min-height: 460px;
+  overflow: hidden;
+  background: #17212b;
+}
+
+.satellite-comparison-change-panel {
+  margin-top: 1rem;
+  border: 1px solid #dbe3ea;
+  border-radius: 12px;
+}
+
+.satellite-change-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 1rem;
+  color: #0f172a;
+  background: #f8fafc;
+}
+
+.satellite-change-heading > div {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.satellite-change-heading span {
+  color: #64748b;
+  font-size: 0.82rem;
+}
+
+.satellite-comparison-map {
+  width: 100%;
+  height: 460px;
+  background: #17212b;
+}
+
+.satellite-comparison-change-panel .satellite-comparison-map {
+  height: 460px;
+}
+
+.satellite-comparison-swipe .satellite-comparison-panel {
+  position: absolute;
+  inset: 0;
+}
+
+.satellite-comparison-swipe .satellite-comparison-previous {
+  z-index: 1;
+}
+
+.satellite-comparison-swipe .satellite-comparison-recent {
+  z-index: 2;
+  pointer-events: none;
+}
+
+.satellite-comparison-swipe .satellite-comparison-recent .ol-control {
+  display: none;
+}
+
+.satellite-comparison-legend {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.75rem;
+  padding: 0.8rem 1rem;
+  color: #334155;
+  font-size: 0.8rem;
+}
+
+.satellite-comparison-legend-labels {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.satellite-ndvi-change-gradient {
+  width: 100%;
+  height: 12px;
+  border: 1px solid #94a3b8;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #961818 0%, #d65c30 25%, #f2f4f0 50%, #96c8a0 75%, #156e3c 100%);
+}
+
+.satellite-comparison-metrics {
+  display: grid;
+  gap: 0.4rem;
+  margin-top: 0.75rem;
+}
+
+.satellite-comparison-metrics .satellite-comparison-summary {
+  margin: 0;
+}
+
+.satellite-map-caption {
+  position: absolute;
+  z-index: 5;
+  top: 0.75rem;
+  left: 3.2rem;
+  padding: 0.4rem 0.65rem;
+  border-radius: 7px;
+  color: #0f172a;
+  background: rgba(255, 255, 255, 0.92);
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.satellite-swipe-control {
+  position: absolute;
+  z-index: 6;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* The draggable seam.
+   
+   Full height, so it can be grabbed anywhere down the
+   divider, and 24px wide for a usable pointer target while
+   the line itself stays 3px. The width is centred on the
+   reveal position with a negative margin rather than a
+   transform, because a transform here would also shift the
+   focus ring away from the line. */
+.satellite-swipe-divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 24px;
+  margin-left: -12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  pointer-events: auto;
+  cursor: ew-resize;
+  /* Without this a touch drag scrolls the page instead of
+     moving the divider, and the gesture is lost to the
+     browser before pointermove is delivered. */
+  touch-action: none;
+}
+
+.satellite-swipe-divider::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 3px;
+  transform: translateX(-50%);
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.45);
+}
+
+/* Grab affordance, so it is visible that the seam is the
+   thing to drag. */
+.satellite-swipe-grip {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow:
+    0 1px 5px rgba(15, 23, 42, 0.45),
+    0 0 0 1px rgba(15, 23, 42, 0.35);
+}
+
+/* The two chevrons, drawn as rotated square corners. */
+.satellite-swipe-grip::before,
+.satellite-swipe-grip::after {
+  content: "";
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border-top: 2px solid #0f172a;
+  border-left: 2px solid #0f172a;
+}
+
+.satellite-swipe-grip::before {
+  transform: rotate(-45deg);
+  margin-left: -9px;
+}
+
+.satellite-swipe-grip::after {
+  transform: rotate(135deg);
+  margin-left: 9px;
+}
+
+.satellite-swipe-divider:focus-visible {
+  outline: none;
+}
+
+.satellite-swipe-divider:focus-visible .satellite-swipe-grip {
+  box-shadow:
+    0 1px 5px rgba(15, 23, 42, 0.45),
+    0 0 0 2px #156e3c,
+    0 0 0 5px rgba(21, 110, 60, 0.35);
+}
+
+@media (max-width: 800px) {
+  .satellite-pair-selectors,
+  .satellite-comparison-side-by-side {
+    grid-template-columns: 1fr;
+  }
+
+  .satellite-scientific-figure-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .satellite-scientific-figure-actions {
+    justify-content: flex-start;
+  }
+
+  .satellite-scientific-panels {
+    grid-template-columns: 1fr;
+  }
+
+  .satellite-scientific-panels img {
+    max-height: 360px;
+  }
+
+  .satellite-comparison-dates,
+  .satellite-comparison-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .satellite-comparison-side-by-side {
+    height: auto;
+    min-height: 0;
+  }
+
+  .satellite-comparison-observation-maps {
+    height: 360px;
+    min-height: 360px;
+  }
+
+  .satellite-comparison-side-by-side .satellite-comparison-panel,
+  .satellite-comparison-side-by-side .satellite-comparison-map,
+  .satellite-comparison-observation-maps .satellite-comparison-panel,
+  .satellite-comparison-observation-maps .satellite-comparison-map,
+  .satellite-comparison-change-panel .satellite-comparison-map {
+    height: 360px;
+    min-height: 360px;
+  }
+
+  .satellite-change-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .satellite-comparison-legend-labels {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+.satellite-download-progress {
+  display: block;
+  accent-color: #166534;
+}
+
+.satellite-download-error {
+  display: block;
+  max-width: 18rem;
+  margin-top: 0.35rem;
+  color: #991b1b;
+  font-size: 0.78rem;
+  white-space: normal;
 }

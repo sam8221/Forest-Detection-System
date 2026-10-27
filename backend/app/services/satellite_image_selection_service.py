@@ -33,6 +33,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
+from app.core.constants import is_level_2a
 from app.models.satellite_image import SatelliteImage
 
 
@@ -48,6 +49,65 @@ class SatelliteImageSelectionService:
     ) -> None:
         self.db = db
 
+    @staticmethod
+    def analysis_readiness(
+        image: SatelliteImage,
+        local_files_available: bool,
+    ) -> tuple[bool, str | None]:
+        """Explain whether one registered image can enter the existing pipeline."""
+
+        if not image.is_active:
+            return False, "This observation is inactive."
+        if not image.is_downloaded:
+            return False, "This observation has not been downloaded."
+        if not is_level_2a(image.processing_level):
+            return False, "Analysis requires Sentinel-2 Level-2A imagery."
+        if not local_files_available:
+            return False, "Local product files are missing; reacquire this observation."
+        return True, None
+
+    @staticmethod
+    def validate_explicit_pair(
+        previous_image: SatelliteImage | None,
+        recent_image: SatelliteImage | None,
+        forest_area_id: int,
+    ) -> None:
+        """Fail closed when a user-selected pair is incomplete or incompatible."""
+
+        if previous_image is None or recent_image is None:
+            raise ValueError("Both selected Sentinel-2 observations must exist.")
+        if previous_image.id == recent_image.id:
+            raise ValueError("Select two different Sentinel-2 observations.")
+        if (
+            previous_image.forest_area_id != forest_area_id
+            or recent_image.forest_area_id != forest_area_id
+        ):
+            raise ValueError(
+                "Both observations must belong to the selected forest area."
+            )
+        if not all(
+            image.is_active and image.is_downloaded
+            for image in (previous_image, recent_image)
+        ):
+            raise ValueError(
+                "Both observations must be active and downloaded."
+            )
+        if previous_image.tile_id != recent_image.tile_id:
+            raise ValueError(
+                "The selected observations have incompatible Sentinel-2 tile coverage."
+            )
+        if previous_image.acquisition_date >= recent_image.acquisition_date:
+            raise ValueError(
+                "The previous observation must have an earlier acquisition date."
+            )
+        if not (
+            is_level_2a(previous_image.processing_level)
+            and is_level_2a(recent_image.processing_level)
+        ):
+            raise ValueError(
+                "Both observations must use Sentinel-2 Level-2A processing."
+            )
+
     # =========================================================
     # FIND LATEST IMAGE
     # =========================================================
@@ -59,9 +119,19 @@ class SatelliteImageSelectionService:
         """
         Return the newest downloaded Sentinel-2 image
         for a forest area.
+
+        Only Level-2A products are considered. A Level-1C
+        product carries no SCL band, so it can be neither
+        cloud-masked nor differenced against a surface
+        reflectance scene; selecting one here would hand the
+        pipeline an input it cannot process.
+
+        The level is recognised in Python rather than matched
+        in SQL because the same level is stored under several
+        spellings. See is_level_2a.
         """
 
-        return (
+        candidates = (
             self.db.query(SatelliteImage)
             .filter(
                 SatelliteImage.forest_area_id
@@ -75,7 +145,16 @@ class SatelliteImageSelectionService:
                 SatelliteImage.acquisition_date.desc(),
                 SatelliteImage.id.desc(),
             )
-            .first()
+            .all()
+        )
+
+        return next(
+            (
+                image
+                for image in candidates
+                if is_level_2a(image.processing_level)
+            ),
+            None,
         )
 
     # =========================================================
@@ -89,9 +168,13 @@ class SatelliteImageSelectionService:
         """
         Find the most recent image before the latest image
         using the same Sentinel-2 tile.
+
+        Restricted to Level-2A for the reason given on
+        get_latest_image: a baseline that cannot be cloud
+        masked is not a usable baseline.
         """
 
-        return (
+        candidates = (
             self.db.query(SatelliteImage)
             .filter(
                 SatelliteImage.forest_area_id
@@ -111,7 +194,16 @@ class SatelliteImageSelectionService:
                 SatelliteImage.acquisition_date.desc(),
                 SatelliteImage.id.desc(),
             )
-            .first()
+            .all()
+        )
+
+        return next(
+            (
+                image
+                for image in candidates
+                if is_level_2a(image.processing_level)
+            ),
+            None,
         )
 
     # =========================================================
@@ -129,6 +221,10 @@ class SatelliteImageSelectionService:
         Search downloaded images from newest to oldest and
         return the newest image that has an older image
         from the same Sentinel-2 tile.
+
+        Both halves of the pair must be Level-2A: the
+        candidates are filtered here and get_previous_image
+        applies the same rule to the baseline it finds.
         """
 
         images = (
@@ -149,6 +245,9 @@ class SatelliteImageSelectionService:
         )
 
         for latest_image in images:
+
+            if not is_level_2a(latest_image.processing_level):
+                continue
 
             previous_image = (
                 self.get_previous_image(
@@ -184,6 +283,7 @@ class SatelliteImageSelectionService:
 
         - belong to the same forest area
         - use the same Sentinel-2 tile
+        - both be Sentinel-2 Level-2A
         - have different acquisition dates
         - have the previous image older than the latest
         - both be downloaded
@@ -304,67 +404,18 @@ class SatelliteImageSelectionService:
                 "has not been downloaded."
             )
 
-    # =========================================================
-    # RETURN IMAGE INFORMATION
-    # =========================================================
+        # Repeated here even though the candidate queries
+        # already exclude anything that is not Level-2A. This
+        # method is the last gate before a pair is handed to
+        # the pipeline, and a caller that assembles a pair by
+        # some other route must not be able to bypass the
+        # rule that both scenes carry an SCL band.
+        if not (
+            is_level_2a(previous_image.processing_level)
+            and is_level_2a(latest_image.processing_level)
+        ):
 
-    def get_image_pair_summary(
-        self,
-        forest_area_id: int,
-    ) -> dict[str, object]:
-        """
-        Return a clean summary of the selected image pair.
-        """
-
-        (
-            previous_image,
-            latest_image,
-        ) = self.select_image_pair(
-            forest_area_id=forest_area_id,
-        )
-
-        return {
-            "forest_area_id": forest_area_id,
-
-            "previous_image_id": (
-                previous_image.id
-            ),
-
-            "previous_product_id": (
-                previous_image.product_id
-            ),
-
-            "previous_tile_id": (
-                previous_image.tile_id
-            ),
-
-            "previous_acquisition_date": (
-                previous_image.acquisition_date
-            ),
-
-            "latest_image_id": (
-                latest_image.id
-            ),
-
-            "latest_product_id": (
-                latest_image.product_id
-            ),
-
-            "latest_tile_id": (
-                latest_image.tile_id
-            ),
-
-            "latest_acquisition_date": (
-                latest_image.acquisition_date
-            ),
-
-            "same_tile": (
-                previous_image.tile_id
-                == latest_image.tile_id
-            ),
-
-            "days_between": (
-                latest_image.acquisition_date
-                - previous_image.acquisition_date
-            ).days,
-        }
+            raise ValueError(
+                "Both Sentinel-2 images must use "
+                "Level-2A processing."
+            )

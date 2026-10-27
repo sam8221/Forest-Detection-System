@@ -54,18 +54,39 @@ class ForestAreaBase(BaseModel):
     creation, update, and response schemas.
     """
 
+    # -----------------------------------------------------
+    # These two limits are the widths of the columns the
+    # values are stored in: forest_areas.forest_code is
+    # VARCHAR(20) and forest_areas.name is VARCHAR(150).
+    #
+    # They were previously 30 and 200 here, which let a
+    # longer code or a long official name pass validation
+    # and then fail in the database, so the officer was
+    # shown "The forest area could not be saved." with
+    # nothing to act on. A limit stated in the schema is
+    # returned as a 422 naming the field and the maximum.
+    # Changing these numbers means changing the columns and
+    # migrating, not changing them here alone.
+    # -----------------------------------------------------
+
     forest_code: str = Field(
         ...,
         min_length=3,
-        max_length=30,
-        description="Unique Forest Area identification code.",
+        max_length=20,
+        description=(
+            "Unique Forest Area identification code, up to "
+            "20 characters."
+        ),
     )
 
     name: str = Field(
         ...,
         min_length=3,
-        max_length=200,
-        description="Official name of the forest area.",
+        max_length=150,
+        description=(
+            "Official name of the forest area, up to 150 "
+            "characters."
+        ),
     )
 
     district_id: int = Field(
@@ -134,7 +155,7 @@ class ForestAreaUpdate(BaseModel):
     name: str | None = Field(
         default=None,
         min_length=3,
-        max_length=200,
+        max_length=150,
     )
 
     geometry: str | None = Field(

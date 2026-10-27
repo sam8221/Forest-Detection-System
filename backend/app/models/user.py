@@ -99,6 +99,30 @@ class User(AuditMixin, Base):
         comment="User email address.",
     )
 
+    # ---------------------------------------------------------
+    # Contact number for SMS alerts
+    #
+    # Nullable, and most accounts will not have one. An
+    # officer without a number is skipped when alert SMS is
+    # queued, exactly as one without an email address is
+    # skipped today; it is a missing contact detail, not a
+    # broken account.
+    #
+    # Stored in E.164 form (+260977123456) after
+    # normalisation, so that the same number written
+    # 0977123456 and +260 977 123 456 cannot both reach the
+    # same officer as two separate messages.
+    # ---------------------------------------------------------
+
+    phone_number: Mapped[str | None] = mapped_column(
+        String(20),
+        nullable=True,
+        comment=(
+            "Mobile number for SMS alerts, in E.164 form. "
+            "Null when the officer has not supplied one."
+        ),
+    )
+
     # =========================================================
     # AUTHENTICATION
     # =========================================================

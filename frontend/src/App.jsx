@@ -164,6 +164,9 @@ function App() {
   const [selectedForestId, setSelectedForestId] =
     useState(null);
 
+  const [analysisSelection, setAnalysisSelection] =
+    useState(null);
+
   const [notifications, setNotifications] =
     useState([]);
 
@@ -561,6 +564,10 @@ function App() {
                     setActivePage(
                       item.name
                     );
+
+                    if (item.name === "Analysis") {
+                      setAnalysisSelection(null);
+                    }
 
                     if (
                       item.name !==
@@ -1045,7 +1052,12 @@ function App() {
           )}
 
           {activePage === "Analysis" && (
-            <Analysis />
+            <Analysis
+              initialSelection={analysisSelection}
+              onSelectionConsumed={() =>
+                setAnalysisSelection(null)
+              }
+            />
           )}
 
           {activePage === "Analytics" && (
@@ -1118,7 +1130,12 @@ function App() {
 
           {activePage ===
             "Satellite Images" && (
-            <SatelliteImages />
+            <SatelliteImages
+              onAnalyseImage={(selection) => {
+                setAnalysisSelection(selection);
+                setActivePage("Analysis");
+              }}
+            />
           )}
 
           {activePage === "Settings" && (

@@ -27,6 +27,8 @@ from app.models.email_queue import EmailQueue
 from app.models.forest_area import ForestArea
 from app.models.province import Province
 from app.models.satellite_image import SatelliteImage
+from app.models.satellite_download_job import SatelliteDownloadJob
+from app.models.sms_queue import SmsQueue
 from app.models.user import User
 
 __all__ = [
@@ -40,5 +42,7 @@ __all__ = [
     "ForestArea",
     "Province",
     "SatelliteImage",
+    "SatelliteDownloadJob",
+    "SmsQueue",
     "User",
 ]

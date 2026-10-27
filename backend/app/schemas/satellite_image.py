@@ -141,13 +141,25 @@ class SatelliteImageResponse(
 
     id: int
 
+    processing_level: str
+
     is_downloaded: bool
 
     is_processed: bool
 
+    is_active: bool
+
     created_at: datetime
 
     updated_at: datetime
+
+
+class SatelliteImageAnalysisResponse(SatelliteImageResponse):
+    """Satellite record plus non-persistent local analysis readiness."""
+
+    is_ready_for_analysis: bool
+
+    readiness_reason: str | None = None
 
 
 # ---------------------------------------------------------

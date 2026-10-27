@@ -10,7 +10,7 @@ Purpose:
 Workflow:
     1. Create analysis job.
     2. Return job immediately.
-    3. Run Sentinel-2 acquisition and analysis in background.
+    3. Persist the job in PENDING for the analysis queue worker.
     4. Compare previous and newest imagery.
     5. Generate detections and alerts.
 
@@ -27,9 +27,9 @@ from __future__ import annotations
 
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     HTTPException,
+    Request,
 )
 
 from sqlalchemy.orm import Session
@@ -41,19 +41,34 @@ from app.api.deps import (
 from app.database.session import get_db
 
 from app.models.analysis_job import AnalysisJob
-from app.models.enums import AnalysisJobType
+from app.models.enums import AnalysisJobStatus, AnalysisJobType
 
 from app.models.forest_area import ForestArea
+from app.models.satellite_image import SatelliteImage
 from app.models.user import User
 from app.repositories.analysis_repository import (
     AnalysisRepository,
+)
+from app.repositories.detection_repository import (
+    DetectionRepository,
 )
 from app.repositories.forest_area_repository import (
     ForestAreaRepository,
 )
 
-from app.schemas.analysis import SeasonalWindowRequest
-from app.services.analysis_service import AnalysisService
+from app.schemas.analysis import (
+    SeasonalWindowRequest,
+    SelectedImagePairRequest,
+)
+from app.services.analysis_service import (
+    AnalysisOutputStorageError,
+    AnalysisService,
+    public_analysis_error_message,
+)
+from app.services.boundary_comparison_service import validate_stored_forest_boundary
+from app.services.satellite_image_selection_service import (
+    SatelliteImageSelectionService,
+)
 
 
 router = APIRouter(
@@ -61,85 +76,43 @@ router = APIRouter(
     tags=["Analysis"],
 )
 
+def _queue_available(request: Request) -> bool:
+    scheduler = getattr(request.app.state, "analysis_scheduler", None)
+    return bool(scheduler and scheduler.is_running)
 
-# =========================================================
-# BACKGROUND ANALYSIS
-# =========================================================
 
-def run_analysis_background(
-    job_id: int,
-) -> None:
-    """
-    Execute the long-running analysis in the background.
-
-    A new database session is created because the original
-    request session must not be reused inside a background
-    task.
-    """
-
-    from app.database.session import SessionLocal
-
-    db = SessionLocal()
-
-    try:
-
-        # -------------------------------------------------
-        # Find job
-        # -------------------------------------------------
-
-        job = (
-            db.query(AnalysisJob)
-            .filter(
-                AnalysisJob.id == job_id,
-            )
-            .first()
+def _active_job_for_area(db: Session, forest_area_id: int) -> AnalysisJob | None:
+    return (
+        db.query(AnalysisJob)
+        .filter(
+            AnalysisJob.forest_area_id == forest_area_id,
+            AnalysisJob.status.in_(
+                [AnalysisJobStatus.PENDING, AnalysisJobStatus.RUNNING]
+            ),
         )
+        .order_by(AnalysisJob.created_at.desc(), AnalysisJob.id.desc())
+        .first()
+    )
 
-        if job is None:
-            return
 
-        # -------------------------------------------------
-        # Execute analysis
-        # -------------------------------------------------
-
-        service = AnalysisService(db)
-
-        service.execute(job)
-
-    except Exception as exc:
-
-        # -------------------------------------------------
-        # Mark background job as failed
-        # -------------------------------------------------
-
-        db.rollback()
-
-        try:
-
-            job = (
-                db.query(AnalysisJob)
-                .filter(
-                    AnalysisJob.id == job_id,
-                )
-                .first()
-            )
-
-            if job is not None:
-
-                service = AnalysisService(db)
-
-                service.fail_analysis(
-                    job=job,
-                    error_message=str(exc),
-                )
-
-        except Exception:
-
-            db.rollback()
-
-    finally:
-
-        db.close()
+def _verified_completed_result(job: AnalysisJob, db: Session) -> tuple[bool, str | None]:
+    if job.status != AnalysisJobStatus.COMPLETED:
+        return False, None
+    if job.started_at is None or job.completed_at is None:
+        return (
+            False,
+            "This job is marked completed but has no complete execution timestamps. "
+            "Its results are not verified; run a new analysis.",
+        )
+    try:
+        AnalysisService(db).verify_required_outputs(job)
+    except (OSError, TypeError, ValueError) as exc:
+        return (
+            False,
+            "The completed job's required outputs could not be verified: "
+            + (public_analysis_error_message(str(exc)) or "output validation failed."),
+        )
+    return True, None
 
 
 # =========================================================
@@ -149,7 +122,7 @@ def run_analysis_background(
 @router.post("/run/{forest_id}")
 def run_analysis(
     forest_id: int,
-    background_tasks: BackgroundTasks,
+    request: Request,
     windows: SeasonalWindowRequest | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_forestry_officer),
@@ -160,8 +133,9 @@ def run_analysis(
     The request returns immediately after creating
     the analysis job.
 
-    The actual Sentinel-2 acquisition and deforestation
-    analysis runs in the background.
+    The analysis worker claims the persisted job after the
+    request commits, so a process restart cannot discard the
+    handoff between the request and its work.
 
     Requires an authenticated Forestry Officer. Running an
     analysis downloads Sentinel-2 products from Copernicus
@@ -238,6 +212,35 @@ def run_analysis(
             ),
         )
 
+    # Serialize submissions for this forest. The duplicate check and job
+    # insert happen under one row lock, so two quick clicks cannot enqueue the
+    # same work twice.
+    db.query(ForestArea.id).filter(ForestArea.id == forest.id).with_for_update().first()
+
+    active_job = _active_job_for_area(db, forest.id)
+    if active_job is not None:
+        if (
+            active_job.previous_satellite_image_id is None
+            and active_job.satellite_image_id == latest_image.id
+        ):
+            return {
+                "message": "This analysis is already queued or running.",
+                "analysis_job_id": active_job.id,
+                "forest_area_id": forest.id,
+                "satellite_image_id": active_job.satellite_image_id,
+                "status": active_job.status.value,
+                "job_type": active_job.job_type.value,
+                "duplicate": True,
+                "worker_available": _queue_available(request),
+            }
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Analysis job #{active_job.id} is already active for this forest area. "
+                "Wait for it to finish before starting another analysis."
+            ),
+        )
+
     service = AnalysisService(db)
 
     try:
@@ -301,18 +304,9 @@ def run_analysis(
             ),
         ) from exc
 
-    # -----------------------------------------------------
-    # Queue background processing
-    # -----------------------------------------------------
-
-    background_tasks.add_task(
-        run_analysis_background,
-        job.id,
-    )
-
-    # -----------------------------------------------------
-    # Return immediately
-    # -----------------------------------------------------
+    # The persistent worker polls analysis_jobs for PENDING rows. The request
+    # returns after the database transaction commits; no in-process HTTP task
+    # is responsible for keeping the job alive.
 
     return {
         "message": (
@@ -329,10 +323,121 @@ def run_analysis(
 
         "job_type": "MANUAL",
 
+        "worker_available": _queue_available(request),
+
         "note": (
-            "Sentinel-2 acquisition and deforestation "
-            "analysis are running in the background."
+            "Sentinel-2 acquisition and deforestation analysis are queued for the analysis worker."
         ),
+    }
+
+
+@router.post("/run/{forest_id}/pair")
+def run_selected_pair_analysis(
+    forest_id: int,
+    pair: SelectedImagePairRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_forestry_officer),
+):
+    """Run an analysis for exactly the two selected local products."""
+
+    forest = ForestAreaRepository(db).get_by_id_for_user(
+        forest_area_id=forest_id,
+        user=current_user,
+    )
+    if forest is None or not forest.is_active:
+        raise HTTPException(status_code=404, detail="Forest area not found.")
+
+    try:
+        boundary = validate_stored_forest_boundary(forest.geometry)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    previous = db.get(SatelliteImage, pair.previous_satellite_image_id)
+    recent = db.get(SatelliteImage, pair.recent_satellite_image_id)
+    try:
+        SatelliteImageSelectionService.validate_explicit_pair(
+            previous, recent, forest.id
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=str(exc),
+        ) from exc
+
+    service = AnalysisService(db)
+    if (
+        service._usable_local_image(previous.id) is None
+        or service._usable_local_image(recent.id) is None
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "A selected product is marked downloaded but its archive or extracted "
+                "bands are missing from local storage. Reacquire that product before comparing."
+            ),
+        )
+
+    try:
+        service.validate_local_image_inputs(previous)
+        service.validate_local_image_inputs(recent)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    db.query(ForestArea.id).filter(ForestArea.id == forest.id).with_for_update().first()
+
+    active_job = _active_job_for_area(db, forest.id)
+    if active_job is not None:
+        if (
+            active_job.previous_satellite_image_id == previous.id
+            and active_job.satellite_image_id == recent.id
+        ):
+            return {
+                "message": "This selected pair is already queued or running.",
+                "analysis_job_id": active_job.id,
+                "forest_area_id": forest.id,
+                "previous_satellite_image_id": previous.id,
+                "recent_satellite_image_id": recent.id,
+                "previous_acquisition_date": previous.acquisition_date,
+                "recent_acquisition_date": recent.acquisition_date,
+                "status": active_job.status.value,
+                "job_type": active_job.job_type.value,
+                "duplicate": True,
+                "worker_available": _queue_available(request),
+            }
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Analysis job #{active_job.id} is already active for this forest area. "
+                "Wait for it to finish before starting another pair."
+            ),
+        )
+
+    try:
+        job = service.create_analysis_job(
+            forest_area_id=forest.id,
+            satellite_image_id=recent.id,
+            previous_satellite_image_id=previous.id,
+            started_by=current_user.id,
+            job_type=AnalysisJobType.MANUAL,
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except AnalysisOutputStorageError as exc:
+        db.rollback()
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    return {
+        "message": "The selected Sentinel-2 pair is queued for analysis.",
+        "analysis_job_id": job.id,
+        "forest_area_id": forest.id,
+        "previous_satellite_image_id": previous.id,
+        "recent_satellite_image_id": recent.id,
+        "previous_acquisition_date": previous.acquisition_date,
+        "recent_acquisition_date": recent.acquisition_date,
+        "status": "PENDING",
+        "worker_available": _queue_available(request),
     }
 
 
@@ -342,6 +447,7 @@ def run_analysis(
 
 @router.get("/jobs")
 def get_analysis_jobs(
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
@@ -412,7 +518,7 @@ def get_analysis_jobs(
             ),
 
             "error_message": (
-                job.error_message
+                public_analysis_error_message(job.error_message)
             ),
 
             "execution_log": (
@@ -426,6 +532,8 @@ def get_analysis_jobs(
             "updated_at": (
                 job.updated_at
             ),
+
+            "worker_available": _queue_available(request),
         }
 
         for job in jobs
@@ -439,6 +547,7 @@ def get_analysis_jobs(
 @router.get("/jobs/{job_id}")
 def get_analysis_job(
     job_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
@@ -467,6 +576,19 @@ def get_analysis_job(
             status_code=404,
             detail="Analysis job not found.",
         )
+
+    results_verified, results_verification_error = _verified_completed_result(job, db)
+
+    # What this job actually measured, read back from the
+    # detections it produced rather than recomputed here.
+    #
+    # The interface used to read the affected area and the
+    # confidence from fields this response never carried, so
+    # every completed analysis displayed 0.00 ha at 0.00%
+    # confidence however much clearing it had found. Those
+    # are measurements, and a measurement that is not
+    # reported must not be shown as a value.
+    measured = DetectionRepository(db).measured_totals_for_job(job.id)
 
     return {
         "id": job.id,
@@ -520,7 +642,7 @@ def get_analysis_job(
         ),
 
         "error_message": (
-            job.error_message
+            public_analysis_error_message(job.error_message)
         ),
 
         # What the run is doing right now. A full analysis
@@ -540,4 +662,25 @@ def get_analysis_job(
         "updated_at": (
             job.updated_at
         ),
+
+        "worker_available": _queue_available(request),
+
+        "results_verified": results_verified,
+
+        "results_verification_error": results_verification_error,
+
+        # detection_count is always a real number, and zero
+        # is a valid outcome: a job can complete having found
+        # no qualifying clearing.
+        #
+        # The area and the mean confidence are null in that
+        # case rather than 0.0, because "no area was
+        # measured" and "an area of zero was measured" are
+        # different findings and the interface has to be able
+        # to tell them apart.
+        "detection_count": measured["detection_count"],
+
+        "detected_area_hectares": measured["detected_area_hectares"],
+
+        "mean_confidence_score": measured["mean_confidence_score"],
     }

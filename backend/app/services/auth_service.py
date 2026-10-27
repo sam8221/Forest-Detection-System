@@ -40,6 +40,7 @@ from app.schemas.user import (
     ChangePasswordRequest,
     Token,
     UserCreate,
+    UserUpdate,
 )
 
 
@@ -98,6 +99,7 @@ class AuthService:
         user = User(
             full_name=user_data.full_name,
             email=user_data.email,
+            phone_number=user_data.phone_number,
             password_hash=hash_password(
                 user_data.password
             ),
@@ -259,7 +261,7 @@ class AuthService:
     def update_user(
         self,
         user_id: int,
-        user_data,
+        user_data: UserUpdate,
     ) -> User:
         """
         Update an existing user.

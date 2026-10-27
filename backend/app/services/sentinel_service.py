@@ -39,10 +39,13 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Callable
+import zipfile
 
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.constants import normalize_processing_level
 from app.models.forest_area import ForestArea
 from app.models.satellite_image import SatelliteImage
 
@@ -91,6 +94,43 @@ class SentinelService:
         self.copernicus = (
             CopernicusService()
         )
+
+    @staticmethod
+    def _validate_downloaded_product(downloaded_file: Path) -> None:
+        """Check the saved archive and bands required by L2A analysis."""
+
+        if (
+            not downloaded_file.is_file()
+            or downloaded_file.stat().st_size <= 0
+            or not zipfile.is_zipfile(downloaded_file)
+        ):
+            raise RuntimeError(
+                "The downloaded Sentinel-2 product is empty or is not a valid ZIP archive."
+            )
+
+        with zipfile.ZipFile(downloaded_file, "r") as archive:
+            member_names = [name.upper() for name in archive.namelist()]
+            corrupt_member = archive.testzip()
+
+        if corrupt_member is not None:
+            raise RuntimeError(
+                "The downloaded Sentinel-2 product failed archive integrity validation."
+            )
+
+        required_bands = (
+            "_B04_10M.JP2",
+            "_B08_10M.JP2",
+            "_SCL_20M.JP2",
+        )
+        missing_bands = [
+            band
+            for band in required_bands
+            if not any(name.endswith(band) for name in member_names)
+        ]
+        if missing_bands:
+            raise RuntimeError(
+                "The downloaded product is missing bands required for analysis."
+            )
 
     # =========================================================
     # LOCAL SENTINEL STORAGE
@@ -172,7 +212,16 @@ class SentinelService:
 
             acquisition_date=acquisition_date,
 
-            processing_level=processing_level,
+            # Stored in the canonical spelling. The Copernicus
+            # catalogue reports Level-2A as "Level-2A" or as
+            # the product type "S2MSI2A" depending on the
+            # response, and this is the one place a product row
+            # is created, so normalising here keeps every new
+            # row consistent. Existing rows are left as they
+            # were acquired; readers recognise either form.
+            processing_level=normalize_processing_level(
+                processing_level
+            ),
 
             cloud_cover_percentage=cloud_cover,
 
@@ -226,6 +275,7 @@ class SentinelService:
         acquisition_date: date,
         cloud_cover: float,
         processing_level: str = "L2A",
+        progress_callback: Callable[[str, int, int | None], None] | None = None,
     ) -> SatelliteImage:
         """
         Download a Sentinel-2 product from Copernicus
@@ -276,12 +326,22 @@ class SentinelService:
         # Download from Copernicus
         # -----------------------------------------------------
 
+        # Only the bands analysis reads are fetched, and each one
+        # resumes after a dropped connection. Copernicus refuses Range
+        # on the whole .SAFE.zip, so a reset part-way through a ~1 GB
+        # product discards every byte; on an unreliable link that
+        # product can never finish. See CopernicusService
+        # .REQUIRED_BAND_NODES for the reasoning and the measurements.
         downloaded_file = (
-            self.copernicus.download_product(
+            self.copernicus.download_product_bands(
                 product_id=product_id,
+                product_name=product_name,
                 destination=destination,
+                progress_callback=progress_callback,
             )
         )
+
+        self._validate_downloaded_product(downloaded_file)
 
         # -----------------------------------------------------
         # Calculate file size

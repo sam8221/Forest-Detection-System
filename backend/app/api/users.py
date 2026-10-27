@@ -202,6 +202,9 @@ def create_user(
     """
     Create a new user.
 
+    The optional phone_number is validated and normalised by
+    UserCreate before it reaches the authentication service.
+
     Only Administrators can create users.
     """
 
@@ -236,6 +239,10 @@ def update_user(
 ):
     """
     Update an existing user.
+
+    Administrators may set phone_number to a valid Zambian
+    mobile number or null to clear it. The request schema
+    normalises and validates supplied values.
 
     Only Administrators can update users.
     """

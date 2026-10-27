@@ -170,8 +170,7 @@ class CloudMaskService:
 
         if not extracted_directory.exists():
             raise FileNotFoundError(
-                f"Extracted directory not found: "
-                f"{extracted_directory}"
+                "The selected Sentinel-2 product has not been extracted."
             )
 
         matches = list(
@@ -182,8 +181,7 @@ class CloudMaskService:
 
         if not matches:
             raise FileNotFoundError(
-                "Sentinel-2 SCL 20 m band was not found "
-                f"inside {extracted_directory}"
+                "The selected Sentinel-2 product is missing its SCL classification band."
             )
 
         return matches[0]
@@ -236,8 +234,7 @@ class CloudMaskService:
 
         if not scl_band_path.exists():
             raise FileNotFoundError(
-                f"SCL band not found: "
-                f"{scl_band_path}"
+                "The selected Sentinel-2 product is missing its SCL classification band."
             )
 
         with rasterio.open(
@@ -370,14 +367,12 @@ class CloudMaskService:
 
         if not scl_band_path.exists():
             raise FileNotFoundError(
-                f"SCL band not found: "
-                f"{scl_band_path}"
+                "The selected Sentinel-2 product is missing its SCL classification band."
             )
 
         if not reference_ndvi_path.exists():
             raise FileNotFoundError(
-                f"Reference NDVI not found: "
-                f"{reference_ndvi_path}"
+                "The selected product's calculated NDVI raster is unavailable."
             )
 
         output_path.parent.mkdir(
@@ -397,6 +392,10 @@ class CloudMaskService:
 
             scl_transform = (
                 scl_src.transform
+            )
+
+            scl_nodata = (
+                scl_src.nodata
             )
 
             scl_crs = scl_src.crs
@@ -502,6 +501,25 @@ class CloudMaskService:
                 "Reference NDVI does not contain a CRS."
             )
 
+        if not ndvi_crs.is_projected or ndvi_crs.linear_units.lower() not in {
+            "metre",
+            "meter",
+            "metres",
+            "meters",
+        }:
+            raise ValueError(
+                "Reference NDVI must use a projected metre-based CRS."
+            )
+
+        if not np.allclose(
+            np.abs(ndvi_resolution),
+            (10.0, 10.0),
+            atol=0.05,
+        ):
+            raise ValueError(
+                "Reference NDVI must use the target 10 m grid."
+            )
+
         # -----------------------------------------------------
         # SCL CRS may be missing because of the JP2/PROJ
         # configuration on Windows.
@@ -523,54 +541,24 @@ class CloudMaskService:
             scl_crs = ndvi_crs
 
         # =====================================================
-        # VERIFY SPATIAL ALIGNMENT
-        # =====================================================
-
-        bounds_tolerance = 1.0
-
-        if (
-            abs(
-                scl_bounds.left
-                - ndvi_bounds.left
-            )
-            > bounds_tolerance
-            or
-            abs(
-                scl_bounds.right
-                - ndvi_bounds.right
-            )
-            > bounds_tolerance
-            or
-            abs(
-                scl_bounds.top
-                - ndvi_bounds.top
-            )
-            > bounds_tolerance
-            or
-            abs(
-                scl_bounds.bottom
-                - ndvi_bounds.bottom
-            )
-            > bounds_tolerance
-        ):
-
-            raise ValueError(
-                "SCL and NDVI spatial bounds do not match."
-            )
-
-        print(
-            "SCL/NDVI spatial alignment: OK"
-        )
-
-        # =====================================================
         # RESAMPLE SCL TO NDVI GRID
         # =====================================================
 
-        resampled_scl = np.zeros(
+        # SCL is categorical. Reproject it directly to the
+        # exact NDVI grid with nearest-neighbour resampling;
+        # comparing raw bounds before this step is invalid
+        # when the rasters use different CRSs or transforms.
+        scl_nodata = (
+            self.SCL_NO_DATA
+            if scl_nodata is None
+            else scl_nodata
+        )
+        resampled_scl = np.full(
             (
                 ndvi_height,
                 ndvi_width,
             ),
+            self.SCL_NO_DATA,
             dtype=np.uint8,
         )
 
@@ -580,11 +568,14 @@ class CloudMaskService:
 
             src_transform=scl_transform,
             src_crs=scl_crs,
+            src_nodata=scl_nodata,
 
             dst_transform=ndvi_transform,
             dst_crs=ndvi_crs,
+            dst_nodata=self.SCL_NO_DATA,
 
             resampling=Resampling.nearest,
+            init_dest_nodata=True,
         )
 
         print(

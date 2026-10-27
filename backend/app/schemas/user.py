@@ -39,6 +39,7 @@ from pydantic import (
 )
 
 from app.models.enums import UserRole
+from app.services.sms_service import normalise_msisdn
 
 
 # =========================================================
@@ -177,6 +178,33 @@ def validate_password_strength(value: str) -> str:
     return value
 
 
+def normalize_optional_phone_number(
+    value: str | None,
+) -> str | None:
+    """Return a normalized Zambian number or preserve a blank as NULL."""
+
+    if value is None:
+        return None
+
+    if not isinstance(value, str):
+        raise ValueError(
+            "Phone number must be entered as text."
+        )
+
+    if not value.strip():
+        return None
+
+    normalized = normalise_msisdn(value)
+
+    if normalized is None:
+        raise ValueError(
+            "Enter a valid Zambian mobile number, such as "
+            "+260971234567."
+        )
+
+    return normalized
+
+
 # =========================================================
 # BASE USER SCHEMA
 # =========================================================
@@ -197,6 +225,22 @@ class UserBase(BaseModel):
         ...,
         description="User email address.",
     )
+
+    phone_number: str | None = Field(
+        default=None,
+        max_length=20,
+        description=(
+            "Optional Zambian mobile number. Valid numbers "
+            "are stored in E.164 form."
+        ),
+    )
+
+    @field_validator("phone_number", mode="before")
+    @classmethod
+    def validate_phone_number(cls, value: str | None) -> str | None:
+        """Normalise an optional Zambian mobile number."""
+
+        return normalize_optional_phone_number(value)
 
 
 # =========================================================
@@ -281,6 +325,15 @@ class UserUpdate(BaseModel):
 
     email: EmailStr | None = None
 
+    phone_number: str | None = Field(
+        default=None,
+        max_length=20,
+        description=(
+            "Optional Zambian mobile number. Null clears the "
+            "saved number; valid numbers are stored in E.164."
+        ),
+    )
+
     role: UserRole | None = None
 
     is_active: bool | None = None
@@ -288,6 +341,13 @@ class UserUpdate(BaseModel):
     province_id: int | None = None
 
     district_id: int | None = None
+
+    @field_validator("phone_number", mode="before")
+    @classmethod
+    def validate_phone_number(cls, value: str | None) -> str | None:
+        """Normalise a supplied number and allow explicit clearing."""
+
+        return normalize_optional_phone_number(value)
 
     @model_validator(mode="after")
     def validate_jurisdiction(self) -> "UserUpdate":

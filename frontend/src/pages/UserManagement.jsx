@@ -47,7 +47,12 @@ import {
 } from "lucide-react";
 
 import api from "../services/api";
+import { getApiErrorMessage } from "../services/apiError";
 import { ROLES } from "../services/auth";
+import {
+  normalizeZambianPhoneNumber,
+  validateZambianPhoneNumber,
+} from "../services/phoneNumber";
 
 // ---------------------------------------------------------
 // Role options offered when provisioning an account
@@ -76,6 +81,7 @@ const ROLE_OPTIONS = [
 const EMPTY_FORM = {
   full_name: "",
   email: "",
+  phone_number: "",
   password: "",
   role: ROLES.DISTRICT_OFFICER,
   province_id: "",
@@ -173,11 +179,15 @@ function UserManagement() {
       setUsers(userList.data || []);
       setDistricts(districtList.data || []);
       setProvinces(provinceList.data || []);
+
+      return Array.isArray(userList.data) ? userList.data : [];
     } catch (requestError) {
       setError(
         requestError?.response?.data?.detail ||
           "Accounts could not be loaded."
       );
+
+      return null;
     } finally {
       setLoading(false);
     }
@@ -221,6 +231,7 @@ function UserManagement() {
     setForm({
       full_name: user.full_name || "",
       email: user.email || "",
+      phone_number: user.phone_number || "",
       password: "",
       role: user.role,
       province_id: user.province_id || "",
@@ -248,6 +259,7 @@ function UserManagement() {
     const payload = {
       full_name: form.full_name.trim(),
       email: form.email.trim(),
+      phone_number: form.phone_number.trim() || null,
       role: form.role,
       province_id: null,
       district_id: null,
@@ -267,39 +279,80 @@ function UserManagement() {
   const handleSubmit = async (event) => {
     event.preventDefault();
 
+    const phoneError = validateZambianPhoneNumber(
+      form.phone_number
+    );
+
+    if (phoneError) {
+      setError(phoneError);
+      setNotice(null);
+      return;
+    }
+
     setSaving(true);
     setError(null);
     setNotice(null);
 
     try {
       const payload = buildPayload();
+      const expectedPhoneNumber = normalizeZambianPhoneNumber(
+        payload.phone_number
+      );
+      let savedUser;
 
       if (editingId) {
-        await api.put(`/users/${editingId}`, payload);
-
-        setNotice("Account updated.");
+        const response = await api.put(
+          `/users/${editingId}`,
+          payload
+        );
+        savedUser = response.data;
       } else {
-        await api.post("/users", {
+        const response = await api.post("/users", {
           ...payload,
           password: form.password,
         });
+        savedUser = response.data;
+      }
 
-        setNotice("Account created.");
+      if (
+        !savedUser ||
+        !Object.prototype.hasOwnProperty.call(
+          savedUser,
+          "phone_number"
+        ) ||
+        (savedUser.phone_number || null) !== expectedPhoneNumber
+      ) {
+        throw new Error(
+          "The API did not confirm the saved phone number. " +
+          "Check that the running FastAPI backend includes " +
+          "phone-number support."
+        );
+      }
+
+      const refreshedUsers = await load();
+      const refreshedUser = refreshedUsers?.find(
+        (user) => user.id === savedUser.id
+      );
+
+      if (
+        !refreshedUser ||
+        (refreshedUser.phone_number || null) !== expectedPhoneNumber
+      ) {
+        throw new Error(
+          "The refreshed user list did not confirm the saved phone number. " +
+          "The account may have been updated, but its saved value could " +
+          "not be verified. Check the API and reload the list."
+        );
       }
 
       closeForm();
-      await load();
+      setNotice(editingId ? "Account updated." : "Account created.");
     } catch (requestError) {
-      const detail = requestError?.response?.data?.detail;
-
-      // Validation failures arrive as a list of field
-      // errors. The message is the useful part.
-      const message = Array.isArray(detail)
-        ? detail.map((item) => item.msg).join(" ")
-        : detail;
-
       setError(
-        message || "The account could not be saved."
+        getApiErrorMessage(
+          requestError,
+          "The account could not be saved."
+        )
       );
     } finally {
       setSaving(false);
@@ -481,6 +534,25 @@ function UserManagement() {
               />
             </label>
 
+            <label>
+              <span>Phone number for SMS alerts (optional)</span>
+              <input
+                type="tel"
+                autoComplete="tel"
+                inputMode="tel"
+                value={form.phone_number}
+                placeholder="+260 971 234 567"
+                aria-describedby="officer-phone-help"
+                onChange={(event) =>
+                  updateField("phone_number", event.target.value)
+                }
+              />
+              <small id="officer-phone-help">
+                Use a Zambian mobile number. Leave blank if it has not
+                been provided.
+              </small>
+            </label>
+
             {!editingId && (
               <label>
                 <span>Temporary password</span>
@@ -636,6 +708,7 @@ function UserManagement() {
               <tr>
                 <th>Name</th>
                 <th>Email</th>
+                <th>Phone</th>
                 <th>Role</th>
                 <th>Jurisdiction</th>
                 <th>Status</th>
@@ -649,6 +722,8 @@ function UserManagement() {
                   <td>{user.full_name}</td>
 
                   <td>{user.email}</td>
+
+                  <td>{user.phone_number || "Not recorded"}</td>
 
                   <td>
                     {ROLE_OPTIONS.find(

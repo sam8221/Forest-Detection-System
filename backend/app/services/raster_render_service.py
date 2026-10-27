@@ -133,6 +133,20 @@ LAYERS: dict[str, LayerDefinition] = {
             "the two can be compared by eye."
         ),
     ),
+    "comparison_previous": LayerDefinition(
+        key="comparison_previous",
+        relative_path="comparison/previous_ndvi.tif",
+        palette="ndvi",
+        label="NDVI, selected earlier observation",
+        description="Earlier selected observation, masked to the forest boundary.",
+    ),
+    "comparison_recent": LayerDefinition(
+        key="comparison_recent",
+        relative_path="comparison/recent_ndvi.tif",
+        palette="ndvi",
+        label="NDVI, selected recent observation",
+        description="Recent selected observation, masked to the forest boundary.",
+    ),
     "ndvi_difference": LayerDefinition(
         key="ndvi_difference",
         relative_path="persistence/ndvi_difference/ndvi_change.tif",
@@ -143,6 +157,17 @@ LAYERS: dict[str, LayerDefinition] = {
             "value means vegetation was lost. Red marks "
             "decline, pale marks little change, green marks "
             "growth. A decline is not by itself deforestation."
+        ),
+    ),
+    "selected_ndvi_difference": LayerDefinition(
+        key="selected_ndvi_difference",
+        relative_path="comparison/ndvi_change_recent_minus_previous.tif",
+        palette="recent_difference",
+        label="NDVI change, recent minus previous",
+        description=(
+            "Recent NDVI minus previous NDVI. Negative values indicate a "
+            "vegetation-index decline, values near zero indicate little "
+            "change, and positive values indicate an increase."
         ),
     ),
     "confirmed_loss": LayerDefinition(
@@ -192,6 +217,18 @@ DIFFERENCE_STOPS = [
     (0.15, 240, 170, 90),     # modest decline
     (0.35, 214, 92, 48),      # marked decline
     (0.60, 150, 24, 24),      # severe decline
+]
+
+# Selected-pair comparison uses the conventional recent − previous
+# direction: decline is negative/red and growth is positive/green.
+RECENT_DIFFERENCE_STOPS = [
+    (-0.60, 150, 24, 24),     # severe decline
+    (-0.35, 214, 92, 48),     # marked decline
+    (-0.15, 240, 170, 90),    # modest decline
+    (-0.03, 242, 244, 240),   # effectively unchanged
+    (0.03, 242, 244, 240),
+    (0.15, 150, 200, 160),
+    (0.60, 21, 110, 60),      # NDVI rose: growth
 ]
 
 
@@ -277,6 +314,7 @@ class RasterRenderService:
         forest_area_id: int,
         layer: str,
         job_id: int | None = None,
+        strict_job: bool = False,
     ) -> Path | None:
         """
         Return the file for a layer, or None if absent.
@@ -290,6 +328,18 @@ class RasterRenderService:
 
         if definition is None:
             return None
+
+        if strict_job:
+            if job_id is None:
+                return None
+            candidate = (
+                self.settings.satellite_image_storage_path
+                / str(forest_area_id)
+                / "jobs"
+                / str(job_id)
+                / definition.relative_path
+            )
+            return candidate if candidate.is_file() else None
 
         path, _ = resolve_layer(
             forest_area_id=forest_area_id,
@@ -309,6 +359,7 @@ class RasterRenderService:
         self,
         forest_area_id: int,
         job_id: int | None = None,
+        strict_job: bool = False,
     ) -> list[dict]:
         """
         Report which layers exist for a forest area.
@@ -322,7 +373,7 @@ class RasterRenderService:
 
         for definition in LAYERS.values():
             path = self.layer_path(
-                forest_area_id, definition.key, job_id
+                forest_area_id, definition.key, job_id, strict_job
             )
 
             available.append(
@@ -346,6 +397,7 @@ class RasterRenderService:
         forest_area_id: int,
         layer: str,
         job_id: int | None = None,
+        strict_job: bool = False,
     ) -> tuple[bytes, list[float], dict] | None:
         """
         Colour a layer and return it as a PNG with bounds.
@@ -367,7 +419,9 @@ class RasterRenderService:
         """
 
         definition = LAYERS.get(layer)
-        path = self.layer_path(forest_area_id, layer, job_id)
+        path = self.layer_path(
+            forest_area_id, layer, job_id, strict_job
+        )
 
         if definition is None or path is None:
             return None
@@ -439,6 +493,9 @@ class RasterRenderService:
 
         elif definition.palette == "difference":
             rgb = _ramp(data, DIFFERENCE_STOPS)
+
+        elif definition.palette == "recent_difference":
+            rgb = _ramp(data, RECENT_DIFFERENCE_STOPS)
 
         else:
             rgb = _ramp(data, NDVI_STOPS)

@@ -29,9 +29,10 @@ Version:
 ===========================================================
 """
 
+import logging
 from datetime import UTC, datetime
 
-from sqlalchemy import and_, or_
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.models.alert import Alert
@@ -39,16 +40,30 @@ from app.models.alert_recipient import AlertRecipient
 from app.models.detection import Detection
 from app.models.district import District
 from app.models.email_queue import EmailQueue
+from app.core.config import get_settings
 from app.models.enums import (
     AlertStatus,
     AlertType,
     EmailQueueStatus,
     PriorityLevel,
-    UserRole,
+    SmsQueueStatus,
 )
 from app.models.forest_area import ForestArea
-from app.models.user import User
+from app.models.sms_queue import SmsQueue
 from app.repositories.alert_repository import AlertRepository
+from app.services.sms_service import (
+    build_alert_sms,
+    meets_priority_threshold,
+    normalise_msisdn,
+)
+from app.services.sms_recipients import (
+    eligible_sms_officers_query,
+    sms_phone_skip_reason,
+    sms_recipient_authorization_reason,
+)
+
+
+logger = logging.getLogger(__name__)
 
 
 class AlertService:
@@ -312,31 +327,11 @@ class AlertService:
         # Select officers whose jurisdiction covers the area
         # -----------------------------------------------------
 
-        officers = (
-            self.db.query(User)
-            .filter(
-                User.is_active.is_(True),
-
-                or_(
-                    and_(
-                        User.role
-                        == UserRole.DISTRICT_FORESTRY_OFFICER,
-
-                        User.district_id
-                        == forest_area.district_id,
-                    ),
-
-                    and_(
-                        User.role
-                        == UserRole.PROVINCIAL_FORESTRY_OFFICER,
-
-                        User.province_id
-                        == district.province_id,
-                    ),
-                ),
-            )
-            .all()
-        )
+        officers = eligible_sms_officers_query(
+            self.db,
+            forest_area,
+            district,
+        ).all()
 
         for officer in officers:
 
@@ -418,6 +413,212 @@ class AlertService:
         self.db.commit()
 
     # =========================================================
+    # QUEUE SMS
+    # =========================================================
+
+    def queue_sms_notifications(
+        self,
+        alert: Alert,
+    ) -> None:
+        """
+        Queue alert SMS messages for the alert's recipients.
+
+        Args:
+            alert:
+                The alert to notify about. Its recipients
+                must already exist; this method does not
+                create them.
+
+        Why this walks AlertRecipient rather than querying
+        officers again:
+
+            create_alert_recipients has already decided who
+            covers this forest area, applying the district
+            and province rules of FR-04. Repeating that
+            query here would be a second copy of the
+            jurisdiction logic, free to drift from the first,
+            and SMS would then reach officers email did not.
+
+        Why not every alert gets one:
+
+            SMS interrupts an officer and costs money per
+            message, so it is reserved for alerts serious
+            enough to warrant a field response. The floor is
+            configuration (SMS_MIN_PRIORITY, default HIGH),
+            not a literal. Email still goes out for every
+            alert, so nothing is lost below the threshold.
+
+        Skips are recorded in sms_queue with a controlled,
+        non-sensitive reason. The recipient's number is never
+        included in the log message. A unique database index
+        and INSERT ... ON CONFLICT DO NOTHING make queueing
+        idempotent across repeated or concurrent alert runs.
+        """
+
+        settings = get_settings()
+
+        if not settings.sms_enabled:
+            return
+
+        if not meets_priority_threshold(
+            alert.priority,
+            settings.sms_min_priority,
+        ):
+            return
+
+        detection = alert.detection
+
+        if detection is None:
+            # Nothing to describe, so nothing is sent. The
+            # email already queued still carries the alert.
+            return
+
+        forest_area = detection.forest_area
+
+        if forest_area is None or forest_area.district is None:
+            logger.warning(
+                "SMS recipients skipped for alert_id=%s: "
+                "forest area or district is unavailable.",
+                alert.id,
+            )
+            return
+
+        forest_name = (
+            forest_area.name
+            if forest_area is not None
+            else f"Forest Area {detection.forest_area_id}"
+        )
+
+        district_name = (
+            forest_area.district.name
+            if forest_area is not None
+            and forest_area.district is not None
+            else None
+        )
+
+        message = build_alert_sms(
+            forest_name=forest_name,
+            district_name=district_name,
+            detected_area_hectares=(
+                detection.detected_area_hectares
+            ),
+            priority=alert.priority,
+            detection_id=detection.id,
+        )
+
+        recipients = (
+            self.db.query(AlertRecipient)
+            .filter(
+                AlertRecipient.alert_id == alert.id,
+            )
+            .all()
+        )
+
+        existing_rows = (
+            self.db.query(SmsQueue)
+            .filter(SmsQueue.alert_id == alert.id)
+            .all()
+        )
+
+        existing_user_ids = {
+            row.recipient_user_id
+            for row in existing_rows
+            if row.recipient_user_id is not None
+        }
+        existing_phones = {
+            row.recipient_phone
+            for row in existing_rows
+            if row.recipient_phone is not None
+        }
+
+        queue_values = []
+
+        for recipient in recipients:
+
+            user = recipient.user
+
+            if user is None:
+                continue
+
+            authorization_reason = sms_recipient_authorization_reason(
+                user,
+                forest_area,
+            )
+
+            if authorization_reason is not None:
+                logger.info(
+                    "SMS recipient skipped alert_id=%s user_id=%s "
+                    "reason=%s",
+                    alert.id,
+                    user.id,
+                    authorization_reason,
+                )
+                continue
+
+            if user.id in existing_user_ids:
+                continue
+
+            # A number is normalised before it is compared
+            # or stored, so one handset written two ways
+            # cannot become two messages.
+            phone = normalise_msisdn(user.phone_number)
+
+            skip_reason = sms_phone_skip_reason(user.phone_number)
+
+            if phone is not None and phone in existing_phones:
+                logger.info(
+                    "SMS recipient skipped alert_id=%s user_id=%s "
+                    "reason=duplicate_recipient_number",
+                    alert.id,
+                    user.id,
+                )
+                continue
+
+            queue_values.append(
+                {
+                    "alert_id": alert.id,
+                    "recipient_phone": (
+                        phone if skip_reason is None else None
+                    ),
+                    "recipient_user_id": user.id,
+                    "recipient_name": user.full_name,
+                    "message": message,
+                    "status": (
+                        SmsQueueStatus.SKIPPED
+                        if skip_reason is not None
+                        else SmsQueueStatus.PENDING
+                    ),
+                    "skip_reason": skip_reason,
+                    "retry_count": 0,
+                    "max_retries": 3,
+                }
+            )
+
+            existing_user_ids.add(user.id)
+
+            if phone is not None:
+                existing_phones.add(phone)
+
+            if skip_reason is not None:
+                logger.info(
+                    "SMS recipient skipped alert_id=%s user_id=%s "
+                    "reason=%s",
+                    alert.id,
+                    user.id,
+                    skip_reason,
+                )
+
+        if queue_values:
+            statement = (
+                pg_insert(SmsQueue)
+                .values(queue_values)
+                .on_conflict_do_nothing()
+            )
+            self.db.execute(statement)
+
+        self.db.commit()
+
+    # =========================================================
     # PROCESS DETECTION
     # =========================================================
 
@@ -432,6 +633,12 @@ class AlertService:
             1. Create or retrieve alert.
             2. Assign Forestry Officers.
             3. Queue email notifications.
+            4. Queue SMS notifications for serious alerts.
+
+        Every step is idempotent, so running this twice for
+        one detection produces one alert, one set of
+        recipients, one email per recipient and one SMS per
+        recipient.
         """
 
         alert = self.create_alert(
@@ -443,6 +650,14 @@ class AlertService:
         )
 
         self.queue_email_notifications(
+            alert,
+        )
+
+        # Queued after email, and deliberately not instead
+        # of it: SMS is an additional channel for alerts
+        # warranting a field response, not a replacement for
+        # the record an officer reads in full.
+        self.queue_sms_notifications(
             alert,
         )
 

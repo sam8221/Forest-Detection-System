@@ -83,6 +83,7 @@ Project:
 ===========================================================
 """
 
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -263,6 +264,96 @@ class Settings(BaseSettings):
         default="",
         alias="SMTP_FROM_EMAIL",
     )
+
+    # --------------------------------------------------
+    # SMS notifications (Africa's Talking)
+    #
+    # SMS is the channel that interrupts an officer, so it
+    # is reserved for alerts warranting a field response.
+    # Email still goes out for every alert.
+    #
+    # Security: the API key is a credential. It is read from
+    # the environment, defaults to empty, and must never be
+    # logged, returned by an endpoint, or reach the browser.
+    # It is sent to the provider in a request header, never
+    # in a URL or a request body.
+    # --------------------------------------------------
+
+    africastalking_username: str = Field(
+        default="sandbox",
+        alias="AFRICASTALKING_USERNAME",
+    )
+
+    africastalking_api_key: str = Field(
+        default="",
+        alias="AFRICASTALKING_API_KEY",
+    )
+
+    # Which Africa's Talking environment to talk to.
+    #
+    # Anything other than the exact string "production"
+    # means sandbox, and the SMS service overrides the
+    # username to "sandbox" accordingly. Production is
+    # therefore opt-in by one explicit value: a production
+    # key left in a development .env still cannot reach a
+    # real handset, which is what keeps development and
+    # test runs from sending real messages.
+    africastalking_environment: str = Field(
+        default="sandbox",
+        alias="AFRICASTALKING_ENVIRONMENT",
+    )
+
+    # Registered shortcode or alphanumeric sender ID. Empty
+    # means the provider's default, which is what the
+    # sandbox uses; a sandbox account has no sender ID of
+    # its own.
+    sms_sender_id: str = Field(
+        default="",
+        alias="SMS_SENDER_ID",
+    )
+
+    # Master switch. Off by default so that installing the
+    # dependency and running a migration does not by itself
+    # start sending messages.
+    sms_enabled: bool = Field(
+        default=False,
+        alias="SMS_ENABLED",
+    )
+
+    # Lowest alert priority that earns an SMS, compared on
+    # the LOW < MEDIUM < HIGH < CRITICAL ordering defined in
+    # app.services.sms_service.
+    sms_min_priority: str = Field(
+        default="HIGH",
+        alias="SMS_MIN_PRIORITY",
+    )
+
+    @property
+    def africastalking_is_sandbox(self) -> bool:
+        """
+        Whether SMS is directed at the sandbox.
+
+        True unless the environment names production.
+
+        Case and surrounding whitespace are ignored, so
+        "production", "Production" and " PRODUCTION " all
+        mean production: writing some case of that word is a
+        deliberate statement of intent, not a plausible
+        slip. Anything else at all, including "prod",
+        "live", an empty value and an unset variable,
+        resolves to sandbox.
+
+        Phrased as "not production" rather than "is sandbox"
+        on purpose. The default for an unrecognised value is
+        then the harmless one, so a leftover production
+        username in a developer .env cannot by itself reach
+        a real handset.
+        """
+
+        return (
+            self.africastalking_environment.strip().lower()
+            != "production"
+        )
 
     # --------------------------------------------------
     # Copernicus OAuth
@@ -500,18 +591,19 @@ class Settings(BaseSettings):
         """
         Return the imagery storage root as an absolute path.
 
-        A relative configured value is resolved against the
-        backend package root rather than the process working
-        directory, so downloaded products and processed
-        rasters always land in the same place.
+        Environment variables are expanded first. A relative
+        value is resolved against the backend package root
+        rather than the process working directory, so product
+        and analysis paths use one canonical root.
         """
 
-        configured = Path(self.satellite_image_storage_root)
+        configured = Path(
+            os.path.expandvars(self.satellite_image_storage_root)
+        ).expanduser()
+        if not configured.is_absolute():
+            configured = BACKEND_ROOT / configured
 
-        if configured.is_absolute():
-            return configured
-
-        return BACKEND_ROOT / configured
+        return configured.resolve()
 
 
 @lru_cache

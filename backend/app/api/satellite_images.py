@@ -30,16 +30,22 @@ Version:
 ===========================================================
 """
 
+import logging
+import time
 from datetime import datetime
 
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
     HTTPException,
+    Query,
+    Response,
     status,
 )
 
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import SQLAlchemyError
 
 from geoalchemy2.shape import to_shape
 
@@ -50,8 +56,10 @@ from app.api.deps import (
     get_current_active_user,
 )
 
-from app.database.session import get_db
+from app.database.session import SessionLocal, get_db
 
+from app.models.forest_area import ForestArea
+from app.models.satellite_download_job import SatelliteDownloadJob
 from app.models.user import User
 
 from app.repositories.forest_area_repository import (
@@ -64,15 +72,27 @@ from app.repositories.satellite_image_repository import (
 
 from app.schemas.satellite_image import (
     SatelliteImageCreate,
+    SatelliteImageAnalysisResponse,
     SatelliteImageResponse,
 )
+from app.schemas.satellite_download import SatelliteDownloadJobResponse
 
 from app.services.copernicus_service import (
+    CopernicusAuthenticationError,
+    CopernicusAuthenticationServiceError,
+    CopernicusAuthorizationError,
     CopernicusService,
 )
 
 from app.services.sentinel_service import (
     SentinelService,
+)
+from app.services.analysis_service import AnalysisService
+from app.services.satellite_image_selection_service import (
+    SatelliteImageSelectionService,
+)
+from app.services.satellite_download_job_service import (
+    SatelliteDownloadJobService,
 )
 
 
@@ -80,6 +100,173 @@ router = APIRouter(
     prefix="/satellite-images",
     tags=["Satellite Images"],
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _satellite_download_failure_message(exc: Exception) -> str:
+    """Return a safe user-facing message for a failed acquisition."""
+
+    if isinstance(
+        exc,
+        (
+            CopernicusAuthenticationError,
+            CopernicusAuthenticationServiceError,
+            CopernicusAuthorizationError,
+        ),
+    ):
+        return str(exc)
+    return (
+        "The download failed or the product did not pass validation. "
+        "Retry the acquisition."
+    )
+
+
+def _raise_if_download_job_table_missing(exc: SQLAlchemyError, db: Session) -> None:
+    """Translate an unapplied download-job migration into a safe 503."""
+
+    original = getattr(exc, "orig", None)
+    sqlstate = (
+        getattr(original, "sqlstate", None)
+        or getattr(original, "pgcode", None)
+    )
+    message = str(original or exc).lower()
+    missing_table = (
+        sqlstate == "42P01"
+        or "no such table: satellite_download_jobs" in message
+        or 'relation "satellite_download_jobs" does not exist' in message
+    )
+    if not missing_table:
+        raise exc
+
+    db.rollback()
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=(
+            "Satellite download tracking is unavailable because its database "
+            "migration has not been applied. Apply the pending Alembic migrations "
+            "from the backend directory."
+        ),
+    ) from exc
+
+
+def _execute_satellite_download_job(
+    job_id: str,
+    forest_area_id: int,
+    download_request: dict,
+) -> None:
+    """Run a queued Copernicus transfer with an independent DB session."""
+
+    db = SessionLocal()
+    job_service = SatelliteDownloadJobService(db)
+
+    try:
+        job = db.get(SatelliteDownloadJob, job_id)
+        if job is None:
+            return
+
+        forest = (
+            db.query(ForestArea)
+            .filter(ForestArea.id == forest_area_id)
+            .first()
+        )
+        if forest is None:
+            raise RuntimeError("The forest area is no longer available.")
+
+        last_persisted_at = 0.0
+        last_integer_percentage: int | None = None
+
+        def report_progress(
+            progress_status: str,
+            downloaded_bytes: int,
+            total_bytes: int | None,
+        ) -> None:
+            nonlocal last_persisted_at, last_integer_percentage
+
+            percentage = None
+            if total_bytes is not None and total_bytes > 0:
+                percentage = min(
+                    99.9,
+                    max(0.0, downloaded_bytes / total_bytes * 100),
+                )
+
+            now = time.monotonic()
+            current_integer_percentage = (
+                int(percentage) if percentage is not None else None
+            )
+            should_persist = (
+                progress_status != "DOWNLOADING"
+                or current_integer_percentage != last_integer_percentage
+                or now - last_persisted_at >= 1.0
+            )
+            if not should_persist:
+                return
+
+            job_service.report_progress(
+                job,
+                status=progress_status,
+                downloaded_bytes=downloaded_bytes,
+                total_bytes=total_bytes,
+                transfer_complete=progress_status == "VALIDATING",
+            )
+            last_persisted_at = now
+            last_integer_percentage = current_integer_percentage
+
+        image = SentinelService(db).download_product(
+            forest_area=forest,
+            product_id=download_request["product_id"],
+            product_name=download_request["product_name"],
+            tile_id=download_request["tile_id"],
+            acquisition_date=download_request["acquisition_date"],
+            cloud_cover=download_request["cloud_cover"],
+            progress_callback=report_progress,
+        )
+
+        job_service.complete(job, image.id)
+    except Exception as exc:
+        # Keep provider details and request internals out of API-visible
+        # errors; the class name is enough for server-side diagnosis.
+        logger.error(
+            "Satellite download job %s failed (%s)",
+            job_id,
+            type(exc).__name__,
+        )
+        try:
+            job_service.fail(
+                job_id,
+                _satellite_download_failure_message(exc),
+            )
+        except Exception as status_error:
+            db.rollback()
+            logger.error(
+                "Could not save failed status for satellite download job %s (%s)",
+                job_id,
+                type(status_error).__name__,
+            )
+    finally:
+        db.close()
+
+
+def _analysis_candidate_responses(images, db):
+    """Add filesystem-backed readiness without persisting derived state."""
+
+    analysis_service = AnalysisService(db)
+    result = []
+    for image in images:
+        locally_available = (
+            analysis_service._usable_local_image(image.id) is not None
+            if image.is_active and image.is_downloaded
+            else False
+        )
+        is_ready, reason = SatelliteImageSelectionService.analysis_readiness(
+            image,
+            locally_available,
+        )
+        response = SatelliteImageResponse.model_validate(image).model_dump()
+        response["is_ready_for_analysis"] = is_ready
+        response["readiness_reason"] = reason
+        result.append(response)
+    return result
 
 
 # =========================================================
@@ -253,14 +440,16 @@ def search_sentinel_images_for_forest(
 
     except Exception as exc:
 
+        logger.error(
+            "Unable to convert forest geometry for Sentinel-2 search (%s).",
+            type(exc).__name__,
+        )
+
         raise HTTPException(
             status_code=(
                 status.HTTP_500_INTERNAL_SERVER_ERROR
             ),
-            detail=(
-                "Unable to convert forest "
-                f"geometry to WKT: {exc}"
-            ),
+            detail="Unable to process the selected forest boundary.",
         ) from exc
 
     # -----------------------------------------------------
@@ -283,9 +472,9 @@ def search_sentinel_images_for_forest(
 
     except Exception as exc:
 
-        print(
-            "Copernicus search error:",
-            exc,
+        logger.error(
+            "Copernicus Sentinel-2 catalogue search failed (%s).",
+            type(exc).__name__,
         )
 
         raise HTTPException(
@@ -306,11 +495,28 @@ def search_sentinel_images_for_forest(
 
     for product in products:
 
-        metadata = (
-            copernicus.get_product_metadata(
-                product
+        try:
+
+            metadata = (
+                copernicus.get_product_metadata(
+                    product
+                )
             )
-        )
+
+        except Exception as exc:
+
+            logger.error(
+                "Copernicus Sentinel-2 product metadata lookup failed (%s).",
+                type(exc).__name__,
+            )
+
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    "Unable to retrieve Sentinel-2 imagery "
+                    "from Copernicus."
+                ),
+            ) from exc
 
         results.append(
             {
@@ -389,20 +595,21 @@ def search_sentinel_images_for_forest(
 
 @router.post(
     "/forest/{forest_area_id}/download",
-    response_model=SatelliteImageResponse,
-    status_code=status.HTTP_201_CREATED,
+    response_model=SatelliteDownloadJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
 )
 def download_sentinel_product(
     forest_area_id: int,
     request: SatelliteDownloadRequest,
+    background_tasks: BackgroundTasks,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: User = Depends(
         get_current_active_user
     ),
 ):
     """
-    Download one real Sentinel-2 product from
-    Copernicus and register it in the database.
+    Queue one Copernicus product download and return its job ID.
     """
 
     # -----------------------------------------------------
@@ -472,41 +679,116 @@ def download_sentinel_product(
             ),
         )
 
-    # -----------------------------------------------------
-    # Download product
-    # -----------------------------------------------------
-
-    service = SentinelService(db)
-
     try:
-
-        image = service.download_product(
-            forest_area=forest,
+        job, created = SatelliteDownloadJobService(db).create_or_get_active(
+            forest_area_id=forest.id,
             product_id=request.product_id,
             product_name=request.product_name,
-            tile_id=request.tile_id,
-            acquisition_date=acquisition_date,
-            cloud_cover=request.cloud_cover,
+            started_by=current_user.id,
         )
+    except SQLAlchemyError as exc:
+        _raise_if_download_job_table_missing(exc, db)
 
-    except Exception as exc:
-
-        print(
-            "Sentinel download error:",
-            exc,
+    if created:
+        background_tasks.add_task(
+            _execute_satellite_download_job,
+            job.job_id,
+            forest.id,
+            {
+                "product_id": request.product_id,
+                "product_name": request.product_name,
+                "tile_id": request.tile_id,
+                "acquisition_date": acquisition_date,
+                "cloud_cover": request.cloud_cover,
+            },
         )
+        response.status_code = status.HTTP_202_ACCEPTED
+    else:
+        response.status_code = status.HTTP_200_OK
 
+    return job
+
+
+@router.get(
+    "/downloads",
+    response_model=list[SatelliteDownloadJobResponse],
+)
+def get_satellite_download_jobs(
+    forest_area_id: int = Query(..., gt=0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """List recent download jobs for an authorised forest area."""
+
+    forest = ForestAreaRepository(db).get_by_id_for_user(
+        forest_area_id=forest_area_id,
+        user=current_user,
+    )
+    if forest is None:
         raise HTTPException(
-            status_code=(
-                status.HTTP_502_BAD_GATEWAY
-            ),
-            detail=(
-                "Unable to download the selected "
-                f"Sentinel-2 product: {exc}"
-            ),
-        ) from exc
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Forest area not found.",
+        )
 
-    return image
+    try:
+        query = db.query(SatelliteDownloadJob).filter(
+            SatelliteDownloadJob.forest_area_id == forest.id
+        )
+        active_jobs = query.filter(
+            SatelliteDownloadJob.status.in_(
+                ("PREPARING", "DOWNLOADING", "VALIDATING")
+            )
+        ).all()
+        recent_jobs = query.order_by(
+            SatelliteDownloadJob.created_at.desc()
+        ).limit(50).all()
+    except SQLAlchemyError as exc:
+        _raise_if_download_job_table_missing(exc, db)
+
+    # Return each product's newest job and include every active download,
+    # even if older concurrent work falls outside the recent history window.
+    newest_by_product = {}
+    for job in sorted(
+        [*active_jobs, *recent_jobs],
+        key=lambda item: item.created_at,
+        reverse=True,
+    ):
+        newest_by_product.setdefault(job.product_id, job)
+    return list(newest_by_product.values())
+
+
+@router.get(
+    "/downloads/{job_id}",
+    response_model=SatelliteDownloadJobResponse,
+)
+def get_satellite_download_job(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Retrieve one download job after checking forest-area access."""
+
+    try:
+        job = db.get(SatelliteDownloadJob, job_id)
+    except SQLAlchemyError as exc:
+        _raise_if_download_job_table_missing(exc, db)
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Satellite download job not found.",
+        )
+
+    forest = ForestAreaRepository(db).get_by_id_for_user(
+        forest_area_id=job.forest_area_id,
+        user=current_user,
+    )
+    if forest is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Satellite download job not found.",
+        )
+
+    return job
 
 
 # =========================================================
@@ -515,9 +797,7 @@ def download_sentinel_product(
 
 @router.get(
     "",
-    response_model=list[
-        SatelliteImageResponse
-    ],
+    response_model=list[SatelliteImageAnalysisResponse],
 )
 def get_satellite_images(
     db: Session = Depends(get_db),
@@ -533,7 +813,10 @@ def get_satellite_images(
         SatelliteImageRepository(db)
     )
 
-    return repository.get_all_for_user(current_user)
+    return _analysis_candidate_responses(
+        repository.get_all_for_user(current_user),
+        db,
+    )
 
 
 # =========================================================
@@ -542,9 +825,7 @@ def get_satellite_images(
 
 @router.get(
     "/forest/{forest_area_id}",
-    response_model=list[
-        SatelliteImageResponse
-    ],
+    response_model=list[SatelliteImageAnalysisResponse],
 )
 def get_images_by_forest_area(
     forest_area_id: int,
@@ -580,8 +861,9 @@ def get_images_by_forest_area(
         SatelliteImageRepository(db)
     )
 
-    return repository.get_by_forest_area(
-        forest_area_id
+    return _analysis_candidate_responses(
+        repository.get_by_forest_area(forest_area_id),
+        db,
     )
 
 

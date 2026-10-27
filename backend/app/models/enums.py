@@ -138,6 +138,7 @@ class AlertType(str, Enum):
 
     EMAIL = "EMAIL"
     DASHBOARD = "DASHBOARD"
+    SMS = "SMS"
 
 
 # =========================================================
@@ -165,6 +166,46 @@ class EmailQueueStatus(str, Enum):
     PROCESSING = "PROCESSING"
     SENT = "SENT"
     FAILED = "FAILED"
+
+
+# =========================================================
+# SMS Queue Status
+# =========================================================
+
+class SmsQueueStatus(str, Enum):
+    """
+    Progress of one outgoing alert SMS.
+
+    SUBMITTED is the terminal success state, and it means
+    the provider accepted the message for delivery. It does
+    NOT mean the handset received it.
+
+    There is deliberately no DELIVERED label. Confirming
+    delivery requires the provider to call back with a
+    delivery report, which this system does not yet accept,
+    so nothing could ever set such a value. A label that is
+    never written would suggest the system knows something
+    it cannot know, and a message reported as delivered
+    when it was merely accepted is worse than one reported
+    honestly as submitted: an officer would be recorded as
+    having been told about a clearing they never heard of.
+
+    PROCESSING exists so a row being sent is distinguishable
+    from one waiting. The worker claims a row before calling
+    the provider, so a process that dies mid-send leaves the
+    row in PROCESSING rather than PENDING, and it is not
+    picked up again and sent twice.
+
+    SKIPPED records a recipient that was not submitted, such
+    as an officer without a phone number or one whose active
+    status or jurisdiction changed before submission.
+    """
+
+    PENDING = "PENDING"
+    PROCESSING = "PROCESSING"
+    SUBMITTED = "SUBMITTED"
+    FAILED = "FAILED"
+    SKIPPED = "SKIPPED"
 
 
 # =========================================================

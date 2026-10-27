@@ -44,7 +44,9 @@ Version:
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
+import hashlib
 from geoalchemy2.shape import to_shape
+from pathlib import Path
 from shapely.geometry import mapping
 from sqlalchemy import Float, cast, func, select
 from sqlalchemy.orm import Session
@@ -57,6 +59,7 @@ from app.database.session import get_db
 from app.models.analysis_job import AnalysisJob
 from app.models.detection import Detection
 from app.models.enums import AnalysisJobStatus
+from app.models.satellite_image import SatelliteImage
 from app.models.user import User
 from app.repositories.forest_area_repository import (
     ForestAreaRepository,
@@ -65,6 +68,12 @@ from app.services.raster_render_service import (
     LAYERS,
     RasterRenderService,
 )
+from app.services.boundary_comparison_service import (
+    manifest_matches_selected_images,
+    read_matching_manifest,
+    validate_stored_forest_boundary,
+)
+from app.services.storage_paths import job_output_root
 
 
 router = APIRouter(
@@ -144,6 +153,87 @@ def resolve_job(
             AnalysisJob.completed_at.desc().nullslast()
         ).limit(1)
     ).scalars().first()
+
+
+def resolve_comparison_context(
+    forest_area_id: int,
+    job_id: int,
+    db: Session,
+    user: User,
+):
+    """Resolve only complete, manifest-matched outputs for this exact job."""
+
+    forest = resolve_forest_area(forest_area_id, db, user)
+    job = db.execute(
+        select(AnalysisJob).where(
+            AnalysisJob.id == job_id,
+            AnalysisJob.forest_area_id == forest_area_id,
+            AnalysisJob.status == AnalysisJobStatus.COMPLETED,
+        )
+    ).scalars().first()
+    if job is None or job.previous_satellite_image_id is None:
+        raise HTTPException(
+            status_code=404,
+            detail="A completed selected-pair analysis was not found.",
+        )
+    if job.started_at is None or job.completed_at is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This job is marked completed but has incomplete execution timestamps. "
+                "Its comparison outputs are not verified."
+            ),
+        )
+
+    try:
+        boundary = validate_stored_forest_boundary(forest.geometry)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    root = job_output_root(forest_area_id, job_id)
+    recorded_root = Path(job.output_directory).resolve() if job.output_directory else None
+    if recorded_root is None or recorded_root != root.resolve():
+        raise HTTPException(
+            status_code=409,
+            detail="The selected analysis does not point to its expected job-specific output directory.",
+        )
+    manifest = read_matching_manifest(
+        root / "comparison" / "manifest.json",
+        forest_area_id=forest_area_id,
+        job_id=job_id,
+        previous_image_id=job.previous_satellite_image_id,
+        recent_image_id=job.satellite_image_id,
+        boundary=boundary,
+    )
+    previous_image = db.get(SatelliteImage, job.previous_satellite_image_id)
+    recent_image = db.get(SatelliteImage, job.satellite_image_id)
+    if (
+        manifest is None
+        or previous_image is None
+        or recent_image is None
+        or not manifest_matches_selected_images(
+            manifest, previous_image, recent_image
+        )
+    ):
+        manifest = None
+    required = [
+        root / "comparison" / "previous_rgb.png",
+        root / "comparison" / "recent_rgb.png",
+        root / "comparison" / "previous_ndvi.tif",
+        root / "comparison" / "recent_ndvi.tif",
+        root / "comparison" / "ndvi_change_recent_minus_previous.tif",
+        root / "persistence" / "ndvi_difference" / "ndvi_change.tif",
+        root / "persistence" / "persistence" / "confirmed_deforestation.tif",
+    ]
+    if manifest is None or not all(path.is_file() for path in required):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This analysis is missing matching job-specific comparison outputs. "
+                "Run a new comparison for the selected observations."
+            ),
+        )
+    return forest, job, boundary, root, manifest
 
 
 # =========================================================
@@ -401,6 +491,288 @@ def get_overlay(
             "X-Imagery-CRS": "EPSG:4326",
             "X-Imagery-Layer": metadata["layer"],
             "Cache-Control": "private, max-age=300",
+        },
+    )
+
+
+@router.get("/{forest_area_id}/comparison/{job_id}")
+def get_selected_comparison(
+    forest_area_id: int,
+    job_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Return real observation metadata and the boundary for one exact job."""
+
+    forest, job, boundary, _root, manifest = resolve_comparison_context(
+        forest_area_id, job_id, db, current_user
+    )
+    previous = db.get(SatelliteImage, job.previous_satellite_image_id)
+    recent = db.get(SatelliteImage, job.satellite_image_id)
+    if previous is None or recent is None:
+        raise HTTPException(
+            status_code=409,
+            detail="The selected observation records are no longer available.",
+        )
+    return {
+        "forest_area": {
+            "id": forest.id,
+            "name": forest.name,
+            "boundary": mapping(boundary),
+        },
+        "analysis_job_id": job.id,
+        "status": job.status.value,
+        "observations": {
+            "previous": {
+                "id": previous.id,
+                "product_id": previous.product_id,
+                "tile_id": previous.tile_id,
+                "acquisition_date": previous.acquisition_date,
+                "cloud_cover_percentage": previous.cloud_cover_percentage,
+                **manifest["imagery"]["previous"],
+            },
+            "recent": {
+                "id": recent.id,
+                "product_id": recent.product_id,
+                "tile_id": recent.tile_id,
+                "acquisition_date": recent.acquisition_date,
+                "cloud_cover_percentage": recent.cloud_cover_percentage,
+                **manifest["imagery"]["recent"],
+            },
+        },
+        "grid": manifest["imagery"]["grid"],
+        "affected_area_hectares": manifest["imagery"]["affected_area_hectares"],
+        "valid_comparison_pixels": manifest["imagery"]["valid_comparison_pixels"],
+        "confirmed_pixels": manifest["imagery"]["confirmed_pixels"],
+        "ndvi_threshold": manifest["imagery"]["ndvi_threshold"],
+        "change_layers": ["selected_ndvi_difference", "confirmed_loss"],
+        "mean_previous_ndvi": manifest["imagery"]["mean_previous_ndvi"],
+        "mean_recent_ndvi": manifest["imagery"]["mean_recent_ndvi"],
+        "mean_ndvi_change": manifest["imagery"]["mean_ndvi_change"],
+        "figure": manifest.get("figure"),
+    }
+
+
+def figure_source_matches_job(
+    figure: dict,
+    manifest: dict,
+    forest_area_id: int,
+    job: AnalysisJob,
+) -> bool:
+    source = figure.get("source")
+    imagery = manifest.get("imagery")
+    if not isinstance(source, dict) or not isinstance(imagery, dict):
+        return False
+    previous = imagery.get("previous")
+    recent = imagery.get("recent")
+    if not isinstance(previous, dict) or not isinstance(recent, dict):
+        return False
+    expected_source = {
+        "forest_area_id": forest_area_id,
+        "analysis_job_id": job.id,
+        "previous_satellite_image_id": job.previous_satellite_image_id,
+        "recent_satellite_image_id": job.satellite_image_id,
+        "previous_product_id": previous.get("product_id"),
+        "recent_product_id": recent.get("product_id"),
+        "previous_acquisition_date": previous.get("acquisition_date"),
+        "recent_acquisition_date": recent.get("acquisition_date"),
+    }
+    return all(source.get(key) == value for key, value in expected_source.items())
+
+
+@router.get("/{forest_area_id}/comparison/{job_id}/image/{side}.png")
+def get_selected_comparison_image(
+    forest_area_id: int,
+    job_id: int,
+    side: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_map_imagery_user),
+):
+    """Serve a boundary-clipped RGB preview made from the selected product."""
+
+    _forest, _job, _boundary, root, manifest = resolve_comparison_context(
+        forest_area_id, job_id, db, current_user
+    )
+    if side not in {"previous", "recent"}:
+        raise HTTPException(status_code=404, detail="Unknown observation side.")
+    image_path = root / "comparison" / f"{side}_rgb.png"
+    if not image_path.is_file():
+        raise HTTPException(status_code=404, detail="Comparison image is missing.")
+    bounds = manifest["imagery"][side]["bounds"]
+    return Response(
+        content=image_path.read_bytes(),
+        media_type="image/png",
+        headers={
+            "X-Imagery-Bounds": ",".join(str(value) for value in bounds),
+            "X-Imagery-CRS": "EPSG:4326",
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
+@router.get("/{forest_area_id}/comparison/{job_id}/figure.png")
+def get_selected_comparison_figure(
+    forest_area_id: int,
+    job_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_map_imagery_user),
+):
+    """Serve a verified figure export for this completed selected-pair job."""
+
+    _forest, job, _boundary, root, manifest = resolve_comparison_context(
+        forest_area_id, job_id, db, current_user
+    )
+    figure = manifest.get("figure")
+    if not isinstance(figure, dict):
+        raise HTTPException(
+            status_code=409,
+            detail="This selected-pair analysis does not contain a scientific figure export.",
+        )
+
+    if not figure_source_matches_job(figure, manifest, forest_area_id, job):
+        raise HTTPException(
+            status_code=409,
+            detail="The figure export does not match this analysis job and selected observation pair.",
+        )
+
+    variant = figure.get("desktop")
+    if not isinstance(variant, dict):
+        raise HTTPException(
+            status_code=409,
+            detail="The scientific figure export is unavailable for this analysis job.",
+        )
+    filename = "scientific_comparison.png"
+    figure_path = root / "comparison" / filename
+    if not figure_path.is_file():
+        raise HTTPException(
+            status_code=409,
+            detail="The selected analysis is missing its job-specific figure image.",
+        )
+    content = figure_path.read_bytes()
+    if hashlib.sha256(content).hexdigest() != variant.get("sha256"):
+        raise HTTPException(
+            status_code=409,
+            detail="The figure image does not match the selected analysis manifest.",
+        )
+    return Response(
+        content=content,
+        media_type="image/png",
+        headers={
+            "Content-Disposition": f'inline; filename="forestwatch-job-{job.id}-comparison.png"',
+            "Cache-Control": "private, no-store",
+            "X-Figure-Layout": "2x2",
+            "X-Figure-Width": str(variant.get("width", "")),
+            "X-Figure-Height": str(variant.get("height", "")),
+        },
+    )
+
+
+@router.get("/{forest_area_id}/comparison/{job_id}/panel/{panel_name}.png")
+def get_selected_comparison_panel(
+    forest_area_id: int,
+    job_id: int,
+    panel_name: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_map_imagery_user),
+):
+    """Serve a responsive panel asset verified against the completed job manifest."""
+
+    _forest, job, _boundary, root, manifest = resolve_comparison_context(
+        forest_area_id, job_id, db, current_user
+    )
+    figure = manifest.get("figure")
+    if not isinstance(figure, dict):
+        raise HTTPException(
+            status_code=409,
+            detail="This selected-pair analysis does not contain scientific figure panels.",
+        )
+    if not figure_source_matches_job(figure, manifest, forest_area_id, job):
+        raise HTTPException(
+            status_code=409,
+            detail="The figure panels do not match this selected analysis job.",
+        )
+
+    allowed_panels = {
+        "previous_rgb": "previous_rgb.png",
+        "previous_ndvi": "previous_ndvi_panel.png",
+        "recent_ndvi": "recent_ndvi_panel.png",
+        "ndvi_difference": "ndvi_difference_panel.png",
+    }
+    if panel_name not in allowed_panels:
+        raise HTTPException(status_code=404, detail="Unknown comparison figure panel.")
+    panels = figure.get("panels")
+    if not isinstance(panels, dict):
+        raise HTTPException(
+            status_code=409,
+            detail="The selected analysis is missing its figure panel records.",
+        )
+    panel = panels.get(panel_name)
+    if not isinstance(panel, dict):
+        raise HTTPException(
+            status_code=409,
+            detail="The selected analysis is missing a figure panel record.",
+        )
+    if panel.get("filename") != allowed_panels[panel_name]:
+        raise HTTPException(
+            status_code=409,
+            detail="The figure panel filename does not match the selected analysis manifest.",
+        )
+    panel_path = root / "comparison" / allowed_panels[panel_name]
+    if not panel_path.is_file():
+        raise HTTPException(status_code=409, detail="A selected-job figure panel is missing.")
+    content = panel_path.read_bytes()
+    if hashlib.sha256(content).hexdigest() != panel.get("sha256"):
+        raise HTTPException(
+            status_code=409,
+            detail="The figure panel does not match the selected analysis manifest.",
+        )
+    return Response(
+        content=content,
+        media_type="image/png",
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
+@router.get("/{forest_area_id}/comparison/{job_id}/layer/{layer}.png")
+def get_selected_comparison_layer(
+    forest_area_id: int,
+    job_id: int,
+    layer: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_map_imagery_user),
+):
+    """Render one selected-job raster without legacy path fallback."""
+
+    _forest, _job, _boundary, _root, _manifest = resolve_comparison_context(
+        forest_area_id, job_id, db, current_user
+    )
+    if layer not in {
+        "selected_ndvi_difference",
+        "confirmed_loss",
+        "comparison_previous",
+        "comparison_recent",
+    }:
+        raise HTTPException(status_code=404, detail="Unknown comparison layer.")
+    rendered = RasterRenderService().render(
+        forest_area_id,
+        layer,
+        job_id=job_id,
+        strict_job=True,
+    )
+    if rendered is None:
+        raise HTTPException(
+            status_code=409,
+            detail="The selected job does not contain this comparison raster.",
+        )
+    png, bounds, metadata = rendered
+    return Response(
+        content=png,
+        media_type="image/png",
+        headers={
+            "X-Imagery-Bounds": ",".join(str(value) for value in bounds),
+            "X-Imagery-CRS": "EPSG:4326",
+            "X-Imagery-Layer": metadata["layer"],
+            "Cache-Control": "private, no-store",
         },
     )
 

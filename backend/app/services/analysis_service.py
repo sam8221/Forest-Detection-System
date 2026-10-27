@@ -44,12 +44,23 @@ Version:
 
 from __future__ import annotations
 
+import errno
+import hashlib
+import logging
+import re
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from tempfile import NamedTemporaryFile
+from xml.etree import ElementTree
+from zipfile import BadZipFile, LargeZipFile, ZipFile
+
+import rasterio
+from rasterio.windows import Window
 
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.constants import is_level_2a
 from app.models.analysis_job import AnalysisJob
 from app.models.enums import (
     AnalysisJobStatus,
@@ -59,7 +70,14 @@ from app.models.forest_area import ForestArea
 from app.models.satellite_image import SatelliteImage
 
 from app.services.alert_service import AlertService
+from app.services.boundary_comparison_service import (
+    BoundaryComparisonService,
+    read_matching_manifest,
+    validate_stored_forest_boundary,
+    write_comparison_manifest,
+)
 from app.services.cloud_mask_service import CloudMaskService
+from app.services.comparison_figure_service import ComparisonFigureService
 from app.services.detection_service import DetectionService
 from app.services.persistence_service import PersistenceService
 from app.services.satellite_image_selection_service import (
@@ -70,9 +88,30 @@ from app.services.sentinel_processor_service import (
 )
 from app.services.sentinel_service import SentinelService
 from app.services.storage_paths import (
+    JOBS_DIRECTORY,
+    forest_area_root,
     job_output_root,
     shared_extract_root,
 )
+
+logger = logging.getLogger(__name__)
+
+
+class AnalysisOutputStorageError(RuntimeError):
+    """Safe message for failures preparing a job's output storage."""
+
+
+def public_analysis_error_message(error_message: str | None) -> str | None:
+    """Avoid returning absolute local paths in analysis-job API responses."""
+
+    if error_message is None:
+        return None
+    if re.search(r"\b[A-Za-z]:[\\/]", error_message):
+        return (
+            "The analysis could not access a required input or output file. "
+            "Check the selected products and backend storage, then retry."
+        )
+    return error_message
 
 
 class AnalysisService:
@@ -139,6 +178,11 @@ class AnalysisService:
         self.persistence_service = (
             PersistenceService()
         )
+
+        self.boundary_comparison_service = (
+            BoundaryComparisonService()
+        )
+        self.comparison_figure_service = ComparisonFigureService()
 
     # =========================================================
     # CREATE ANALYSIS JOB
@@ -337,6 +381,65 @@ class AnalysisService:
                 "is not measuring change over time."
             )
 
+        # The Copperbelt's wet/dry cycle changes vegetation
+        # seasonally. Compare equivalent calendar windows so
+        # normal seasonal leaf loss is not treated as clearing.
+        baseline_start_boundary = (
+            baseline_start.month,
+            baseline_start.day,
+        )
+        comparison_start_boundary = (
+            comparison_start.month,
+            comparison_start.day,
+        )
+        baseline_end_boundary = (
+            baseline_end.month,
+            baseline_end.day,
+        )
+        comparison_end_boundary = (
+            comparison_end.month,
+            comparison_end.day,
+        )
+
+        if (
+            baseline_start_boundary != comparison_start_boundary
+            or baseline_end_boundary != comparison_end_boundary
+        ):
+            raise ValueError(
+                "Baseline and comparison windows must cover the same "
+                "calendar season (matching start and end month/day) "
+                "in different years."
+            )
+
+        if (
+            baseline_start.year >= comparison_start.year
+            or baseline_end.year >= comparison_end.year
+        ):
+            raise ValueError(
+                "The comparison window must be in a later year than "
+                "the baseline window."
+            )
+
+        # An explicitly selected observation pair is governed
+        # by its real acquisition dates, not the automatic
+        # seasonal windows. Validate the pair here as well as
+        # at the API boundary so internal callers cannot create
+        # an ambiguous job.
+        if previous_satellite_image_id is not None:
+            previous_image = self.db.get(
+                SatelliteImage, previous_satellite_image_id
+            )
+            recent_image = self.db.get(
+                SatelliteImage, satellite_image_id
+            )
+            if previous_image is None or recent_image is None:
+                raise ValueError("The selected Sentinel-2 observation was not found.")
+            self.image_selection_service.validate_explicit_pair(
+                previous_image, recent_image, forest_area_id
+            )
+            baseline_start = baseline_end = previous_image.acquisition_date
+            comparison_start = comparison_end = recent_image.acquisition_date
+
         job = AnalysisJob(
             forest_area_id=forest_area_id,
 
@@ -373,7 +476,127 @@ class AnalysisService:
 
         self.db.refresh(job)
 
+        try:
+            # Create the job-specific output root before the API
+            # reports that background processing has started.
+            self.prepare_job_output_directory(job)
+            self.db.commit()
+        except AnalysisOutputStorageError as exc:
+            self.db.rollback()
+            failed_job = self.db.get(AnalysisJob, job.id)
+            if failed_job is not None:
+                self.fail_analysis(failed_job, str(exc))
+            raise
+
         return job
+
+    def prepare_job_output_directory(self, job: AnalysisJob) -> Path:
+        """Create and record this job's output root under configured storage."""
+        stage = "configured_root"
+
+        def ensure_directory(directory: Path) -> None:
+            if directory.exists() and not directory.is_dir():
+                raise NotADirectoryError(
+                    errno.ENOTDIR,
+                    "A file occupies a path where an analysis directory is required.",
+                    str(directory),
+                )
+            directory.mkdir(parents=True, exist_ok=True)
+            if not directory.is_dir():
+                raise NotADirectoryError(
+                    errno.ENOTDIR,
+                    "The prepared analysis output path is not a directory.",
+                    str(directory),
+                )
+
+        try:
+            storage_root = Path(
+                self.settings.satellite_image_storage_path
+            ).expanduser().resolve()
+            if storage_root.exists() and not storage_root.is_dir():
+                raise NotADirectoryError(
+                    "The configured imagery storage root is not a directory."
+                )
+            ensure_directory(storage_root)
+
+            stage = "job_path"
+            area_root = forest_area_root(
+                forest_area_id=job.forest_area_id,
+                storage_root=storage_root,
+            )
+            jobs_root = area_root / JOBS_DIRECTORY
+            output_root = job_output_root(
+                forest_area_id=job.forest_area_id,
+                job_id=job.id,
+                storage_root=storage_root,
+            )
+            ensure_directory(area_root)
+            ensure_directory(jobs_root)
+            ensure_directory(output_root)
+
+            stage = "write_probe"
+            # Directory creation alone does not prove that the backend
+            # can write there. Create and immediately remove a private
+            # probe; this does not create an analysis result.
+            with NamedTemporaryFile(
+                prefix="forestwatch-write-check-",
+                dir=output_root,
+            ):
+                pass
+        except (OSError, ValueError) as exc:
+            logger.exception(
+                "Could not prepare analysis storage (stage=%s, job_id=%s, forest_area_id=%s)",
+                stage,
+                job.id,
+                job.forest_area_id,
+            )
+            if stage == "configured_root":
+                if isinstance(exc, PermissionError):
+                    message = (
+                        "The account running the backend cannot write to the configured imagery storage root. "
+                        "Grant that account write and delete access, then retry."
+                    )
+                elif isinstance(exc, (FileExistsError, NotADirectoryError)):
+                    message = (
+                        "A file occupies the configured imagery storage root path. "
+                        "Configure a directory as SATELLITE_IMAGE_STORAGE_ROOT, then retry."
+                    )
+                else:
+                    message = (
+                        "The configured imagery storage root is unavailable. "
+                        "Set SATELLITE_IMAGE_STORAGE_ROOT to an accessible directory, then retry."
+                    )
+            elif isinstance(exc, PermissionError):
+                message = (
+                    "The account running the backend cannot create or write to this analysis job's folder. "
+                    "Grant that account write and delete access to the configured imagery storage, then retry."
+                )
+            elif isinstance(exc, (FileExistsError, NotADirectoryError)):
+                message = (
+                    "A file occupies a path where this analysis job needs a directory. "
+                    "Move the conflicting file aside, then retry."
+                )
+            elif isinstance(exc, OSError) and (
+                exc.errno == errno.ENOSPC or getattr(exc, "winerror", None) == 112
+            ):
+                message = (
+                    "The configured imagery storage volume is out of free space. "
+                    "Free disk space, then retry."
+                )
+            elif stage == "write_probe":
+                message = (
+                    "The analysis output folder exists, but the backend cannot write to it. "
+                    "Grant the backend process write and delete access to the configured storage folder, then retry."
+                )
+            else:
+                message = (
+                    "The backend can access the configured storage root but could not create this analysis job's output folder. "
+                    "Check folder permissions and available disk space, then retry."
+                )
+            raise AnalysisOutputStorageError(message) from exc
+
+        job.output_directory = str(output_root)
+        return output_root
 
     # =========================================================
     # START ANALYSIS
@@ -411,6 +634,129 @@ class AnalysisService:
         self.db.commit()
 
         self.db.refresh(job)
+
+    # =========================================================
+    # COMPLETE ANALYSIS
+    # =========================================================
+
+    def verify_required_outputs(
+        self,
+        job: AnalysisJob,
+    ) -> None:
+        """
+        Check a job really produced what a completed run must.
+
+        Args:
+            job:
+                The job about to be marked COMPLETED.
+
+        Returns:
+            None when every required output is present and
+            belongs to this job and its selected pair.
+
+        Raises:
+            ValueError:
+                The job never started, its output directory
+                is not the one recorded against it, its
+                comparison manifest is absent or belongs to
+                another job, pair or boundary, or the figure
+                export the manifest names is missing or no
+                longer matches its recorded checksum.
+
+        Called by complete_analysis, inside the try block in
+        execute, so a missing output FAILS the job with a
+        message rather than completing it quietly.
+        """
+
+        if job.started_at is None:
+            raise ValueError(
+                "This analysis was never started, so it cannot be recorded "
+                "as completed."
+            )
+
+        # Only a selected-pair run writes a comparison
+        # manifest. execute always sets both image ids
+        # before processing, so a run reaching this point
+        # without them did not go through that path.
+        if job.previous_satellite_image_id is None:
+            return
+
+        forest = (
+            self.db.query(ForestArea)
+            .filter(ForestArea.id == job.forest_area_id)
+            .first()
+        )
+
+        if forest is None:
+            raise ValueError(
+                "The forest area this analysis belongs to is no longer available."
+            )
+
+        boundary = validate_stored_forest_boundary(forest.geometry)
+
+        # Same settings the writer used. Letting storage_paths
+        # read the configuration again here would allow the
+        # writer and this check to resolve different roots.
+        root = job_output_root(
+            job.forest_area_id,
+            job.id,
+            storage_root=Path(self.settings.satellite_image_storage_path),
+        )
+        recorded_root = (
+            Path(job.output_directory).resolve()
+            if job.output_directory
+            else None
+        )
+
+        if recorded_root is None or recorded_root != root.resolve():
+            raise ValueError(
+                "This analysis does not point to its own output directory, so "
+                "its results cannot be attributed to it."
+            )
+
+        manifest = read_matching_manifest(
+            root / "comparison" / "manifest.json",
+            forest_area_id=job.forest_area_id,
+            job_id=job.id,
+            previous_image_id=job.previous_satellite_image_id,
+            recent_image_id=job.satellite_image_id,
+            boundary=boundary,
+        )
+
+        if manifest is None:
+            raise ValueError(
+                "This analysis did not produce a comparison manifest for its own "
+                "forest boundary and selected observation pair."
+            )
+
+        figure = manifest.get("figure")
+        variant = figure.get("desktop") if isinstance(figure, dict) else None
+
+        if not isinstance(variant, dict):
+            raise ValueError(
+                "This analysis did not produce its four-panel comparison figure."
+            )
+
+        figure_path = root / "comparison" / "scientific_comparison.png"
+
+        if not figure_path.is_file():
+            raise ValueError(
+                "The four-panel comparison figure recorded for this analysis is "
+                "missing from its output directory."
+            )
+
+        # The manifest records the checksum the figure was
+        # written with. A mismatch means the file on disk is
+        # not the one this run produced, so serving it under
+        # this job would misattribute the imagery.
+        if (
+            hashlib.sha256(figure_path.read_bytes()).hexdigest()
+            != variant.get("sha256")
+        ):
+            raise ValueError(
+                "The four-panel comparison figure on disk does not match the one "
+                "this analysis recorded."
+            )
 
     # =========================================================
     # COMPLETE ANALYSIS
@@ -454,7 +800,19 @@ class AnalysisService:
         the record every occasion on which the system looked
         and correctly found nothing, which is the evidence
         the specificity figure rests on.
+
+        A job is NOT completed merely because its rasters and
+        figure were written. verify_required_outputs below is
+        called first, so a run that produced no manifest, or
+        one belonging to a different pair, fails instead of
+        presenting itself to the officer as a finished
+        analysis. Job 75 reached COMPLETED with no start
+        time and no detection step precisely because nothing
+        checked, and it was indistinguishable in the jobs
+        list from the runs that did the work.
         """
+
+        self.verify_required_outputs(job)
 
         completed_at = (
             datetime.now(UTC)
@@ -468,18 +826,11 @@ class AnalysisService:
 
         # A job that completes carries no error.
         #
-        # This is not merely tidiness. Analyses run outside
-        # the API process, and the startup recovery marks any
-        # job still RUNNING as abandoned, because it cannot
-        # tell a crashed run from one proceeding elsewhere.
-        # Restarting the API while an analysis is in flight
-        # therefore writes a failure message onto a job that
-        # then finishes normally, leaving a COMPLETED record
-        # that reads as failed to anyone inspecting it.
-        #
-        # Observed: job 64 finished in 100 seconds with all
-        # eight rasters written, while carrying "the server
-        # stopped while it was running".
+        # The queue worker holds a PostgreSQL advisory lock for
+        # the duration of a run. Recovery checks that lock before
+        # failing RUNNING rows, so a second API process cannot
+        # label this live job abandoned. Clearing a prior error
+        # here keeps a successful retry's terminal record clear.
         job.error_message = None
 
         if job.started_at is not None:
@@ -586,13 +937,10 @@ class AnalysisService:
             otherwise, which sends the caller to Copernicus
             instead.
 
-        The file is checked, not just the flag. The database
-        has carried rows marked downloaded whose storage path
-        pointed at a directory that does not exist, seeded
-        with checksums beginning "TEST-". Trusting the flag
-        would start a run that fails much later, inside
-        rasterio, with a message that says nothing about the
-        real problem.
+        The archive or extracted SAFE tree is checked for the
+        metadata, RGB/NDVI bands and SCL required by this
+        analysis. The downloaded flag alone is not evidence
+        that a usable local product exists.
         """
 
         if image_id is None:
@@ -603,29 +951,228 @@ class AnalysisService:
         if image is None:
             return None
 
-        if not image.is_active or not image.is_downloaded:
+        if (
+            not image.is_active
+            or not image.is_downloaded
+            or not is_level_2a(image.processing_level)
+        ):
             return None
 
-        product = (
-            self.settings.satellite_image_storage_path
-            / str(image.forest_area_id)
-            / image.file_name
-        )
-
-        extracted = (
-            self.settings.satellite_image_storage_path
-            / str(image.forest_area_id)
-        )
-
-        # Either the downloaded archive or an already
-        # extracted copy of it is enough to proceed.
-        if product.exists():
-            return image
-
-        if any(extracted.rglob(f"{Path(image.file_name).stem}*")):
+        if self._local_product_has_required_files(image):
             return image
 
         return None
+
+    def _local_archive_path(self, image: SatelliteImage) -> Path | None:
+        """Resolve the real local archive, then fall back to configured storage."""
+
+        file_name = Path(image.file_name)
+        if not image.file_name or file_name.name != image.file_name:
+            return None
+
+        recorded_value = getattr(image, "storage_path", None)
+        if recorded_value:
+            recorded_path = Path(recorded_value).expanduser()
+            if (
+                recorded_path.name.casefold() == file_name.name.casefold()
+                and recorded_path.is_file()
+            ):
+                return recorded_path.resolve()
+
+        storage_root = Path(
+            self.settings.satellite_image_storage_path
+        ).expanduser().resolve()
+        return storage_root / str(image.forest_area_id) / file_name
+
+    def _extracted_product_directory(
+        self,
+        image: SatelliteImage,
+    ) -> Path:
+        """Return this product's isolated extraction directory."""
+
+        extracted_root = shared_extract_root(
+            forest_area_id=image.forest_area_id,
+            satellite_image_id=image.id,
+            storage_root=Path(
+                self.settings.satellite_image_storage_path
+            ).expanduser().resolve(),
+        )
+        product_name = Path(image.file_name).stem
+        if not product_name.casefold().endswith(".safe"):
+            product_name += ".SAFE"
+        return extracted_root / product_name
+
+    @staticmethod
+    def _extracted_product_has_required_files(
+        product_directory: Path,
+    ) -> bool:
+        """Check that an extracted SAFE tree contains every required input."""
+
+        if not product_directory.is_dir():
+            return False
+        metadata = list(product_directory.rglob("MTD_MSIL2A.xml"))
+        if not any(path.is_file() and path.stat().st_size > 0 for path in metadata):
+            return False
+        required_patterns = (
+            "*_B02_10m.jp2",
+            "*_B03_10m.jp2",
+            "*_B04_10m.jp2",
+            "*_B08_10m.jp2",
+            "*_SCL_20m.jp2",
+        )
+        for pattern in required_patterns:
+            if not any(
+                path.is_file() and path.stat().st_size > 0
+                for path in product_directory.rglob(pattern)
+            ):
+                return False
+        return True
+
+    @staticmethod
+    def _archive_input_members(
+        archive_path: Path,
+    ) -> dict[str, str] | None:
+        """Return required SAFE archive members when its structure is complete."""
+
+        required_suffixes = {
+            "metadata": "/MTD_MSIL2A.xml",
+            "B02": "_B02_10m.jp2",
+            "B03": "_B03_10m.jp2",
+            "B04": "_B04_10m.jp2",
+            "B08": "_B08_10m.jp2",
+            "SCL": "_SCL_20m.jp2",
+        }
+        try:
+            with ZipFile(archive_path) as archive:
+                files = [item for item in archive.infolist() if not item.is_dir()]
+                members: dict[str, str] = {}
+                for label, suffix in required_suffixes.items():
+                    match = next(
+                        (
+                            item
+                            for item in files
+                            if item.filename.casefold().endswith(suffix.casefold())
+                            and item.file_size > 0
+                        ),
+                        None,
+                    )
+                    if match is None:
+                        return None
+                    members[label] = match.filename
+                return members
+        except (OSError, BadZipFile, LargeZipFile):
+            return None
+
+    def _local_product_has_required_files(
+        self,
+        image: SatelliteImage,
+    ) -> bool:
+        """Check the configured archive or its exact extracted SAFE tree."""
+
+        file_name = Path(image.file_name)
+        if not image.file_name or file_name.name != image.file_name:
+            return False
+        extracted = self._extracted_product_directory(image)
+        if self._extracted_product_has_required_files(extracted):
+            return True
+        archive_path = self._local_archive_path(image)
+        return bool(
+            archive_path is not None
+            and archive_path.is_file()
+            and self._archive_input_members(archive_path) is not None
+        )
+
+    @staticmethod
+    def _readable_raster_sample(path: str | Path) -> None:
+        """Open a required raster and read one real pixel from it."""
+
+        with rasterio.open(path) as raster:
+            if raster.width < 1 or raster.height < 1:
+                raise ValueError("Raster dimensions must be positive.")
+            sample = raster.read(1, window=Window(0, 0, 1, 1))
+            if sample.size != 1:
+                raise ValueError("Raster did not return a readable sample.")
+
+    def validate_local_image_inputs(self, image: SatelliteImage) -> None:
+        """Validate all selected L2A inputs before creating an analysis job."""
+
+        if (
+            not image.is_active
+            or not image.is_downloaded
+            or not is_level_2a(image.processing_level)
+        ):
+            raise ValueError(
+                "The selected observation must be active, downloaded and Sentinel-2 Level-2A."
+            )
+
+        extracted = self._extracted_product_directory(image)
+        if self._extracted_product_has_required_files(extracted):
+            members = {
+                "metadata": next(extracted.rglob("MTD_MSIL2A.xml")),
+                "B02": self.processor_service.find_band(extracted, "B02"),
+                "B03": self.processor_service.find_band(extracted, "B03"),
+                "B04": self.processor_service.find_band(extracted, "B04"),
+                "B08": self.processor_service.find_band(extracted, "B08"),
+                "SCL": self.cloud_mask_service.find_scl_band(extracted),
+            }
+            if any(
+                image.tile_id.casefold() not in Path(members[label]).name.casefold()
+                for label in ("B02", "B03", "B04", "B08", "SCL")
+            ):
+                raise ValueError(
+                    "The selected product bands do not match the registered Sentinel-2 tile."
+                )
+            try:
+                ElementTree.parse(members["metadata"])
+                for label in ("B02", "B03", "B04", "B08", "SCL"):
+                    self._readable_raster_sample(members[label])
+                self.processor_service.determine_crs(
+                    members["B04"],
+                    members["B08"],
+                )
+            except (OSError, ValueError, ElementTree.ParseError) as exc:
+                raise ValueError(
+                    "The selected Sentinel-2 product has unreadable bands or invalid Level-2A metadata. Reacquire that product before analysis."
+                ) from exc
+            return
+
+        archive_path = self._local_archive_path(image)
+        members = (
+            self._archive_input_members(archive_path)
+            if archive_path is not None and archive_path.is_file()
+            else None
+        )
+        if archive_path is None or members is None:
+            raise ValueError(
+                "The selected Sentinel-2 product is incomplete or missing required bands or Level-2A metadata. Reacquire that product before analysis."
+            )
+        if any(
+            image.tile_id.casefold() not in Path(members[label]).name.casefold()
+            for label in ("B02", "B03", "B04", "B08", "SCL")
+        ):
+            raise ValueError(
+                "The selected product bands do not match the registered Sentinel-2 tile."
+            )
+
+        try:
+            with ZipFile(archive_path) as archive:
+                ElementTree.fromstring(archive.read(members["metadata"]))
+            raster_paths = {
+                label: f"/vsizip/{archive_path.as_posix()}/{member}"
+                for label, member in members.items()
+                if label != "metadata"
+            }
+            for label in ("B02", "B03", "B04", "B08", "SCL"):
+                self._readable_raster_sample(raster_paths[label])
+            # The existing processor uses the MGRS tile name when these
+            # JP2 inputs do not declare a CRS. Validate that same fallback
+            # directly because pathlib normalizes GDAL's /vsizip/ URI on
+            # Windows and cannot safely reopen it through determine_crs.
+            self.processor_service.get_crs_from_tile(raster_paths["B04"])
+        except (OSError, ValueError, ElementTree.ParseError, BadZipFile) as exc:
+            raise ValueError(
+                "The selected Sentinel-2 product has unreadable bands or invalid Level-2A metadata. Reacquire that product before analysis."
+            ) from exc
 
     def acquire_latest_satellite_image(
         self,
@@ -942,6 +1489,7 @@ class AnalysisService:
         image: SatelliteImage,
         working_directory: Path,
         extract_directory: Path | None = None,
+        bounds_wgs84: tuple[float, float, float, float] | None = None,
     ) -> Path:
         """
         Turn a downloaded Sentinel-2 product into a
@@ -995,14 +1543,17 @@ class AnalysisService:
         # Extract product and calculate NDVI
         # -----------------------------------------------------
 
-        processing_result = (
-            self.processor_service.process_product(
-                zip_path=image.storage_path,
-
-                working_directory=working_directory,
-
-                extract_directory=extract_directory,
+        archive_path = self._local_archive_path(image)
+        if archive_path is None:
+            raise ValueError(
+                "The selected Sentinel-2 product has an invalid local filename."
             )
+
+        processing_result = self.processor_service.process_product(
+            zip_path=archive_path,
+            working_directory=working_directory,
+            extract_directory=extract_directory,
+            bounds_wgs84=bounds_wgs84,
         )
 
         ndvi_path = Path(
@@ -1090,21 +1641,26 @@ class AnalysisService:
         # The job identifier is fixed before processing
         # starts, so this directory is immutable: a later
         # analysis of the same area cannot reach it.
-        forest_area_directory = job_output_root(
-            forest_area_id=job.forest_area_id,
-            job_id=job.id,
-        )
+        forest_area_directory = self.prepare_job_output_directory(job)
 
-        forest_area_directory.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
+        # -----------------------------------------------------
+        # Resolve the boundary before any raster is read
+        #
+        # Every stage below is confined to the ground this
+        # boundary covers. A Sentinel-2 tile is 10,980 x
+        # 10,980 pixels; a Copperbelt forest area is a small
+        # part of one, so computing NDVI and the cloud mask
+        # over the whole tile spent minutes on pixels that
+        # the boundary clip then discarded.
+        # -----------------------------------------------------
 
-        # Recorded on the job so its outputs can be found
-        # again without recomputing a directory name, and so
-        # a NULL plainly means "written under the old shared
-        # layout".
-        job.output_directory = str(forest_area_directory)
+        forest = job.forest_area
+        if forest is None:
+            forest = self.db.get(ForestArea, job.forest_area_id)
+        boundary = validate_stored_forest_boundary(
+            forest.geometry if forest is not None else None
+        )
+        boundary_bounds = tuple(boundary.bounds)
 
         # -----------------------------------------------------
         # Cloud-masked NDVI for the baseline date
@@ -1113,6 +1669,8 @@ class AnalysisService:
         previous_masked_ndvi = (
             self.prepare_masked_ndvi(
                 image=previous_image,
+
+                bounds_wgs84=boundary_bounds,
 
                 working_directory=(
                     forest_area_directory
@@ -1123,6 +1681,7 @@ class AnalysisService:
                 extract_directory=shared_extract_root(
                     forest_area_id=previous_image.forest_area_id,
                     satellite_image_id=previous_image.id,
+                    storage_root=self.settings.satellite_image_storage_path,
                 ),
             )
         )
@@ -1135,6 +1694,10 @@ class AnalysisService:
             self.prepare_masked_ndvi(
                 image=latest_image,
 
+                # The same window, so both dates keep one
+                # identical grid and can be subtracted.
+                bounds_wgs84=boundary_bounds,
+
                 working_directory=(
                     forest_area_directory
                     / "processing"
@@ -1143,8 +1706,68 @@ class AnalysisService:
                 extract_directory=shared_extract_root(
                     forest_area_id=latest_image.forest_area_id,
                     satellite_image_id=latest_image.id,
+                    storage_root=self.settings.satellite_image_storage_path,
                 ),
             )
+        )
+
+        # -----------------------------------------------------
+        # Apply the exact forest boundary to each observation
+        # before the shared change-detection implementation
+        # sees either raster. Both inputs retain one identical
+        # cropped grid, with outside and cloudy pixels as NoData.
+        # -----------------------------------------------------
+
+        comparison_directory = forest_area_directory / "comparison"
+        previous_comparison_ndvi = comparison_directory / "previous_ndvi.tif"
+        recent_comparison_ndvi = comparison_directory / "recent_ndvi.tif"
+        grid_metadata = self.boundary_comparison_service.mask_ndvi_pair(
+            previous_path=previous_masked_ndvi,
+            recent_path=latest_masked_ndvi,
+            boundary=boundary,
+            previous_output=previous_comparison_ndvi,
+            recent_output=recent_comparison_ndvi,
+        )
+        change_metadata = (
+            self.boundary_comparison_service.write_recent_minus_previous_ndvi_change(
+                previous_path=previous_comparison_ndvi,
+                recent_path=recent_comparison_ndvi,
+                output_path=(
+                    comparison_directory
+                    / "ndvi_change_recent_minus_previous.tif"
+                ),
+            )
+        )
+
+        previous_preview = self.boundary_comparison_service.render_rgb_preview(
+            extracted_directory=shared_extract_root(
+                forest_area_id=previous_image.forest_area_id,
+                satellite_image_id=previous_image.id,
+                storage_root=self.settings.satellite_image_storage_path,
+            ),
+            valid_mask_path=(
+                forest_area_directory
+                / "processing_previous"
+                / "cloud_mask"
+                / "valid_pixel_mask.tif"
+            ),
+            boundary=boundary,
+            output_path=comparison_directory / "previous_rgb.png",
+        )
+        recent_preview = self.boundary_comparison_service.render_rgb_preview(
+            extracted_directory=shared_extract_root(
+                forest_area_id=latest_image.forest_area_id,
+                satellite_image_id=latest_image.id,
+                storage_root=self.settings.satellite_image_storage_path,
+            ),
+            valid_mask_path=(
+                forest_area_directory
+                / "processing"
+                / "cloud_mask"
+                / "valid_pixel_mask.tif"
+            ),
+            boundary=boundary,
+            output_path=comparison_directory / "recent_rgb.png",
         )
 
         # -----------------------------------------------------
@@ -1161,10 +1784,10 @@ class AnalysisService:
             or self.settings.ndvi_threshold
         )
 
-        return self.persistence_service.process(
-            previous_ndvi_path=previous_masked_ndvi,
+        result = self.persistence_service.process(
+            previous_ndvi_path=previous_comparison_ndvi,
 
-            latest_ndvi_path=latest_masked_ndvi,
+            latest_ndvi_path=recent_comparison_ndvi,
 
             working_directory=(
                 forest_area_directory
@@ -1173,6 +1796,60 @@ class AnalysisService:
 
             threshold=ndvi_threshold,
         )
+
+        comparison_imagery = {
+            "previous": {
+                "product_id": previous_image.product_id,
+                "tile_id": previous_image.tile_id,
+                "processing_level": previous_image.processing_level,
+                "acquisition_date": previous_image.acquisition_date.isoformat(),
+                "cloud_cover_percentage": previous_image.cloud_cover_percentage,
+                **previous_preview,
+            },
+            "recent": {
+                "product_id": latest_image.product_id,
+                "tile_id": latest_image.tile_id,
+                "processing_level": latest_image.processing_level,
+                "acquisition_date": latest_image.acquisition_date.isoformat(),
+                "cloud_cover_percentage": latest_image.cloud_cover_percentage,
+                **recent_preview,
+            },
+            "grid": grid_metadata,
+            "ndvi_change": change_metadata,
+            "mean_previous_ndvi": grid_metadata["mean_previous_ndvi"],
+            "mean_recent_ndvi": grid_metadata["mean_recent_ndvi"],
+            "mean_ndvi_change": grid_metadata["mean_ndvi_change"],
+            "affected_area_hectares": result["affected_area_hectares"],
+            "valid_comparison_pixels": result["valid_pixels"],
+            "confirmed_pixels": result["confirmed_pixels"],
+            "ndvi_threshold": result["threshold"],
+        }
+        figure_metadata = self.comparison_figure_service.render(
+            previous_rgb_path=comparison_directory / "previous_rgb.png",
+            previous_ndvi_path=previous_comparison_ndvi,
+            recent_ndvi_path=recent_comparison_ndvi,
+            difference_path=(
+                comparison_directory / "ndvi_change_recent_minus_previous.tif"
+            ),
+            output_directory=comparison_directory,
+            forest_area_id=job.forest_area_id,
+            forest_area_name=forest.name,
+            job_id=job.id,
+            previous_image_id=previous_image.id,
+            recent_image_id=latest_image.id,
+            imagery=comparison_imagery,
+        )
+        write_comparison_manifest(
+            comparison_directory / "manifest.json",
+            forest_area_id=job.forest_area_id,
+            job_id=job.id,
+            previous_image_id=previous_image.id,
+            recent_image_id=latest_image.id,
+            boundary=boundary,
+            imagery=comparison_imagery,
+            figure=figure_metadata,
+        )
+        return result
 
     # =========================================================
     # EXECUTE ANALYSIS
@@ -1262,11 +1939,9 @@ class AnalysisService:
 
         NOTE: If marking the job fails in turn, that second
         exception is swallowed and only a rollback is
-        performed, leaving the job RUNNING with nothing
-        recorded against it. It is then closed as FAILED at
-        the next startup by recover_abandoned_analysis_jobs,
-        but until the server restarts the officer sees a run
-        that appears to be still in progress.
+        performed. The queue worker releases its advisory lock
+        on exit; periodic recovery then records the job as
+        FAILED without waiting for another server restart.
 
         A run that completes with no detections is recorded
         as COMPLETED, not FAILED. See complete_analysis.
@@ -1293,6 +1968,8 @@ class AnalysisService:
                     "Forest area associated with "
                     "analysis job was not found."
                 )
+
+            boundary = validate_stored_forest_boundary(forest.geometry)
 
             # -------------------------------------------------
             # Start analysis
@@ -1356,6 +2033,26 @@ class AnalysisService:
             named_latest = self._usable_local_image(
                 job.satellite_image_id
             )
+
+            if job.previous_satellite_image_id is not None:
+                if named_previous is None or named_latest is None:
+                    raise ValueError(
+                        "A selected observation is missing from local storage. "
+                        "The selected pair was not replaced; acquire both products again."
+                    )
+                if (
+                    named_previous.forest_area_id != forest.id
+                    or named_latest.forest_area_id != forest.id
+                    or named_previous.tile_id != named_latest.tile_id
+                    or named_previous.acquisition_date >= named_latest.acquisition_date
+                    or not is_level_2a(named_previous.processing_level)
+                    or not is_level_2a(named_latest.processing_level)
+                ):
+                    raise ValueError(
+                        "The selected observations no longer form a compatible pair."
+                    )
+                self.validate_local_image_inputs(named_previous)
+                self.validate_local_image_inputs(named_latest)
 
             if named_previous is not None and named_latest is not None:
 

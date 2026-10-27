@@ -46,7 +46,7 @@ from pathlib import Path
 
 import numpy as np
 import rasterio
-from geoalchemy2.shape import from_shape, to_shape
+from geoalchemy2.shape import from_shape
 from rasterio.crs import CRS
 from rasterio.features import geometry_mask, shapes
 from rasterio.warp import transform_geom
@@ -65,7 +65,11 @@ from app.repositories.detection_repository import (
 )
 
 from app.services.alert_service import AlertService
-from app.services.storage_paths import resolve_output_root
+from app.services.boundary_comparison_service import (
+    validate_forest_boundary,
+    validate_stored_forest_boundary,
+)
+from app.services.storage_paths import job_output_root
 
 
 # =========================================================
@@ -448,10 +452,9 @@ class DetectionService:
                 part inside it, instead of contributing its
                 whole area to the area it merely touches.
 
-                None analyses the whole raster. That is what
-                the unit tests use, since they build a small
-                synthetic mask that is entirely the study
-                area.
+                Missing boundaries are rejected. A whole-scene
+                analysis can attribute unrelated clearing to
+                this forest area and is never an acceptable fallback.
 
         Returns:
             One dictionary per clearing that reaches the
@@ -500,6 +503,8 @@ class DetectionService:
             confirmed_mask_path=confirmed_mask_path,
         )
 
+        boundary = validate_forest_boundary(boundary)
+
         srid = self.utm_srid_from_crs(crs)
 
         confirmed = confirmed_mask == 1
@@ -515,22 +520,20 @@ class DetectionService:
         # the monitored area and drops the rest of the tile.
         # -------------------------------------------------
 
-        if boundary is not None:
+        boundary_in_raster_crs = transform_geom(
+            WGS84_CRS,
+            crs,
+            boundary.__geo_interface__,
+        )
 
-            boundary_in_raster_crs = transform_geom(
-                WGS84_CRS,
-                crs,
-                boundary.__geo_interface__,
-            )
+        inside_area = geometry_mask(
+            [boundary_in_raster_crs],
+            out_shape=confirmed.shape,
+            transform=transform,
+            invert=True,
+        )
 
-            inside_area = geometry_mask(
-                [boundary_in_raster_crs],
-                out_shape=confirmed.shape,
-                transform=transform,
-                invert=True,
-            )
-
-            confirmed = confirmed & inside_area
+        confirmed = confirmed & inside_area
 
         if not np.any(confirmed):
             return []
@@ -1086,9 +1089,10 @@ class DetectionService:
         previous_ndvi_path: str | Path,
         latest_ndvi_path: str | Path,
         confirmed_mask_path: str | Path,
+        boundary: Polygon | MultiPolygon,
     ) -> dict[str, float]:
         """
-        Summarise confirmed change across an ENTIRE scene.
+        Summarise confirmed change inside one forest boundary.
 
         Args:
             previous_ndvi_path:
@@ -1099,6 +1103,8 @@ class DetectionService:
             confirmed_mask_path:
                 Persistence-confirmed deforestation mask, 1
                 where change was confirmed.
+            boundary:
+                Required forest-area boundary in EPSG:4326.
 
         Returns:
             dict[str, float]:
@@ -1124,12 +1130,8 @@ class DetectionService:
                 were measurable and one of them is stale.
 
         IMPORTANT:
-            These figures describe a whole Sentinel-2 tile,
-            roughly 110 km square, and mix every confirmed
-            pixel in it together. They are a scene-level
-            summary for the analysis job record.
-
-            Do NOT create a Detection from them. A detection
+            These figures describe only pixels inside the
+            selected forest boundary. Do NOT create a Detection from them. A detection
             describes one clearing, and is produced by
             extract_detection_patches, which applies the
             minimum detectable area to each clearing
@@ -1140,8 +1142,8 @@ class DetectionService:
             previous,
             latest,
             confirmed_mask,
-            _transform,
-            _crs,
+            transform,
+            crs,
             pixel_area_m2,
         ) = self.read_analysis_rasters(
             previous_ndvi_path=previous_ndvi_path,
@@ -1149,13 +1151,24 @@ class DetectionService:
             confirmed_mask_path=confirmed_mask_path,
         )
 
+        boundary = validate_forest_boundary(boundary)
+        boundary_in_raster_crs = transform_geom(
+            WGS84_CRS,
+            crs,
+            boundary.__geo_interface__,
+        )
+        inside_area = geometry_mask(
+            [boundary_in_raster_crs],
+            out_shape=confirmed_mask.shape,
+            transform=transform,
+            invert=True,
+        )
+
         # -------------------------------------------------
         # Confirmed deforestation pixels
         # -------------------------------------------------
 
-        confirmed = (
-            confirmed_mask == 1
-        )
+        confirmed = (confirmed_mask == 1) & inside_area
 
         confirmed_pixels = int(
             np.count_nonzero(
@@ -1396,19 +1409,25 @@ class DetectionService:
         # -------------------------------------------------
 
         # -------------------------------------------------
-        # This job's processing directory
-        #
-        # Resolved through storage_paths so the writer and
-        # every reader agree on one location. A job that
-        # predates per-job outputs falls back to the old
-        # shared directory, which is still the only record
-        # of that analysis.
+        # This job's output directory. This detection run
+        # must never read legacy shared rasters because their
+        # source pair cannot be verified.
         # -------------------------------------------------
 
-        forest_area_directory, _ = resolve_output_root(
+        forest_area_directory = job_output_root(
             forest_area_id=job.forest_area_id,
             job_id=job.id,
+            storage_root=self.settings.satellite_image_storage_path,
         )
+
+        if (
+            not job.output_directory
+            or Path(job.output_directory).resolve()
+            != forest_area_directory.resolve()
+        ):
+            raise ValueError(
+                "The analysis job does not reference its expected job-specific output directory."
+            )
 
         # -------------------------------------------------
         # Previous cloud-masked NDVI
@@ -1416,9 +1435,8 @@ class DetectionService:
 
         previous_ndvi = (
             forest_area_directory
-            / "processing_previous"
-            / "masked_ndvi"
-            / "ndvi_masked.tif"
+            / "comparison"
+            / "previous_ndvi.tif"
         )
 
         # -------------------------------------------------
@@ -1427,9 +1445,8 @@ class DetectionService:
 
         latest_ndvi = (
             forest_area_directory
-            / "processing"
-            / "masked_ndvi"
-            / "ndvi_masked.tif"
+            / "comparison"
+            / "recent_ndvi.tif"
         )
 
         # -------------------------------------------------
@@ -1453,6 +1470,7 @@ class DetectionService:
         existing_detections = (
             self.db.query(Detection)
             .filter(
+                Detection.analysis_job_id == job.id,
                 Detection.forest_area_id
                 == job.forest_area_id,
                 Detection.satellite_image_id
@@ -1486,12 +1504,9 @@ class DetectionService:
         # run, which puts a detection in the wrong district
         # and takes the map, the district totals and the
         # jurisdiction check with it.
-        boundary = None
-
-        if job.forest_area is not None and (
-            job.forest_area.geometry is not None
-        ):
-            boundary = to_shape(job.forest_area.geometry)
+        if job.forest_area is None:
+            raise ValueError("The forest boundary for this analysis job is unavailable.")
+        boundary = validate_stored_forest_boundary(job.forest_area.geometry)
 
         patches = self.extract_detection_patches(
             previous_ndvi_path=previous_ndvi,

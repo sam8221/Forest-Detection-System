@@ -161,6 +161,27 @@ def test_ndvi_ramp_runs_red_at_low_to_green_at_high(
     assert high[1] > high[0], "high NDVI should be green-dominant"
 
 
+def test_selected_pair_change_renders_negative_decline_red_and_growth_green(
+    tmp_path,
+) -> None:
+    values = np.array([[-0.45, NDVI_NODATA, 0.45]], dtype="float32")
+    write_layer(tmp_path, 1, "selected_ndvi_difference", values)
+
+    png, _, metadata = service_for(tmp_path).render(
+        1, "selected_ndvi_difference"
+    )
+    image = pixels(png)
+    service = service_for(tmp_path)
+
+    assert metadata["description"].startswith("Recent NDVI minus previous NDVI")
+    assert image[0, 0, 0] > image[0, 0, 1]
+    assert image[0, 1, 3] == 0
+    assert image[0, 2, 1] > image[0, 2, 0]
+    assert service.layer_path(
+        1, "selected_ndvi_difference", job_id=42, strict_job=True
+    ) is None
+
+
 def test_invalid_pixels_are_transparent(tmp_path) -> None:
     """
     A cloud-masked gap is transparent, not coloured.
@@ -380,6 +401,24 @@ def test_absent_layer_is_reported_not_invented(
     assert service.render(999, "ndvi_current") is None
     assert service.histogram(999, "ndvi_current") is None
     assert service.layer_path(999, "ndvi_current") is None
+
+
+def test_strict_job_render_does_not_fall_back_to_legacy_scene_files(
+    tmp_path,
+) -> None:
+    """A selected comparison can read only its own analysis job."""
+
+    write_layer(
+        tmp_path,
+        7,
+        "ndvi_difference",
+        np.full((2, 2), 0.4, dtype="float32"),
+    )
+    service = service_for(tmp_path)
+
+    assert service.layer_path(7, "ndvi_difference", job_id=42, strict_job=True) is None
+    assert service.render(7, "ndvi_difference", job_id=42, strict_job=True) is None
+    assert service.layer_path(7, "ndvi_difference") is not None
 
 
 def test_available_layers_reports_what_exists(

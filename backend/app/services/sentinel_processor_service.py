@@ -33,12 +33,28 @@ import re
 import zipfile
 from pathlib import Path
 
+import math
+
 import numpy as np
 import rasterio
 from rasterio.crs import CRS
+from rasterio.enums import Resampling
+from rasterio.warp import reproject, transform_bounds
+from rasterio.windows import Window, from_bounds
 
 from app.core.constants import NDVI_NODATA
 from app.services.ndvi_service import NDVIService
+
+# Built from a PROJ string rather than an EPSG code, for the
+# reason given against determine_crs below: an EPSG lookup
+# needs the PROJ database, which is not always the one this
+# process is pointed at.
+WGS84 = CRS.from_proj4("+proj=longlat +datum=WGS84 +no_defs")
+
+# Bilinear resampling of B08, and nearest resampling of the
+# 20 m SCL, both read one pixel beyond the target. Two 10 m
+# pixels of slack covers that and the 20 m SCL grid.
+BOUNDARY_WINDOW_BUFFER_PIXELS = 2
 
 
 class SentinelProcessorService:
@@ -86,9 +102,12 @@ class SentinelProcessorService:
         zip_path = Path(zip_path)
         extract_directory = Path(extract_directory)
 
-        if not zip_path.exists():
+        if self.has_complete_extracted_product(extract_directory):
+            return extract_directory
+
+        if not zip_path.is_file():
             raise FileNotFoundError(
-                f"Sentinel-2 ZIP file not found: {zip_path}"
+                "The selected Sentinel-2 archive is unavailable and no complete extracted product exists."
             )
 
         extract_directory.mkdir(
@@ -104,7 +123,55 @@ class SentinelProcessorService:
                 extract_directory
             )
 
+        if not self.has_complete_extracted_product(extract_directory):
+            raise ValueError(
+                "The selected Sentinel-2 archive is missing required Level-2A metadata or bands."
+            )
+
         return extract_directory
+
+    @staticmethod
+    def has_complete_extracted_product(
+        extract_directory: str | Path,
+    ) -> bool:
+        """Return whether an extracted SAFE tree has the analysis inputs."""
+
+        extract_directory = Path(extract_directory)
+        if not extract_directory.is_dir():
+            return False
+
+        candidates = [
+            path
+            for path in extract_directory.iterdir()
+            if path.is_dir() and path.name.casefold().endswith(".safe")
+        ]
+        if extract_directory.name.casefold().endswith(".safe"):
+            candidates.append(extract_directory)
+
+        required_patterns = (
+            "*_B02_10m.jp2",
+            "*_B03_10m.jp2",
+            "*_B04_10m.jp2",
+            "*_B08_10m.jp2",
+            "*_SCL_20m.jp2",
+        )
+        for product_directory in candidates:
+            metadata = list(product_directory.rglob("MTD_MSIL2A.xml"))
+            if not any(
+                path.is_file() and path.stat().st_size > 0
+                for path in metadata
+            ):
+                continue
+            if all(
+                any(
+                    path.is_file() and path.stat().st_size > 0
+                    for path in product_directory.rglob(pattern)
+                )
+                for pattern in required_patterns
+            ):
+                return True
+
+        return False
 
     # =========================================================
     # FIND SENTINEL-2 BAND
@@ -139,11 +206,10 @@ class SentinelProcessorService:
                 The directory does not exist, or holds no
                 file for that band at 10 m.
 
-        Both bands are taken at 10 m, their native
-        resolution, so they share a pixel grid and NDVI can
-        be computed without resampling either one. Taking
-        one band at 20 m would require resampling and would
-        put an interpolated value into the ratio.
+        Both bands are requested at the native 10 m
+        resolution. B04 defines the output grid; if B08's
+        recorded transform or CRS differs, B08 is warped to
+        that grid before NDVI is calculated.
         """
 
         extracted_directory = Path(
@@ -152,12 +218,9 @@ class SentinelProcessorService:
 
         band = band.upper()
 
-        if band not in {
-            "B04",
-            "B08",
-        }:
+        if band not in {"B02", "B03", "B04", "B08"}:
             raise ValueError(
-                "Only B04 and B08 are currently supported."
+                "Only Sentinel-2 10 m bands B02, B03, B04 and B08 are supported."
             )
 
         matches = list(
@@ -168,8 +231,8 @@ class SentinelProcessorService:
 
         if not matches:
             raise FileNotFoundError(
-                f"Sentinel-2 {band} 10m band was not found "
-                f"inside {extracted_directory}"
+                f"The selected Sentinel-2 product is missing its required "
+                f"{band} 10 m band."
             )
 
         return matches[0]
@@ -390,32 +453,14 @@ class SentinelProcessorService:
             nir_crs = nir_src.crs
 
         # -----------------------------------------------------
-        # Both CRS values available
-        # -----------------------------------------------------
-
-        if (
-            red_crs is not None
-            and nir_crs is not None
-        ):
-
-            if red_crs != nir_crs:
-                raise ValueError(
-                    "B04 and B08 have different CRS values."
-                )
-
-            return red_crs
-
-        # -----------------------------------------------------
-        # Only B04 has CRS
-        # -----------------------------------------------------
-
+        # B04 is the target grid for NDVI. If it has a CRS,
+        # use it and reproject B08 to it when necessary.
         if red_crs is not None:
             return red_crs
 
-        # -----------------------------------------------------
-        # Only B08 has CRS
-        # -----------------------------------------------------
-
+        # Some Sentinel JP2 files omit CRS metadata. For the
+        # same product, a declared B08 CRS is the best
+        # available reference for the B04 grid.
         if nir_crs is not None:
             return nir_crs
 
@@ -433,11 +478,80 @@ class SentinelProcessorService:
     # CALCULATE NDVI
     # =========================================================
 
+    @staticmethod
+    def covering_window(
+        source,
+        bounds: tuple[float, float, float, float],
+        *,
+        buffer_pixels: int = 0,
+    ) -> Window:
+        """
+        Smallest whole-pixel window of source covering bounds.
+
+        Args:
+            source:
+                An open rasterio dataset.
+            bounds:
+                left, bottom, right, top in that dataset's own
+                coordinate reference system.
+            buffer_pixels:
+                Extra pixels kept on every side. Resampling a
+                coarser band onto this grid reads neighbours,
+                so a window cut exactly to the boundary would
+                lose them and leave an edge of nodata.
+
+        Returns:
+            Window:
+                Clamped to the dataset, so a boundary lying
+                partly outside the tile still yields a window
+                that can be read.
+
+        Raises:
+            ValueError:
+                The bounds do not overlap the dataset at all.
+
+        A Sentinel-2 tile is 10,980 x 10,980 pixels, roughly
+        120 million. A Copperbelt forest area is a fraction of
+        that, so reading only this window is what keeps an
+        analysis to seconds rather than minutes.
+        """
+
+        requested = from_bounds(*bounds, transform=source.transform)
+
+        column_start = max(
+            0, int(math.floor(requested.col_off)) - buffer_pixels
+        )
+        row_start = max(
+            0, int(math.floor(requested.row_off)) - buffer_pixels
+        )
+        column_stop = min(
+            source.width,
+            int(math.ceil(requested.col_off + requested.width)) + buffer_pixels,
+        )
+        row_stop = min(
+            source.height,
+            int(math.ceil(requested.row_off + requested.height)) + buffer_pixels,
+        )
+
+        if column_stop <= column_start or row_stop <= row_start:
+            raise ValueError(
+                "The selected forest boundary does not overlap this Sentinel-2 "
+                "product, so no imagery can be read for it."
+            )
+
+        return Window(
+            column_start,
+            row_start,
+            column_stop - column_start,
+            row_stop - row_start,
+        )
+
     def calculate_ndvi(
         self,
         red_band_path: str | Path,
         nir_band_path: str | Path,
         output_path: str | Path,
+        bounds_wgs84: tuple[float, float, float, float] | None = None,
     ) -> Path:
         """
         Calculate NDVI from Sentinel-2 B04 and B08.
@@ -470,8 +584,9 @@ class SentinelProcessorService:
         B04 = Red
         B08 = Near Infrared
 
-        Both bands are 10 m, so they share a pixel grid and
-        neither is resampled before the ratio is taken.
+        B04 defines the 10 m target grid. B08 is aligned to
+        that grid with bilinear resampling only when its CRS,
+        transform, or dimensions differ.
 
         Output:
             Single-band float32 GeoTIFF in the PROJECTED
@@ -519,77 +634,107 @@ class SentinelProcessorService:
         # Read B04
         # -----------------------------------------------------
 
-        with rasterio.open(
-            red_band_path
-        ) as red_src:
-
-            red = red_src.read(
-                1
-            ).astype(
-                np.float32
-            )
-
-            profile = (
-                red_src.profile.copy()
-            )
-
-            red_transform = (
-                red_src.transform
-            )
-
-            red_crs = (
-                red_src.crs
-            )
-
-        # -----------------------------------------------------
-        # Read B08
-        # -----------------------------------------------------
-
-        with rasterio.open(
+        with rasterio.open(red_band_path) as red_src, rasterio.open(
             nir_band_path
         ) as nir_src:
+            # Only the area under the forest boundary is read.
+            # NDVI is a per-pixel ratio, so a windowed result is
+            # identical to the same pixels of a whole-tile one;
+            # the saving is simply not touching the other 99%
+            # of a 120-million-pixel tile.
+            red_window = None
+            nir_window = None
 
-            nir = nir_src.read(
-                1
-            ).astype(
-                np.float32
-            )
+            if bounds_wgs84 is not None:
+                product_crs = red_src.crs or self.determine_crs(
+                    red_band_path, nir_band_path
+                )
+                red_window = self.covering_window(
+                    red_src,
+                    transform_bounds(WGS84, product_crs, *bounds_wgs84),
+                    buffer_pixels=BOUNDARY_WINDOW_BUFFER_PIXELS,
+                )
+                # The NIR window is taken from the ground area
+                # the red window covers, not from its pixel
+                # indices: the two bands need not share a grid,
+                # and reprojection reads beyond the edges.
+                nir_window = self.covering_window(
+                    nir_src,
+                    transform_bounds(
+                        product_crs,
+                        nir_src.crs or product_crs,
+                        *rasterio.windows.bounds(red_window, red_src.transform),
+                    ),
+                    buffer_pixels=BOUNDARY_WINDOW_BUFFER_PIXELS,
+                )
 
-            nir_transform = (
-                nir_src.transform
-            )
+            red = red_src.read(1, window=red_window).astype(np.float32)
+            red_valid = red_src.read_masks(1, window=red_window) > 0
+            red_profile = red_src.profile.copy()
+            red_transform = red_src.window_transform(red_window) if red_window else red_src.transform
+            red_crs = red_src.crs
+            red_resolution = red_src.res
+            red_height, red_width = red.shape
 
-            nir_crs = (
-                nir_src.crs
-            )
+            nir = nir_src.read(1, window=nir_window).astype(np.float32)
+            nir_valid = nir_src.read_masks(1, window=nir_window) > 0
+            nir_transform = nir_src.window_transform(nir_window) if nir_window else nir_src.transform
+            nir_crs = nir_src.crs
+            nir_nodata = nir_src.nodata
 
-        # -----------------------------------------------------
-        # Validate dimensions
-        # -----------------------------------------------------
+        # The red 10 m band defines this observation's output
+        # grid. The NIR band may have a different affine grid
+        # or CRS, so it is reprojected before the ratio is
+        # calculated.
+        output_crs = self.determine_crs(red_band_path, nir_band_path)
+        if not output_crs.is_projected or output_crs.linear_units.lower() not in {
+            "metre",
+            "meter",
+            "metres",
+            "meters",
+        }:
+            raise ValueError("Sentinel-2 NDVI must use a projected metre-based CRS.")
+        if not np.allclose(np.abs(red_resolution), (10.0, 10.0), atol=0.05):
+            raise ValueError("B04 must define the native 10 m NDVI grid.")
 
-        if red.shape != nir.shape:
-            raise ValueError(
-                "B04 and B08 dimensions do not match."
-            )
+        # If a JP2 omits CRS metadata, these bands belong to
+        # one Sentinel product. Use the known product CRS for
+        # that band's coordinate values; explicit CRS values
+        # are always honored and reprojected when different.
+        nir_source_crs = nir_crs or output_crs
+        red[~red_valid] = np.nan
+        if nir_nodata is not None:
+            nir_valid &= nir != nir_nodata
+        nir[~nir_valid] = np.nan
 
-        # -----------------------------------------------------
-        # Validate transforms
-        # -----------------------------------------------------
-
-        if red_transform != nir_transform:
-            raise ValueError(
-                "B04 and B08 have different spatial "
-                "transforms."
-            )
-
-        # -----------------------------------------------------
-        # Determine CRS
-        # -----------------------------------------------------
-
-        output_crs = self.determine_crs(
-            red_band_path=red_band_path,
-            nir_band_path=nir_band_path,
+        same_nir_grid = (
+            nir.shape == (red_height, red_width)
+            and nir_transform == red_transform
+            and nir_source_crs == output_crs
         )
+        if same_nir_grid:
+            aligned_nir = nir
+        else:
+            aligned_nir = np.full(
+                (red_height, red_width), np.nan, dtype=np.float32
+            )
+            reproject(
+                source=nir,
+                destination=aligned_nir,
+                src_transform=nir_transform,
+                src_crs=nir_source_crs,
+                src_nodata=np.nan,
+                dst_transform=red_transform,
+                dst_crs=output_crs,
+                dst_nodata=np.nan,
+                resampling=Resampling.bilinear,
+                init_dest_nodata=True,
+            )
+
+        if not np.any(np.isfinite(red) & np.isfinite(aligned_nir)):
+            raise ValueError(
+                "B04 and B08 do not overlap on the target 10 m NDVI grid."
+            )
 
         # -----------------------------------------------------
         # Calculate NDVI
@@ -606,7 +751,7 @@ class SentinelProcessorService:
 
         ndvi = NDVIService().calculate_ndvi(
             red_band=red,
-            nir_band=nir,
+            nir_band=aligned_nir,
         )
 
         # -----------------------------------------------------
@@ -625,6 +770,7 @@ class SentinelProcessorService:
         # Prepare GeoTIFF
         # -----------------------------------------------------
 
+        profile = red_profile
         profile.update(
             driver="GTiff",
             dtype="float32",
@@ -633,6 +779,8 @@ class SentinelProcessorService:
             compress="lzw",
             crs=output_crs,
             transform=red_transform,
+            width=red_width,
+            height=red_height,
         )
 
         # -----------------------------------------------------
@@ -661,6 +809,7 @@ class SentinelProcessorService:
         zip_path: str | Path,
         working_directory: str | Path,
         extract_directory: str | Path | None = None,
+        bounds_wgs84: tuple[float, float, float, float] | None = None,
     ) -> dict[str, str]:
         """
         Turn a downloaded product into an NDVI raster.
@@ -767,6 +916,7 @@ class SentinelProcessorService:
             red_band_path=red_band,
             nir_band_path=nir_band,
             output_path=ndvi_output,
+            bounds_wgs84=bounds_wgs84,
         )
 
         return {

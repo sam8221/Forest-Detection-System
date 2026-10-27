@@ -50,69 +50,35 @@ from app.api.sentinel_wms import router as sentinel_wms_router
 from app.api.users import router as users_router
 
 from app.core.config import get_settings
+from app.services.analysis_scheduler import AnalysisScheduler
+from app.services.analysis_worker import recover_abandoned_analysis_jobs
 from app.services.email_scheduler import EmailScheduler
+from app.services.sms_scheduler import SmsScheduler
 
-
-def recover_abandoned_analysis_jobs() -> None:
-    """
-    Close analysis jobs left running by a stopped process.
-
-    Called once at startup. A job marked RUNNING when no
-    process is executing it can never progress, so it is
-    recorded as FAILED with the reason rather than left to
-    look like work still in progress.
-    """
-
-    from datetime import UTC, datetime
+def recover_abandoned_satellite_download_jobs() -> None:
+    """Fail transfers whose worker was stopped with the API process."""
 
     from app.database.session import SessionLocal
-    from app.models.analysis_job import AnalysisJob
-    from app.models.enums import AnalysisJobStatus
+    from app.services.satellite_download_job_service import (
+        SatelliteDownloadJobService,
+    )
 
     db = SessionLocal()
-
     try:
-        abandoned = (
-            db.query(AnalysisJob)
-            .filter(
-                AnalysisJob.status
-                == AnalysisJobStatus.RUNNING,
+        recovered_count = SatelliteDownloadJobService(db).fail_abandoned()
+        if recovered_count:
+            print(
+                "[ForestWatch] Recovered "
+                f"{recovered_count} abandoned satellite download job(s)."
             )
-            .all()
-        )
-
-        if not abandoned:
-            return
-
-        for job in abandoned:
-            job.status = AnalysisJobStatus.FAILED
-
-            job.completed_at = datetime.now(UTC)
-
-            job.error_message = (
-                "The analysis did not finish: the server "
-                "stopped while it was running. Start a new "
-                "analysis to try again."
-            )
-
-        db.commit()
-
-        print(
-            f"[ForestWatch] Recovered "
-            f"{len(abandoned)} abandoned analysis job(s)."
-        )
-
     except Exception as exc:
         db.rollback()
-
-        # Recovery must never stop the application from
-        # starting; an unrecovered job is a stale record,
-        # a refusal to start is an outage.
+        # This must not prevent startup when a deployment has not yet
+        # applied the migration that creates the download-job table.
         print(
-            f"[ForestWatch] Could not recover abandoned "
-            f"analysis jobs: {exc}"
+            "[ForestWatch] Could not recover abandoned satellite downloads "
+            f"({type(exc).__name__})."
         )
-
     finally:
         db.close()
 
@@ -123,22 +89,21 @@ async def lifespan(app: FastAPI):
     Manage the lifecycle of ForestWatch background services.
     """
 
-    # -----------------------------------------------------
-    # Recover jobs abandoned by a previous run
-    #
-    # Analysis runs inside this process. If the process
-    # stops while a job is RUNNING, nothing is left to
-    # finish it: the job stays RUNNING for ever and the
-    # officer who started it is never told the run died.
-    #
-    # Any job still marked RUNNING at startup belongs to a
-    # process that is gone, so it is closed as FAILED with
-    # the reason recorded. A failed job is never revived;
-    # resubmitting creates a new one, so the failure stays
-    # in the record.
-    # -----------------------------------------------------
+    # Recover abandoned records before starting the database
+    # queue worker. A live worker holds the matching advisory
+    # lock, so a second API process will leave its job alone.
 
-    recover_abandoned_analysis_jobs()
+    try:
+        recover_abandoned_analysis_jobs()
+    except Exception as exc:
+        # Keep the API available when recovery cannot reach PostgreSQL. The
+        # scheduler retries recovery and queue polling in its normal loop.
+        print(f"[ForestWatch] Could not recover analysis jobs: {type(exc).__name__}")
+    recover_abandoned_satellite_download_jobs()
+
+    analysis_scheduler = AnalysisScheduler(interval_seconds=1)
+    app.state.analysis_scheduler = analysis_scheduler
+    analysis_scheduler.start()
 
     email_scheduler = EmailScheduler(
         interval_seconds=30
@@ -150,10 +115,31 @@ async def lifespan(app: FastAPI):
         "[ForestWatch] Email scheduler started."
     )
 
+    # -----------------------------------------------------
+    # SMS notifications
+    #
+    # A second daemon thread in this process, not a second
+    # deployed service. It reports for itself whether it
+    # started: start() returns without running anything
+    # when SMS_ENABLED is false, which is the default, so an
+    # installation with no provider configured runs no SMS
+    # thread.
+    # -----------------------------------------------------
+
+    sms_scheduler = SmsScheduler(
+        interval_seconds=30
+    )
+
+    sms_scheduler.start()
+
     try:
         yield
 
     finally:
+        analysis_scheduler.stop()
+
+        sms_scheduler.stop()
+
         email_scheduler.stop()
 
         print(

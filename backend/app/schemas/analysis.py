@@ -153,6 +153,13 @@ class SeasonalWindowRequest(BaseModel):
         return self
 
 
+class SelectedImagePairRequest(BaseModel):
+    """Two existing downloaded Sentinel-2 records selected by the user."""
+
+    previous_satellite_image_id: int
+    recent_satellite_image_id: int
+
+
 # ---------------------------------------------------------
 # Update Schema
 # ---------------------------------------------------------

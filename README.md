@@ -13,7 +13,7 @@ A secure, incremental web system for detecting potential deforestation in the Co
 7. **Alerts and review workflow:** alert rules, officer review and status changes, and an auditable alert lifecycle.
 8. **Verification and deployment:** accuracy evaluation for the dissertation's results chapter, security review, end-to-end tests, backups, and production deployment.
 
-Analysis jobs run asynchronously via a scheduled command (`PENDING → RUNNING → COMPLETED | FAILED`) — no Celery/Redis.
+Analysis jobs are stored in a PostgreSQL queue and claimed by the API's analysis worker (`PENDING → RUNNING → COMPLETED | FAILED`) — no Celery/Redis. A worker claim is protected by a PostgreSQL advisory lock; jobs left unclaimed for 30 minutes or running without a live lock are recorded as failed and can be retried.
 
 ## Run the foundation
 

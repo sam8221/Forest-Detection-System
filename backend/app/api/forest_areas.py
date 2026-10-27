@@ -41,7 +41,11 @@ import logging
 from geoalchemy2 import WKTElement
 
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import (
+    DatabaseError,
+    DataError,
+    IntegrityError,
+)
 from sqlalchemy.orm import Session
 
 from app.api.deps import (
@@ -126,6 +130,119 @@ def build_forest_area_response(
         "created_at": forest.created_at,
         "updated_at": forest.updated_at,
     }
+
+
+# =========================================================
+# BOUNDARY VALIDATION
+# =========================================================
+
+def parse_and_validate_boundary(
+    db: Session,
+    geometry_wkt: str,
+):
+    """
+    Turn submitted WKT into a PostGIS element, refusing a
+    boundary that cannot be read or is not a valid polygon.
+
+    Args:
+        db:
+            Database session. PostGIS does the parsing and
+            the validity test, so a session is needed.
+        geometry_wkt:
+            Boundary as submitted, expected to be a WKT
+            POLYGON in EPSG:4326.
+
+    Returns:
+        A WKTElement safe to store.
+
+    Raises:
+        HTTPException 422:
+            The text is not a geometry PostGIS can read, or
+            it is a polygon whose ring is invalid.
+
+    Why both checks happen here rather than at each caller:
+
+        WKTElement does not parse anything. It holds the
+        text and defers to ST_GeomFromText, so neither
+        malformed text nor a self-intersecting ring is
+        caught by constructing it.
+
+        An invalid boundary gives undefined results from
+        ST_Contains and ST_Intersects, which is what
+        detection clipping and jurisdiction testing are
+        built on, so it must never reach the table.
+
+        Create validated the boundary and update did not,
+        which meant the check was bypassed simply by
+        registering a valid area and then editing it. One
+        helper, called from both, is what keeps the two
+        paths from drifting apart again.
+    """
+
+    try:
+        geometry = WKTElement(
+            geometry_wkt,
+            srid=4326,
+        )
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "The boundary could not be read as a WKT "
+                "polygon. Draw it on the map, or supply it "
+                "as POLYGON((lon lat, ...))."
+            ),
+        ) from exc
+
+    # -----------------------------------------------------
+    # Ask PostGIS to read it and judge it
+    #
+    # Unreadable text raises here rather than returning
+    # false, and the failed statement leaves the session in
+    # an aborted transaction, so it is rolled back before
+    # the error is raised. Without that rollback every later
+    # statement on this session fails too, and the officer
+    # sees a message about a boundary they have already
+    # corrected.
+    # -----------------------------------------------------
+
+    try:
+        valid, reason = db.execute(
+            select(
+                func.ST_IsValid(geometry),
+                func.ST_IsValidReason(geometry),
+            )
+        ).one()
+
+    except DatabaseError as exc:
+        db.rollback()
+
+        logger.info(
+            "Rejected an unreadable boundary: %s",
+            geometry_wkt[:120],
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "The boundary could not be read as a WKT "
+                "polygon. Draw it on the map, or supply it "
+                "as POLYGON((lon lat, ...))."
+            ),
+        ) from exc
+
+    if not valid:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "The boundary is not a valid polygon: "
+                f"{reason}. Redraw it without crossing "
+                "its own edges."
+            ),
+        )
+
+    return geometry
 
 
 # =========================================================
@@ -260,46 +377,10 @@ def create_forest_area(
 
     geometry_wkt = data.pop("geometry")
 
-    try:
-        geometry = WKTElement(
-            geometry_wkt,
-            srid=4326,
-        )
-
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid geometry: {str(exc)}",
-        )
-
-    # -----------------------------------------------------
-    # The boundary must be a valid polygon
-    #
-    # WKTElement only parses the text; it does not check that
-    # the ring makes sense. A self-intersecting "bowtie" was
-    # accepted and stored, and an invalid boundary gives
-    # undefined results from ST_Contains and ST_Intersects,
-    # which is what detection clipping and jurisdiction
-    # testing are built on. Better to refuse it at the door
-    # than to find out when an analysis reports nothing.
-    # -----------------------------------------------------
-
-    reason = db.execute(
-        select(
-            func.ST_IsValid(geometry),
-            func.ST_IsValidReason(geometry),
-        )
-    ).one()
-
-    if not reason[0]:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                "The boundary is not a valid polygon: "
-                f"{reason[1]}. Redraw it without crossing "
-                "its own edges."
-            ),
-        )
+    geometry = parse_and_validate_boundary(
+        db=db,
+        geometry_wkt=geometry_wkt,
+    )
 
     forest = ForestArea(
         **data,
@@ -360,6 +441,33 @@ def create_forest_area(
             detail=(
                 "The forest area could not be saved because "
                 "it conflicts with an existing record."
+            ),
+        ) from exc
+
+    except DataError as exc:
+        # A value the column cannot hold.
+        #
+        # The schema limits now match the column widths, so
+        # this should not be reachable from the registration
+        # form. It stays as a safety net: if the two drift
+        # apart again, the officer is told which field is
+        # wrong instead of being shown the opaque "could not
+        # be saved" that sent this bug unreported for weeks.
+        db.rollback()
+
+        logger.exception(
+            "Forest area creation rejected a field value "
+            "for user %s",
+            current_user.id,
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "One of the values is too long or out of "
+                "range for the field it is stored in. The "
+                "forest code allows up to 20 characters and "
+                "the name up to 150."
             ),
         ) from exc
 
@@ -427,23 +535,25 @@ def update_forest_area(
     # Convert updated WKT geometry to a PostGIS element.
     # -----------------------------------------------------
 
+    # A replacement boundary is held to the same standard as
+    # one supplied at registration. It was not before, so a
+    # self-intersecting ring that create refused could be
+    # stored by registering a valid area and then editing
+    # it, which left the validity check on create worth
+    # nothing.
+
     if "geometry" in update_data:
 
         geometry_wkt = update_data.pop(
             "geometry"
         )
 
-        try:
-            update_data["geometry"] = WKTElement(
-                geometry_wkt,
-                srid=4326,
+        update_data["geometry"] = (
+            parse_and_validate_boundary(
+                db=db,
+                geometry_wkt=geometry_wkt,
             )
-
-        except Exception as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid geometry: {str(exc)}",
-            )
+        )
 
     # -----------------------------------------------------
     # Apply validated field updates.
@@ -460,16 +570,48 @@ def update_forest_area(
         db.commit()
         db.refresh(forest)
 
+    except DataError as exc:
+        # A value the column cannot hold, the same class of
+        # failure the create path reports. Named here so the
+        # officer knows which field to shorten.
+        db.rollback()
+
+        logger.exception(
+            "Forest area %s update rejected a field value "
+            "for user %s",
+            forest_area_id,
+            current_user.id,
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "One of the values is too long or out of "
+                "range for the field it is stored in. The "
+                "name allows up to 150 characters."
+            ),
+        ) from exc
+
     except Exception as exc:
         db.rollback()
 
+        # Logged in full; the officer is told only that it
+        # failed. This previously returned str(exc), which
+        # puts the psycopg message and the UPDATE statement
+        # in front of the browser — the schema and the SQL
+        # of a restricted system, handed to whoever provoked
+        # the error. The create path was corrected for this;
+        # update was missed.
+        logger.exception(
+            "Forest area %s update failed for user %s",
+            forest_area_id,
+            current_user.id,
+        )
+
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=(
-                f"Could not update forest area: "
-                f"{str(exc)}"
-            ),
-        )
+            detail="The forest area could not be updated.",
+        ) from exc
 
     return build_forest_area_response(forest)
 
@@ -519,13 +661,20 @@ def delete_forest_area(
     except Exception as exc:
         db.rollback()
 
+        # Same reasoning as the update path: the database
+        # error is logged, not returned.
+        logger.exception(
+            "Forest area %s deactivation failed for user %s",
+            forest_area_id,
+            current_user.id,
+        )
+
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=(
-                f"Could not deactivate forest area: "
-                f"{str(exc)}"
+                "The forest area could not be deactivated."
             ),
-        )
+        ) from exc
 
     return {
         "message": (

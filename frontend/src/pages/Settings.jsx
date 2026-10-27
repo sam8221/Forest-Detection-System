@@ -55,6 +55,7 @@ import React, { useEffect, useState } from "react";
 
 
 import { API_URL as CONFIG_API_URL } from "../config";
+import { validateZambianPhoneNumber } from "../services/phoneNumber";
 const API_URL = CONFIG_API_URL;
 
 export default function Settings() {
@@ -63,12 +64,14 @@ export default function Settings() {
 
   /* Store registered users displayed to administrators. */
   const [users, setUsers] = useState([]);
+  const [phoneDrafts, setPhoneDrafts] = useState({});
 
   /* Track page, user-table, profile, and password loading states. */
   const [loading, setLoading] = useState(true);
   const [usersLoading, setUsersLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [passwordSaving, setPasswordSaving] = useState(false);
+  const [phoneSavingId, setPhoneSavingId] = useState(null);
 
   /* Store general page feedback and password-specific errors. */
   const [error, setError] = useState("");
@@ -79,6 +82,7 @@ export default function Settings() {
   const [form, setForm] = useState({
     full_name: "",
     email: "",
+    phone_number: "",
   });
 
   /* Store password-change form values. */
@@ -163,6 +167,7 @@ export default function Settings() {
       setForm({
         full_name: data.full_name || "",
         email: data.email || "",
+        phone_number: data.phone_number || "",
       });
 
       return data;
@@ -209,7 +214,16 @@ export default function Settings() {
 
       const data = await response.json();
 
-      setUsers(Array.isArray(data) ? data : []);
+      const loadedUsers = Array.isArray(data) ? data : [];
+      setUsers(loadedUsers);
+      setPhoneDrafts(
+        Object.fromEntries(
+          loadedUsers.map((user) => [
+            user.id,
+            user.phone_number || "",
+          ])
+        )
+      );
     } catch (err) {
       console.error("Users loading error:", err);
       throw err;
@@ -344,6 +358,16 @@ export default function Settings() {
         );
       }
 
+      const isAdministrator =
+        String(profile.role || "").toUpperCase() === "ADMIN";
+      const phoneValidationError = isAdministrator
+        ? validateZambianPhoneNumber(form.phone_number)
+        : null;
+
+      if (phoneValidationError) {
+        throw new Error(phoneValidationError);
+      }
+
       const response = await fetch(
         `${API_URL}/api/v1/users/${profile.id}`,
         {
@@ -355,6 +379,9 @@ export default function Settings() {
           },
           body: JSON.stringify({
             full_name: form.full_name.trim(),
+            ...(isAdministrator && {
+              phone_number: form.phone_number.trim() || null,
+            }),
           }),
         }
       );
@@ -375,6 +402,7 @@ export default function Settings() {
       setForm({
         full_name: data.full_name || "",
         email: data.email || "",
+        phone_number: data.phone_number || "",
       });
 
       setMessage(
@@ -529,6 +557,78 @@ export default function Settings() {
       );
     } finally {
       setPasswordSaving(false);
+    }
+  };
+
+  /*
+   * Save or clear one user's number from the admin list.
+   */
+  const handleSavePhoneNumber = async (userId) => {
+    const phoneNumber = phoneDrafts[userId] || "";
+    const validationMessage =
+      validateZambianPhoneNumber(phoneNumber);
+
+    if (validationMessage) {
+      setMessage("");
+      setError(validationMessage);
+      return;
+    }
+
+    try {
+      setPhoneSavingId(userId);
+      setError("");
+      setMessage("");
+
+      const token = getToken();
+
+      if (!token) {
+        throw new Error(
+          "No access token found. Please log in again."
+        );
+      }
+
+      const response = await fetch(
+        `${API_URL}/api/v1/users/${userId}`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            phone_number: phoneNumber.trim() || null,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(
+          await getErrorMessage(
+            response,
+            "Unable to save this phone number."
+          )
+        );
+      }
+
+      const updatedUser = await response.json();
+
+      setUsers((current) =>
+        current.map((user) =>
+          user.id === userId ? updatedUser : user
+        )
+      );
+      setPhoneDrafts((current) => ({
+        ...current,
+        [userId]: updatedUser.phone_number || "",
+      }));
+      setMessage("Phone number saved.");
+    } catch (err) {
+      setError(
+        err.message || "Unable to save this phone number."
+      );
+    } finally {
+      setPhoneSavingId(null);
     }
   };
 
@@ -774,6 +874,30 @@ export default function Settings() {
                   required
                 />
               </div>
+
+              {isAdmin && (
+                <div className="settings-field">
+                  <label htmlFor="profile-phone-number">
+                    Phone Number for SMS Alerts
+                  </label>
+
+                  <input
+                    id="profile-phone-number"
+                    name="phone_number"
+                    type="tel"
+                    inputMode="tel"
+                    autoComplete="tel"
+                    value={form.phone_number}
+                    onChange={handleChange}
+                    placeholder="+260 971 234 567"
+                    aria-describedby="profile-phone-number-help"
+                  />
+
+                  <small id="profile-phone-number-help">
+                    Enter a Zambian mobile number. Leave blank to clear it.
+                  </small>
+                </div>
+              )}
 
               {/* Email remains read-only from the settings page. */}
               <div className="settings-field">
@@ -1026,6 +1150,7 @@ export default function Settings() {
                           <th>ID</th>
                           <th>Full Name</th>
                           <th>Email</th>
+                          <th>Phone Number</th>
                           <th>Role</th>
                           <th>Status</th>
                           <th>Action</th>
@@ -1056,6 +1181,41 @@ export default function Settings() {
 
                             <td>
                               {user.email}
+                            </td>
+
+                            <td>
+                              <div className="settings-phone-editor">
+                                <input
+                                  type="tel"
+                                  inputMode="tel"
+                                  autoComplete="tel"
+                                  aria-label={`Phone number for ${user.full_name}`}
+                                  value={phoneDrafts[user.id] || ""}
+                                  placeholder="+260 971 234 567"
+                                  onChange={(event) =>
+                                    setPhoneDrafts((current) => ({
+                                      ...current,
+                                      [user.id]: event.target.value,
+                                    }))
+                                  }
+                                />
+                                <button
+                                  type="button"
+                                  className="activate-user-button"
+                                  disabled={phoneSavingId === user.id}
+                                  onClick={() =>
+                                    handleSavePhoneNumber(user.id)
+                                  }
+                                >
+                                  {phoneSavingId === user.id
+                                    ? "Saving..."
+                                    : "Save"}
+                                </button>
+                              </div>
+                              <small>
+                                Leave blank to clear. Valid numbers are
+                                stored in international format.
+                              </small>
                             </td>
 
                             <td>

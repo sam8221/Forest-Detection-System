@@ -56,7 +56,7 @@
  * ===========================================================
  */
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useReducer, useRef, useState } from "react";
 
 import { API_URL as CONFIG_API_URL } from "../config";
 import {
@@ -73,10 +73,27 @@ import {
   Database,
   Download,
 } from "lucide-react";
+import {
+  getSatelliteDownloadButtonState,
+  getDownloadStatusErrorMessage,
+  isDownloadStatusErrorPermanent,
+  isSatelliteDownloadActive,
+  mergeSatelliteDownloadJobs,
+  shouldRetryDownloadStatusError,
+} from "../services/satelliteDownloadProgress";
+import { notifySessionExpired } from "../services/api";
+import {
+  getApiErrorMessage,
+  readApiResponse,
+} from "../services/apiError.js";
+import {
+  initialSatelliteSearchState,
+  satelliteSearchReducer,
+} from "../services/satelliteSearch.js";
 
 const API_URL = CONFIG_API_URL;
 
-export default function SatelliteImages() {
+export default function SatelliteImages({ onAnalyseImage }) {
   const [images, setImages] = useState([]);
   const [forestAreas, setForestAreas] = useState([]);
   const [selectedForestArea, setSelectedForestArea] = useState("");
@@ -86,19 +103,23 @@ export default function SatelliteImages() {
   const [cloudCover, setCloudCover] = useState(30);
   const [searchLimit] = useState(20);
 
-  const [products, setProducts] = useState([]);
-
   const [loading, setLoading] = useState(true);
-  const [searching, setSearching] = useState(false);
+  const [searchState, dispatchSearch] = useReducer(
+    satelliteSearchReducer,
+    initialSatelliteSearchState
+  );
+  const { products, lastSuccessfulSearch, searching, error: searchError } =
+    searchState;
   const [error, setError] = useState("");
-  const [searchError, setSearchError] = useState("");
 
-  // Product identifier currently being acquired, so only the
-  // row that was clicked shows a spinner rather than every
-  // row in the table.
-  const [acquiringId, setAcquiringId] = useState("");
+  const [downloadJobs, setDownloadJobs] = useState({});
+  const [downloadStatusError, setDownloadStatusError] = useState("");
+  const [downloadStatusRetrying, setDownloadStatusRetrying] = useState(false);
+  const [downloadStatusRetryKey, setDownloadStatusRetryKey] = useState(0);
   const [acquireError, setAcquireError] = useState("");
   const [acquireNotice, setAcquireNotice] = useState("");
+  const acquireControllersRef = useRef(new Map());
+  const completedJobsRef = useRef(new Set());
 
   // =========================================================
   // AUTHENTICATION
@@ -208,13 +229,10 @@ export default function SatelliteImages() {
         }
       );
 
-      if (!response.ok) {
-        throw new Error(
-          `Unable to load satellite images. Server returned ${response.status}.`
-        );
-      }
-
-      const data = await response.json();
+      const data = await readApiResponse(
+        response,
+        "Unable to load satellite images. Please try again."
+      );
 
       setImages(
         Array.isArray(data) ? data : []
@@ -226,11 +244,76 @@ export default function SatelliteImages() {
       );
 
       setError(
-        err.message ||
-          "Failed to load satellite images."
+        getApiErrorMessage(
+          err,
+          "Unable to load satellite images. Please try again."
+        )
       );
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchDownloadJobs = async (forestAreaId, signal) => {
+    const response = await fetch(
+      `${API_URL}/api/v1/satellite-images/downloads?forest_area_id=${encodeURIComponent(forestAreaId)}`,
+      {
+        method: "GET",
+        headers: getHeaders(),
+        signal,
+      }
+    );
+
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      const error = new Error(
+        getDownloadStatusErrorMessage(response.status, data)
+      );
+      error.status = response.status;
+      error.permanent = isDownloadStatusErrorPermanent(
+        response.status,
+        data
+      );
+
+      // This request bypasses the shared API client, so the
+      // expired session has to be reported from here.
+      if (response.status === 401) {
+        notifySessionExpired();
+      }
+
+      throw error;
+    }
+    return Array.isArray(data) ? data : [];
+  };
+
+  const retryDownloadStatusCheck = async () => {
+    if (!selectedForestArea || downloadStatusRetrying) return;
+
+    setDownloadStatusRetrying(true);
+    try {
+      const jobs = await fetchDownloadJobs(selectedForestArea);
+      setDownloadStatusError("");
+      setDownloadJobs((current) =>
+        mergeSatelliteDownloadJobs(current, jobs)
+      );
+
+      const completedJobs = jobs.filter(
+        (job) => job.status === "COMPLETED" && job.job_id
+      );
+      completedJobs.forEach((job) => completedJobsRef.current.add(job.job_id));
+      if (completedJobs.length > 0) {
+        await fetchSatelliteImages();
+      }
+    } catch (err) {
+      setDownloadStatusError(
+        getApiErrorMessage(
+          err,
+          "Unable to retrieve download status."
+        )
+      );
+    } finally {
+      setDownloadStatusRetrying(false);
+      setDownloadStatusRetryKey((key) => key + 1);
     }
   };
 
@@ -240,30 +323,31 @@ export default function SatelliteImages() {
 
   const searchSentinelImages = async () => {
     if (!selectedForestArea) {
-      setSearchError(
-        "Please select a forest area first."
-      );
+      dispatchSearch({
+        type: "failure",
+        message: "Please select a forest area first.",
+      });
       return;
     }
 
     if (!startDate || !endDate) {
-      setSearchError(
-        "Please select both start and end dates."
-      );
+      dispatchSearch({
+        type: "failure",
+        message: "Please select both start and end dates.",
+      });
       return;
     }
 
     if (startDate > endDate) {
-      setSearchError(
-        "Start date cannot be later than end date."
-      );
+      dispatchSearch({
+        type: "failure",
+        message: "Start date cannot be later than end date.",
+      });
       return;
     }
 
     try {
-      setSearching(true);
-      setSearchError("");
-      setProducts([]);
+      dispatchSearch({ type: "start" });
 
       const params = new URLSearchParams({
         start_date: startDate,
@@ -281,32 +365,40 @@ export default function SatelliteImages() {
         headers: getHeaders(),
       });
 
-      const data = await response.json();
+      const data = await readApiResponse(
+        response,
+        "Unable to search satellite imagery. Please check the search parameters or try again."
+      );
 
-      if (!response.ok) {
+      if (!Array.isArray(data?.products)) {
         throw new Error(
-          data?.detail ||
-            `Sentinel search failed. Server returned ${response.status}.`
+          "The satellite search returned an unexpected response. Please try again."
         );
       }
 
-      setProducts(
-        Array.isArray(data.products)
-          ? data.products
-          : []
-      );
+      dispatchSearch({
+        type: "success",
+        products: data.products,
+        criteria: {
+          forestAreaId: String(selectedForestArea),
+          startDate,
+          endDate,
+          cloudCover,
+        },
+      });
     } catch (err) {
       console.error(
         "Sentinel Search Error:",
         err
       );
 
-      setSearchError(
-        err.message ||
-          "Unable to retrieve Sentinel-2 imagery."
-      );
-    } finally {
-      setSearching(false);
+      dispatchSearch({
+        type: "failure",
+        message: getApiErrorMessage(
+          err,
+          "Unable to search satellite imagery. Please check the search parameters or try again."
+        ),
+      });
     }
   };
 
@@ -337,7 +429,20 @@ export default function SatelliteImages() {
       return;
     }
 
-    setAcquiringId(product.product_id);
+    if (acquireControllersRef.current.has(product.product_id)) {
+      return;
+    }
+
+    const controller = new AbortController();
+    acquireControllersRef.current.set(product.product_id, controller);
+    setDownloadJobs((current) => ({
+      ...current,
+      [product.product_id]: {
+        product_id: product.product_id,
+        status: "PREPARING",
+        progress_percentage: null,
+      },
+    }));
 
     try {
       const response = await fetch(
@@ -346,6 +451,7 @@ export default function SatelliteImages() {
         {
           method: "POST",
           headers: getHeaders(),
+          signal: controller.signal,
           body: JSON.stringify({
             product_id: product.product_id,
             product_name:
@@ -366,32 +472,76 @@ export default function SatelliteImages() {
         .json()
         .catch(() => null);
 
+      if (response.status === 409) {
+        await fetchSatelliteImages();
+        setDownloadJobs((current) => {
+          const next = { ...current };
+          delete next[product.product_id];
+          return next;
+        });
+        setAcquireNotice(
+          `${product.product_name || product.product_id} is already registered.`
+        );
+        return;
+      }
+
       if (!response.ok) {
+        if (response.status === 401) {
+          notifySessionExpired();
+        }
+
         throw new Error(
-          data?.detail ||
-            "The product could not be acquired. " +
-              `Server returned ${response.status}.`
+          response.status === 401
+            ? getDownloadStatusErrorMessage(response.status, data)
+            : getApiErrorMessage(
+                { response: { status: response.status, data } },
+                "The product could not be acquired. Please retry."
+              )
         );
       }
 
+      if (!data?.job_id || !data?.product_id) {
+        throw new Error(
+          "The server accepted no identifiable download job. Retry the acquisition."
+        );
+      }
+
+      setDownloadJobs((current) =>
+        mergeSatelliteDownloadJobs(current, [data])
+      );
       setAcquireNotice(
         `${
           product.product_name || product.product_id
-        } is registered. You can now run an analysis ` +
-          "for this forest area."
+        } download started. Its progress will update here.`
       );
 
-      // Show the newly registered image in the lower table.
-      await fetchSatelliteImages();
+      if (data.status === "COMPLETED") {
+        completedJobsRef.current.add(data.job_id);
+        await fetchSatelliteImages();
+      }
     } catch (err) {
-      console.error("Acquire Error:", err);
+      if (err.name === "AbortError") {
+        return;
+      }
 
-      setAcquireError(
-        err.message ||
-          "The product could not be acquired."
+      console.error("Acquire Error:", err);
+      const message = getApiErrorMessage(
+        err,
+        "The product could not be acquired. Please retry."
       );
+      setAcquireError(
+        `${product.product_name || product.product_id}: ${message}`
+      );
+      setDownloadJobs((current) => ({
+        ...current,
+        [product.product_id]: {
+          product_id: product.product_id,
+          status: "FAILED",
+          error_message: message,
+        },
+      }));
     } finally {
-      setAcquiringId("");
+      acquireControllersRef.current.delete(product.product_id);
     }
   };
 
@@ -407,7 +557,126 @@ export default function SatelliteImages() {
 
     fetchSatelliteImages();
     fetchForestAreas();
+
+    return () => {
+      for (const controller of acquireControllersRef.current.values()) {
+        controller.abort();
+      }
+      acquireControllersRef.current.clear();
+    };
   }, []);
+
+  useEffect(() => {
+    if (!selectedForestArea) return undefined;
+
+    let cancelled = false;
+    const controller = new AbortController();
+    setDownloadJobs({});
+    setDownloadStatusError("");
+
+    const restoreDownloadJobs = async () => {
+      try {
+        const jobs = await fetchDownloadJobs(
+          selectedForestArea,
+          controller.signal
+        );
+        if (cancelled) return;
+
+        setDownloadJobs((current) =>
+          mergeSatelliteDownloadJobs(current, jobs)
+        );
+
+        const completedJobs = jobs.filter(
+          (job) => job.status === "COMPLETED" && job.job_id
+        );
+        completedJobs.forEach((job) =>
+          completedJobsRef.current.add(job.job_id)
+        );
+        if (completedJobs.length > 0) {
+          await fetchSatelliteImages();
+        }
+      } catch (err) {
+        if (cancelled || err.name === "AbortError") return;
+        setDownloadStatusError(
+          getApiErrorMessage(
+            err,
+            "Unable to retrieve download status. The download may still be running."
+          )
+        );
+      }
+    };
+
+    restoreDownloadJobs();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [selectedForestArea]);
+
+  const hasActiveDownload = Object.values(downloadJobs).some((job) =>
+    isSatelliteDownloadActive(job?.status)
+  );
+
+  useEffect(() => {
+    if (!selectedForestArea || !hasActiveDownload) return undefined;
+
+    let cancelled = false;
+    let timeoutId;
+    let controller;
+
+    const pollDownloadJobs = async () => {
+      controller = new AbortController();
+      try {
+        const jobs = await fetchDownloadJobs(
+          selectedForestArea,
+          controller.signal
+        );
+        if (cancelled) return;
+
+        setDownloadStatusError("");
+        setDownloadJobs((current) =>
+          mergeSatelliteDownloadJobs(current, jobs)
+        );
+
+        const completedJobs = jobs.filter(
+          (job) =>
+            job.status === "COMPLETED" &&
+            job.job_id &&
+            !completedJobsRef.current.has(job.job_id)
+        );
+        completedJobs.forEach((job) =>
+          completedJobsRef.current.add(job.job_id)
+        );
+        if (completedJobs.length > 0) {
+          await fetchSatelliteImages();
+        }
+
+        if (jobs.some((job) => isSatelliteDownloadActive(job.status))) {
+          timeoutId = window.setTimeout(pollDownloadJobs, 1500);
+        }
+      } catch (err) {
+        if (cancelled || err.name === "AbortError") return;
+        setDownloadStatusError(
+          `${getApiErrorMessage(
+            err,
+            "Unable to retrieve download status."
+          )}${shouldRetryDownloadStatusError(err)
+            ? " The download may still be running; status checks will retry."
+            : " Status checks have stopped until this issue is corrected."}`
+        );
+        if (shouldRetryDownloadStatusError(err)) {
+          timeoutId = window.setTimeout(pollDownloadJobs, 3000);
+        }
+      }
+    };
+
+    timeoutId = window.setTimeout(pollDownloadJobs, 500);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+      controller?.abort();
+    };
+  }, [selectedForestArea, hasActiveDownload, downloadStatusRetryKey]);
 
   // =========================================================
   // FORMAT DATE
@@ -478,6 +747,10 @@ export default function SatelliteImages() {
       String(area.id) ===
       String(selectedForestArea)
   );
+  const hasProductsForSelectedForest =
+    products.length > 0 &&
+    lastSuccessfulSearch?.forestAreaId ===
+      String(selectedForestArea);
 
   // =========================================================
   // RENDER
@@ -620,11 +893,9 @@ export default function SatelliteImages() {
 
             <select
               value={selectedForestArea}
-              onChange={(e) =>
-                setSelectedForestArea(
-                  e.target.value
-                )
-              }
+              onChange={(e) => {
+                setSelectedForestArea(e.target.value);
+              }}
             >
 
               <option value="">
@@ -800,13 +1071,30 @@ export default function SatelliteImages() {
           </div>
         )}
 
+        {downloadStatusError && (
+          <div className="sentinel-search-error" role="alert">
+            <AlertCircle size={18} />
+            <span>
+              Download status: {downloadStatusError}
+            </span>
+            <button
+              type="button"
+              className="satellite-status-retry"
+              onClick={retryDownloadStatusCheck}
+              disabled={downloadStatusRetrying}
+            >
+              {downloadStatusRetrying ? "Checking..." : "Check again"}
+            </button>
+          </div>
+        )}
+
       </div>
 
       {/* =====================================================
           SEARCH RESULTS
       ===================================================== */}
 
-      {products.length > 0 && (
+      {hasProductsForSelectedForest && (
 
         <div className="satellite-results-section">
 
@@ -820,7 +1108,17 @@ export default function SatelliteImages() {
 
               <p>
                 Real products returned from
-                Copernicus Data Space.
+                {" "}Copernicus Data Space.
+                {(searchError || searching) && lastSuccessfulSearch && (
+                  <>
+                    {" "}Showing the last successful search
+                    ({lastSuccessfulSearch.startDate} to{" "}
+                    {lastSuccessfulSearch.endDate});{" "}
+                    {searching
+                      ? "the new search is still in progress."
+                      : "the latest search did not complete."}
+                  </>
+                )}
               </p>
 
             </div>
@@ -851,8 +1149,23 @@ export default function SatelliteImages() {
 
               <tbody>
 
-                {products.map(
-                  (product) => (
+                {products.map((product) => {
+                  const downloadJob = downloadJobs[product.product_id];
+                  const isAcquired = images.some(
+                    (image) =>
+                      image.product_id === product.product_id &&
+                      image.is_downloaded === true
+                  );
+                  const buttonState = getSatelliteDownloadButtonState(
+                    downloadJob,
+                    isAcquired,
+                    Boolean(downloadStatusError)
+                  );
+                  const downloadStatus = String(
+                    downloadJob?.status || ""
+                  ).toUpperCase();
+
+                  return (
 
                     <tr
                       key={
@@ -973,35 +1286,61 @@ export default function SatelliteImages() {
                               product
                             )
                           }
-                          disabled={
-                            acquiringId !== ""
-                          }
+                          disabled={buttonState.disabled}
                         >
 
-                          {acquiringId ===
-                          product.product_id ? (
-                            <>
-                              <RefreshCw
-                                size={15}
-                                className="refresh-spinning"
-                              />
-                              Acquiring…
-                            </>
+                          {buttonState.label === "Acquired" ? (
+                            <CheckCircle2 size={15} />
+                          ) : buttonState.active &&
+                            (downloadStatus === "PREPARING" ||
+                              downloadStatus === "VALIDATING") ? (
+                            <RefreshCw
+                              size={15}
+                              className="refresh-spinning"
+                            />
                           ) : (
-                            <>
-                              <Download size={15} />
-                              Acquire
-                            </>
+                            <Download size={15} />
                           )}
+                          {buttonState.label}
 
                         </button>
+
+                        {buttonState.active &&
+                          buttonState.progress !== null && (
+                            <progress
+                              className="satellite-download-progress"
+                              max="100"
+                              value={buttonState.progress}
+                              aria-label={`${buttonState.label} progress`}
+                              style={{ width: "100%", marginTop: "0.35rem" }}
+                            />
+                          )}
+
+                        {downloadStatus === "DOWNLOADING" &&
+                          buttonState.label !== "Status unavailable" &&
+                          buttonState.progress === null && (
+                            <progress
+                              className="satellite-download-progress"
+                              max="100"
+                              aria-label="Download progress is indeterminate"
+                              style={{ width: "100%", marginTop: "0.35rem" }}
+                            />
+                          )}
+
+                        {buttonState.error && (
+                          <span
+                            className="satellite-download-error"
+                            role="alert"
+                          >
+                            {buttonState.error}
+                          </span>
+                        )}
 
                       </td>
 
                     </tr>
-
-                  )
-                )}
+                  );
+                })}
 
               </tbody>
 
@@ -1047,7 +1386,7 @@ export default function SatelliteImages() {
       ===================================================== */}
 
       {!searching &&
-        products.length === 0 &&
+        !hasProductsForSelectedForest &&
         !searchError && (
 
           <div className="sentinel-empty">
@@ -1089,8 +1428,7 @@ export default function SatelliteImages() {
               </h2>
 
               <p>
-                Sentinel-2 images already
-                registered in ForestWatch.
+                Acquired products registered in ForestWatch. Use Analyse to open Analysis with a ready observation preselected.
               </p>
 
             </div>
@@ -1116,6 +1454,7 @@ export default function SatelliteImages() {
                     <th>Acquisition Date</th>
                     <th>Cloud Coverage</th>
                     <th>Status</th>
+                    <th>Action</th>
                   </tr>
 
                 </thead>
@@ -1241,10 +1580,39 @@ export default function SatelliteImages() {
                                 : image.is_downloaded
                                 ? "DOWNLOADED"
                                 : "REGISTERED"}
+                              {image.is_ready_for_analysis
+                                ? " · READY"
+                                : " · NOT READY"}
 
                             </span>
                           </strong>
 
+                        </td>
+
+                        <td>
+                          {image.is_active === true &&
+                          image.is_downloaded === true &&
+                          image.is_ready_for_analysis === true &&
+                          image.processing_level === "L2A" &&
+                          Boolean(image.acquisition_date) ? (
+                            <button
+                              type="button"
+                              className="acquire-button"
+                              onClick={() =>
+                                onAnalyseImage?.({
+                                  forestAreaId: image.forest_area_id,
+                                  satelliteImageId: image.id || image.image_id,
+                                })
+                              }
+                            >
+                              <Satellite size={15} />
+                              Analyse
+                            </button>
+                          ) : (
+                            <span className="satellite-status">
+                              {image.readiness_reason || "Not ready for analysis"}
+                            </span>
+                          )}
                         </td>
 
                       </tr>

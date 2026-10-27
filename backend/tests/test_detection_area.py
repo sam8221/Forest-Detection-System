@@ -38,6 +38,7 @@ Note:
 from pathlib import Path
 
 import numpy as np
+import pytest
 import rasterio
 from rasterio.crs import CRS
 from rasterio.transform import from_origin
@@ -220,6 +221,7 @@ def calculate(
     confirmed_pixel_count: int,
     ndvi_before: float = 0.80,
     ndvi_after: float = 0.30,
+    boundary=None,
 ) -> dict[str, float]:
     """
     Run the real statistics calculation over a built scene.
@@ -237,10 +239,16 @@ def calculate(
     service = DetectionService.__new__(DetectionService)
     service.settings = get_settings()
 
+    if boundary is None:
+        boundary = boundary_from_utm(
+            500000.0, 8599800.0, 500200.0, 8600000.0
+        )
+
     return service.calculate_detection_statistics(
         previous_ndvi_path=scene["previous"],
         latest_ndvi_path=scene["latest"],
         confirmed_mask_path=scene["confirmed"],
+        boundary=boundary,
     )
 
 
@@ -289,6 +297,7 @@ def extract(
     ndvi_before: float = 0.80,
     ndvi_after: float = 0.30,
     boundary=None,
+    allow_missing_boundary: bool = False,
 ) -> list[dict]:
     """
     Run the real patch extraction over a built scene.
@@ -304,6 +313,11 @@ def extract(
 
     service = DetectionService.__new__(DetectionService)
     service.settings = get_settings()
+
+    if boundary is None and not allow_missing_boundary:
+        boundary = boundary_from_utm(
+            500000.0, 8599800.0, 500200.0, 8600000.0
+        )
 
     return service.extract_detection_patches(
         previous_ndvi_path=scene["previous"],
@@ -719,22 +733,34 @@ def test_clearing_straddling_the_boundary_is_measured_inside(
     )
 
 
-def test_without_a_boundary_the_whole_raster_is_analysed(
+def test_missing_boundary_is_rejected(
     tmp_path,
 ) -> None:
     """
-    Omitting the boundary leaves the previous behaviour.
-
-    The unit tests above build a synthetic mask that is
-    entirely the study area, so they pass no boundary.
+    A whole-scene result cannot be attributed to a forest area.
     """
 
-    patches = extract(
+    with pytest.raises(ValueError, match="boundary"):
+        extract(
+            tmp_path,
+            confirmed=block(range(0, 5), range(0, 10)),
+            allow_missing_boundary=True,
+        )
+
+
+def test_affected_area_excludes_confirmed_pixels_outside_boundary(tmp_path) -> None:
+    """Scene-level totals must count only AOI-interior pixels."""
+
+    statistics = calculate(
         tmp_path,
-        confirmed=block(range(0, 5), range(0, 10)),
+        confirmed_pixel_count=100,
+        boundary=boundary_from_utm(
+            500000.0, 8599900.0, 500050.0, 8600000.0
+        ),
     )
 
-    assert len(patches) == 1
+    assert statistics["confirmed_pixels"] == 25
+    assert np.isclose(statistics["detected_area_hectares"], 0.25)
 
 
 # =========================================================

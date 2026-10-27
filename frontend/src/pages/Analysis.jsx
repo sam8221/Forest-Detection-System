@@ -67,8 +67,10 @@
 
 import {
   AlertTriangle,
+  Calendar,
   CheckCircle2,
   Clock3,
+  Cloud,
   Loader2,
   Play,
   RefreshCw,
@@ -77,7 +79,24 @@ import {
   XCircle,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import SatelliteComparisonViewer from "../components/SatelliteComparisonViewer";
 import api from "../services/api";
+import {
+  findEligibleObservation,
+  getEligibleObservations,
+  getSelectedObservationCards,
+  validateObservationPair,
+} from "../services/satelliteComparison";
+import {
+  canDisplayAnalysisResults,
+  isConfirmedActiveAnalysisJob,
+  restoreSelectedPair,
+  selectRestorableAnalysisJob,
+} from "../services/analysisJobState";
+import {
+  analysisMetricDisplays,
+  formatMeasurement,
+} from "../services/analysisMetrics";
 
 const formatDate = (value) => {
   if (!value) return "Not available";
@@ -97,15 +116,6 @@ const formatDate = (value) => {
   });
 };
 
-const formatNumber = (value, decimals = 2) => {
-  const number = Number(value);
-
-  if (!Number.isFinite(number)) {
-    return "0.00";
-  }
-
-  return number.toFixed(decimals);
-};
 
 const normalizeStatus = (status) =>
   String(status || "").toUpperCase();
@@ -142,20 +152,35 @@ const statusClass = (status) => {
   return "status-badge";
 };
 
-export default function Analysis() {
+export default function Analysis({ initialSelection, onSelectionConsumed }) {
   const [forestAreas, setForestAreas] = useState([]);
-  const [selectedArea, setSelectedArea] = useState("");
+  const [selectedArea, setSelectedArea] = useState(
+    initialSelection?.forestAreaId
+      ? String(initialSelection.forestAreaId)
+      : ""
+  );
 
   const [job, setJob] = useState(null);
+  const [observations, setObservations] = useState([]);
+  const [previousImageId, setPreviousImageId] = useState("");
+  const [recentImageId, setRecentImageId] = useState("");
+  const [loadingObservations, setLoadingObservations] = useState(false);
+  const [observationsLoadedForArea, setObservationsLoadedForArea] = useState("");
+  const [observationError, setObservationError] = useState("");
+  const [preselectionMessage, setPreselectionMessage] = useState("");
 
   const [loadingAreas, setLoadingAreas] = useState(true);
   const [loadingJob, setLoadingJob] = useState(false);
-  const [running, setRunning] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
 
   const pollingRef = useRef(null);
+  const pollingFailuresRef = useRef(0);
+  const restoredPairJobRef = useRef(null);
+  const initialSelectionRef = useRef(initialSelection);
+  const preselectionAppliedRef = useRef(false);
 
   const loadForestAreas = useCallback(async () => {
     setLoadingAreas(true);
@@ -172,8 +197,18 @@ export default function Analysis() {
 
       setForestAreas(data);
 
-      if (data.length > 0 && !selectedArea) {
-        setSelectedArea(String(data[0].id));
+      const requestedArea = data.find(
+        (area) =>
+          String(area.id) ===
+          String(initialSelectionRef.current?.forestAreaId)
+      );
+      const nextArea = requestedArea || data[0];
+      setSelectedArea(nextArea ? String(nextArea.id) : "");
+
+      if (initialSelectionRef.current?.forestAreaId && !requestedArea) {
+        setPreselectionMessage("The selected forest area is not available to your account. Choose an area you are authorised to analyse.");
+        preselectionAppliedRef.current = true;
+        onSelectionConsumed?.();
       }
     } catch (err) {
       console.error(
@@ -188,7 +223,13 @@ export default function Analysis() {
     } finally {
       setLoadingAreas(false);
     }
-  }, [selectedArea]);
+  }, []);
+
+  const fetchAnalysisJob = useCallback(async (jobId) => {
+    if (!jobId) return null;
+    const response = await api.get(`/analysis/jobs/${jobId}`);
+    return response.data;
+  }, []);
 
   const loadLatestJob = useCallback(async () => {
     if (!selectedArea) {
@@ -197,6 +238,7 @@ export default function Analysis() {
     }
 
     setLoadingJob(true);
+    setJob(null);
 
     try {
       const response = await api.get(
@@ -207,16 +249,35 @@ export default function Analysis() {
         ? response.data
         : [];
 
-      const areaJobs = jobs.filter(
-        (item) =>
-          String(item.forest_area_id) ===
-          String(selectedArea)
-      );
-
-      if (areaJobs.length > 0) {
-        setJob(areaJobs[0]);
-      } else {
+      const candidate = selectRestorableAnalysisJob(jobs, selectedArea);
+      if (!candidate) {
         setJob(null);
+        return;
+      }
+
+      const confirmedJob = await fetchAnalysisJob(candidate.id);
+      if (
+        ["PENDING", "RUNNING"].includes(normalizeStatus(confirmedJob?.status)) &&
+        !isConfirmedActiveAnalysisJob(confirmedJob)
+      ) {
+        setJob(null);
+        return;
+      }
+
+      setJob(confirmedJob);
+      if (normalizeStatus(confirmedJob?.status) === "FAILED") {
+        setError(
+          confirmedJob.error_message ||
+            "The most recent analysis failed. Select a valid pair and retry."
+        );
+      } else if (
+        normalizeStatus(confirmedJob?.status) === "COMPLETED" &&
+        !canDisplayAnalysisResults(confirmedJob)
+      ) {
+        setError(
+          confirmedJob.results_verification_error ||
+            "This completed job has no verified results. Run a new analysis."
+        );
       }
     } catch (err) {
       console.error(
@@ -228,84 +289,108 @@ export default function Analysis() {
         err.response?.data?.detail ||
           "Failed to load analysis information."
       );
+      setJob(null);
     } finally {
       setLoadingJob(false);
     }
-  }, [selectedArea]);
+  }, [fetchAnalysisJob, selectedArea]);
 
   const loadJob = useCallback(async (jobId) => {
     if (!jobId) return null;
 
     try {
-      const response = await api.get(
-        `/analysis/jobs/${jobId}`
-      );
-
-      setJob(response.data);
-
-      return response.data;
+      const updatedJob = await fetchAnalysisJob(jobId);
+      setJob(updatedJob);
+      return updatedJob;
     } catch (err) {
       console.error(
         "Failed to load analysis job:",
         err
       );
 
-      return null;
+      return { pollError: err };
+    }
+  }, [fetchAnalysisJob]);
+
+  const stopPolling = useCallback(() => {
+    if (pollingRef.current) {
+      clearTimeout(pollingRef.current);
+      pollingRef.current = null;
     }
   }, []);
 
   const startPolling = useCallback(
     (jobId) => {
-      if (pollingRef.current) {
-        clearInterval(
-          pollingRef.current
-        );
-      }
+      stopPolling();
+      pollingFailuresRef.current = 0;
 
-      pollingRef.current = setInterval(
-        async () => {
-          const updatedJob =
-            await loadJob(jobId);
-
-          if (!updatedJob) {
+      const poll = async () => {
+        const updatedJob = await loadJob(jobId);
+        if (updatedJob?.pollError) {
+          const statusCode = updatedJob.pollError.response?.status;
+          if (statusCode === 404) {
+            stopPolling();
+            setJob(null);
+            setError(
+              `Analysis job #${jobId} no longer exists. Select the observation pair and start a new analysis.`
+            );
             return;
           }
 
-          const status =
-            normalizeStatus(
-              updatedJob.status
+          pollingFailuresRef.current += 1;
+          if (pollingFailuresRef.current >= 5) {
+            stopPolling();
+            setJob((current) =>
+              current?.id === jobId
+                ? { ...current, worker_available: false }
+                : current
             );
-
-          if (
-            status === "COMPLETED" ||
-            status === "FAILED"
-          ) {
-            clearInterval(
-              pollingRef.current
+            setError(
+              "The backend could not confirm this analysis is still active. Refresh its status or retry the selected pair."
             );
-
-            pollingRef.current = null;
-
-            setRunning(false);
-
-            if (status === "COMPLETED") {
-              setMessage(
-                "Deforestation analysis completed successfully."
-              );
-            }
-
-            if (status === "FAILED") {
-              setError(
-                updatedJob.error_message ||
-                  "The deforestation analysis failed."
-              );
-            }
+            return;
           }
-        },
-        3000
-      );
+          pollingRef.current = setTimeout(poll, 3000);
+          return;
+        }
+
+        pollingFailuresRef.current = 0;
+        const status = normalizeStatus(updatedJob?.status);
+        if (status === "COMPLETED" || status === "FAILED") {
+          stopPolling();
+          if (status === "COMPLETED" && canDisplayAnalysisResults(updatedJob)) {
+            setError("");
+            setMessage("Deforestation analysis completed successfully.");
+          } else if (status === "FAILED") {
+            setMessage("");
+            setError(
+              updatedJob.error_message ||
+                "The deforestation analysis failed. Select a valid pair and retry."
+            );
+          } else {
+            setMessage("");
+            setError(
+              updatedJob.results_verification_error ||
+                "The job finished but its results could not be verified. Run a new analysis."
+            );
+          }
+          return;
+        }
+
+        if (!isConfirmedActiveAnalysisJob(updatedJob)) {
+          stopPolling();
+          setJob(null);
+          setError(
+            "The backend no longer confirms an active worker for this job. Select the pair and retry."
+          );
+          return;
+        }
+        pollingRef.current = setTimeout(poll, 3000);
+      };
+
+      pollingRef.current = setTimeout(poll, 3000);
     },
-    [loadJob]
+    [loadJob, stopPolling]
   );
 
   useEffect(() => {
@@ -320,22 +405,147 @@ export default function Analysis() {
     setJob(null);
     setMessage("");
     setError("");
+    setPreviousImageId("");
+    setRecentImageId("");
+    restoredPairJobRef.current = null;
+    stopPolling();
 
     loadLatestJob();
   }, [
     selectedArea,
     loadLatestJob,
+    stopPolling,
   ]);
 
   useEffect(() => {
+    if (!selectedArea) {
+      setObservations([]);
+      setObservationsLoadedForArea("");
+      return undefined;
+    }
+
+    let cancelled = false;
+    setLoadingObservations(true);
+    setObservationError("");
+    setObservationsLoadedForArea("");
+
+    api
+      .get(`/satellite-images/forest/${selectedArea}`)
+      .then((response) => {
+        if (!cancelled) {
+          setObservations(
+            Array.isArray(response.data) ? response.data : []
+          );
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setObservations([]);
+          setObservationError(
+            err.response?.data?.detail ||
+              "Unable to load acquired Sentinel-2 observations for this forest area."
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoadingObservations(false);
+          setObservationsLoadedForArea(String(selectedArea));
+        }
+      });
+
     return () => {
-      if (pollingRef.current) {
-        clearInterval(
-          pollingRef.current
+      cancelled = true;
+    };
+  }, [selectedArea]);
+
+  useEffect(() => {
+    const requested = initialSelectionRef.current;
+    if (
+      preselectionAppliedRef.current ||
+      !requested?.satelliteImageId ||
+      !selectedArea ||
+      String(requested.forestAreaId) !== String(selectedArea) ||
+      observationsLoadedForArea !== String(selectedArea)
+    ) {
+      return;
+    }
+
+    if (observationError) {
+      setPreselectionMessage(observationError);
+    } else {
+      const selectedImage = findEligibleObservation(
+        observations,
+        selectedArea,
+        requested.satelliteImageId
+      );
+      if (selectedImage) {
+        setRecentImageId(String(selectedImage.id));
+        setPreselectionMessage(
+          `Preselected ${selectedImage.product_id} (${formatDate(selectedImage.acquisition_date)}). Select an earlier compatible observation to continue.`
+        );
+      } else {
+        setPreselectionMessage(
+          "The selected product is no longer active, downloaded, or eligible for analysis. Choose an eligible observation below."
         );
       }
-    };
-  }, []);
+    }
+
+    preselectionAppliedRef.current = true;
+    onSelectionConsumed?.();
+  }, [
+    observations,
+    observationsLoadedForArea,
+    observationError,
+    onSelectionConsumed,
+    selectedArea,
+  ]);
+
+  useEffect(() => {
+    if (
+      !job?.id ||
+      !job.previous_satellite_image_id ||
+      !job.satellite_image_id ||
+      !selectedArea ||
+      observationsLoadedForArea !== String(selectedArea) ||
+      restoredPairJobRef.current === job.id
+    ) {
+      return;
+    }
+
+    const restored = restoreSelectedPair(job, observations, selectedArea);
+    if (restored) {
+      setPreviousImageId(restored.previousImageId);
+      setRecentImageId(restored.recentImageId);
+    } else {
+      setError(
+        "The observation pair recorded on this job is no longer eligible. Choose a currently available pair to run a new analysis."
+      );
+    }
+    restoredPairJobRef.current = job.id;
+  }, [
+    job?.id,
+    job?.previous_satellite_image_id,
+    job?.satellite_image_id,
+    observations,
+    observationsLoadedForArea,
+    selectedArea,
+  ]);
+
+  useEffect(() => {
+    return stopPolling;
+  }, [stopPolling]);
+
+  useEffect(() => {
+    if (isConfirmedActiveAnalysisJob(job)) {
+      startPolling(job.id);
+    } else {
+      stopPolling();
+    }
+  }, [job?.id, job?.status, job?.worker_available, startPolling, stopPolling]);
+
+  const jobActive = isConfirmedActiveAnalysisJob(job);
+  const busy = submitting || jobActive;
 
   const runAnalysis = async () => {
     if (!selectedArea) {
@@ -345,9 +555,13 @@ export default function Analysis() {
       return;
     }
 
-    setRunning(true);
+    setSubmitting(true);
+    setJob(null);
+    setPreviousImageId("");
+    setRecentImageId("");
     setError("");
     setMessage("");
+    restoredPairJobRef.current = null;
 
     try {
       const response = await api.post(
@@ -366,14 +580,11 @@ export default function Analysis() {
           createdJob.status || "PENDING",
         job_type:
           createdJob.job_type || "AUTOMATIC",
+        worker_available: createdJob.worker_available === true,
       });
 
       setMessage(
-        "Analysis started. Sentinel-2 processing is running in the background."
-      );
-
-      startPolling(
-        createdJob.analysis_job_id
+        "Analysis queued. The backend worker will process the request."
       );
     } catch (err) {
       console.error(
@@ -381,12 +592,67 @@ export default function Analysis() {
         err
       );
 
-      setRunning(false);
-
       setError(
         err.response?.data?.detail ||
           "Failed to start deforestation analysis."
       );
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const runSelectedPairAnalysis = async () => {
+    setError("");
+    setMessage("");
+
+    const pair = validateObservationPair(
+      observations,
+      selectedArea,
+      previousImageId,
+      recentImageId
+    );
+    if (!pair.valid) {
+      setError(pair.error);
+      return;
+    }
+
+    setSubmitting(true);
+    setJob(null);
+    restoredPairJobRef.current = null;
+    try {
+      const response = await api.post(
+        `/analysis/run/${selectedArea}/pair`,
+        {
+          previous_satellite_image_id: Number(previousImageId),
+          recent_satellite_image_id: Number(recentImageId),
+        }
+      );
+      const createdJob = response.data;
+
+      setJob({
+        id: createdJob.analysis_job_id,
+        forest_area_id: createdJob.forest_area_id,
+        previous_satellite_image_id:
+          createdJob.previous_satellite_image_id,
+        satellite_image_id:
+          createdJob.recent_satellite_image_id,
+        status: createdJob.status || "PENDING",
+        job_type: "MANUAL",
+        created_at: new Date().toISOString(),
+        worker_available: createdJob.worker_available === true,
+      });
+      setMessage(
+        `Analysis queued for the selected observations (${formatDate(pair.previous.acquisition_date)} and ${formatDate(pair.recent.acquisition_date)}).`
+      );
+      restoredPairJobRef.current = createdJob.analysis_job_id;
+    } catch (err) {
+      console.error("Failed to start selected-pair analysis:", err);
+      setError(
+        err.response?.data?.detail ||
+          "The selected Sentinel-2 pair could not be analysed."
+      );
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -404,22 +670,49 @@ export default function Analysis() {
         String(selectedArea)
     );
 
-  const vegetationChange =
-    job?.vegetation_change_percentage ?? 0;
+  const eligibleObservations = getEligibleObservations(
+    observations,
+    selectedArea
+  );
+  const pairValidation =
+    previousImageId && recentImageId
+      ? validateObservationPair(
+          observations,
+          selectedArea,
+          previousImageId,
+          recentImageId
+        )
+      : null;
+  const selectedObservationCards = getSelectedObservationCards(
+    observations,
+    selectedArea,
+    previousImageId,
+    recentImageId
+  );
 
-  const confidence =
-    job?.confidence_percentage ??
-    job?.confidence ??
-    0;
-
-  const deforestedArea =
-    job?.loss_area_hectares ??
-    job?.deforestation_area_hectares ??
-    job?.deforested_area_hectares ??
-    0;
+  // Read from the fields the analysis API actually returns:
+  // vegetation_change_percentage, detected_area_hectares,
+  // mean_confidence_score and detection_count.
+  //
+  // The affected area and the confidence were previously read
+  // from loss_area_hectares, deforestation_area_hectares,
+  // deforested_area_hectares, confidence_percentage and
+  // confidence - none of which this API has ever sent. Each
+  // chain therefore fell through to its "?? 0" default, so
+  // every completed analysis reported 0.00 ha affected at
+  // 0.00% confidence however much clearing it had found.
+  //
+  // The rule now lives in services/analysisMetrics.js, where
+  // it is tested directly.
+  const {
+    vegetationChangeDisplay,
+    affectedAreaDisplay,
+    confidenceDisplay,
+  } = analysisMetricDisplays(job);
 
   const status =
     job?.status || "NOT_STARTED";
+  const verifiedResults = canDisplayAnalysisResults(job);
 
   return (
     <div className="analysis-page">
@@ -511,9 +804,55 @@ export default function Analysis() {
 
         .analysis-controls {
           display: grid;
-          grid-template-columns: 1fr auto;
+          grid-template-columns: repeat(3, minmax(180px, 1fr));
           gap: 16px;
-          align-items: end;
+          align-items: start;
+        }
+
+        .analysis-actions {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 10px;
+          margin-top: 18px;
+        }
+
+        .analysis-observation-details {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 12px;
+          margin-top: 16px;
+        }
+
+        .analysis-observation-card {
+          display: grid;
+          gap: 5px;
+          padding: 12px 14px;
+          border: 1px solid #dbeafe;
+          border-radius: 8px;
+          background: #f8fafc;
+          color: #475569;
+          font-size: 13px;
+        }
+
+        .analysis-observation-card strong {
+          color: #0f172a;
+        }
+
+        .analysis-selection-hint {
+          margin: 14px 0 0;
+          color: #64748b;
+          font-size: 13px;
+          line-height: 1.5;
+        }
+
+        .analysis-progress-log {
+          margin-top: 12px;
+          padding: 12px 14px;
+          border-radius: 8px;
+          background: #f8fafc;
+          color: #475569;
+          white-space: pre-wrap;
+          font-size: 13px;
         }
 
         .analysis-field {
@@ -729,6 +1068,10 @@ export default function Analysis() {
             grid-template-columns: 1fr;
           }
 
+          .analysis-observation-details {
+            grid-template-columns: 1fr;
+          }
+
           .analysis-stat-grid {
             grid-template-columns: 1fr;
           }
@@ -756,7 +1099,7 @@ export default function Analysis() {
           <button
             className="analysis-button secondary"
             onClick={refresh}
-            disabled={loadingJob || running}
+            disabled={loadingJob}
           >
             <RefreshCw size={16} />
             Refresh
@@ -778,10 +1121,21 @@ export default function Analysis() {
         </div>
       )}
 
+      {preselectionMessage && (
+        <div className="analysis-alert success" role="status">
+          <Satellite size={18} />
+          <span>{preselectionMessage}</span>
+        </div>
+      )}
+
       <div className="analysis-card">
         <h2 className="analysis-card-title">
-          Start Forest Analysis
+          Analysis configuration
         </h2>
+
+        <p className="analysis-selection-hint">
+          Compare two acquired Sentinel-2 Level-2A observations for one registered forest area. Opening this page or changing a selection does not download imagery.
+        </p>
 
         <div className="analysis-controls">
           <div className="analysis-field">
@@ -798,21 +1152,16 @@ export default function Analysis() {
                   event.target.value
                 );
                 setJob(null);
+                setPreviousImageId("");
+                setRecentImageId("");
+                setPreselectionMessage("");
                 setMessage("");
                 setError("");
-
-                if (pollingRef.current) {
-                  clearInterval(
-                    pollingRef.current
-                  );
-
-                  pollingRef.current = null;
-                }
-
-                setRunning(false);
+                restoredPairJobRef.current = null;
+                stopPolling();
               }}
               disabled={
-                loadingAreas || running
+                loadingAreas || busy || loadingJob
               }
             >
               <option value="">
@@ -834,14 +1183,128 @@ export default function Analysis() {
             </select>
           </div>
 
+          <div className="analysis-field">
+            <label htmlFor="previous-observation">
+              Previous observation
+            </label>
+            <select
+              id="previous-observation"
+              className="analysis-select"
+              value={previousImageId}
+              onChange={(event) => {
+                setPreviousImageId(event.target.value);
+                setJob(null);
+                setMessage("");
+                setError("");
+                restoredPairJobRef.current = null;
+              }}
+              disabled={loadingObservations || busy || !selectedArea}
+            >
+              <option value="">
+                {loadingObservations ? "Loading observations..." : "Select earlier date"}
+              </option>
+              {eligibleObservations.map((image) => (
+                <option key={`previous-${image.id}`} value={image.id}>
+                  {formatDate(image.acquisition_date)} · {image.tile_id} · {formatMeasurement(image.cloud_cover_percentage, "%", 1)} cloud
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="analysis-field">
+            <label htmlFor="recent-observation">
+              Recent observation
+            </label>
+            <select
+              id="recent-observation"
+              className="analysis-select"
+              value={recentImageId}
+              onChange={(event) => {
+                setRecentImageId(event.target.value);
+                setJob(null);
+                setMessage("");
+                setError("");
+                restoredPairJobRef.current = null;
+              }}
+              disabled={loadingObservations || busy || !selectedArea}
+            >
+              <option value="">
+                {loadingObservations ? "Loading observations..." : "Select later date"}
+              </option>
+              {eligibleObservations.map((image) => (
+                <option key={`recent-${image.id}`} value={image.id}>
+                  {formatDate(image.acquisition_date)} · {image.tile_id} · {formatMeasurement(image.cloud_cover_percentage, "%", 1)} cloud
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {observationError && (
+          <div className="analysis-alert error" role="alert">
+            <AlertTriangle size={18} />
+            <span>{observationError}</span>
+          </div>
+        )}
+
+        {!loadingObservations && !observationError && eligibleObservations.length === 0 && selectedArea && (
+          <p className="analysis-selection-hint">
+            No active, downloaded Level-2A observations are registered for this forest area. Acquire imagery in Satellite Images, then return here to compare it.
+          </p>
+        )}
+
+        {selectedObservationCards.length === 2 && (
+          <div className="analysis-observation-details">
+            {selectedObservationCards.map(({ role, label, image }) => (
+              <div
+                className="analysis-observation-card"
+                key={`selected-${role}-${image.id}`}
+                data-observation-role={role}
+              >
+                <strong>{label}</strong>
+                <span><Calendar size={14} /> {formatDate(image.acquisition_date)} · Product {image.product_id}</span>
+                <span><Cloud size={14} /> Tile {image.tile_id} · {formatMeasurement(image.cloud_cover_percentage, "%", 1)} catalogue cloud · {image.is_downloaded ? "Downloaded" : "Not downloaded"} · {image.processing_level || "Processing level unavailable"}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {pairValidation && !pairValidation.valid && (
+          <div className="analysis-alert error" role="alert">
+            <AlertTriangle size={18} />
+            <span>{pairValidation.error}</span>
+          </div>
+        )}
+
+        {eligibleObservations.length > 0 && eligibleObservations.length < 2 && (
+          <p className="analysis-selection-hint">
+            At least two acquired observations are needed. Products must be active Level-2A images for this forest; the backend also verifies local files, same-tile coverage, and acquisition order before processing.
+          </p>
+        )}
+
+        <div className="analysis-actions">
           <button
             className="analysis-button primary"
-            onClick={runAnalysis}
+            onClick={runSelectedPairAnalysis}
             disabled={
-              !selectedArea || running
+              !selectedArea ||
+              busy ||
+              loadingJob ||
+              loadingObservations ||
+              !pairValidation?.valid
             }
           >
-            {running ? (
+            {submitting ? (
+              <>
+                <Loader2 size={17} />
+                Submitting analysis...
+              </>
+            ) : jobActive && normalizeStatus(job?.status) === "PENDING" ? (
+              <>
+                <Clock3 size={17} />
+                Analysis queued...
+              </>
+            ) : jobActive && normalizeStatus(job?.status) === "RUNNING" ? (
               <>
                 <Loader2 size={17} />
                 Analysis Running...
@@ -849,11 +1312,24 @@ export default function Analysis() {
             ) : (
               <>
                 <Play size={17} />
-                Run Analysis
+                Run selected-pair analysis
               </>
             )}
           </button>
+
+          <button
+            className="analysis-button secondary"
+            onClick={runAnalysis}
+            disabled={!selectedArea || busy || loadingJob}
+            title="Runs the existing automatic seasonal analysis workflow."
+          >
+            <RefreshCw size={16} />
+            Run automatic seasonal analysis
+          </button>
         </div>
+        <p className="analysis-selection-hint">
+          The automatic workflow remains available for existing operations and may acquire imagery after you explicitly start it. Selected-pair analysis uses only the two observations chosen above.
+        </p>
       </div>
 
       {selectedForestArea && (
@@ -916,7 +1392,26 @@ export default function Analysis() {
         </div>
       ) : job ? (
         <>
-          <div className="analysis-stat-grid">
+          {!verifiedResults && (
+            <div className="analysis-card" role="status">
+              <h2 className="analysis-card-title">Analysis job #{job.id}</h2>
+              <div className={statusClass(status)}>{statusLabel(status)}</div>
+              <p>
+                {normalizeStatus(status) === "PENDING"
+                  ? "Queued for the backend analysis worker."
+                  : normalizeStatus(status) === "RUNNING"
+                    ? "The backend worker is processing this job."
+                    : normalizeStatus(status) === "FAILED"
+                      ? job.error_message || "The analysis failed. You can retry with a valid pair."
+                      : job.results_verification_error || "The completed job's results are not verified. Run a new analysis."}
+              </p>
+              {job.execution_log && (
+                <div className="analysis-progress-log">{job.execution_log}</div>
+              )}
+            </div>
+          )}
+
+          {verifiedResults && <div className="analysis-stat-grid">
 
             <div className="analysis-stat">
               <div className="analysis-stat-icon">
@@ -929,9 +1424,7 @@ export default function Analysis() {
                 </div>
 
                 <div className="analysis-stat-value">
-                  {formatNumber(
-                    vegetationChange
-                  )}%
+                  {vegetationChangeDisplay}
                 </div>
               </div>
             </div>
@@ -943,13 +1436,11 @@ export default function Analysis() {
 
               <div>
                 <div className="analysis-stat-label">
-                  Deforested Area
+                  Potential Affected Area
                 </div>
 
                 <div className="analysis-stat-value">
-                  {formatNumber(
-                    deforestedArea
-                  )} ha
+                  {affectedAreaDisplay}
                 </div>
               </div>
             </div>
@@ -961,13 +1452,11 @@ export default function Analysis() {
 
               <div>
                 <div className="analysis-stat-label">
-                  Confidence
+                  Mean Detection Confidence
                 </div>
 
                 <div className="analysis-stat-value">
-                  {formatNumber(
-                    confidence
-                  )}%
+                  {confidenceDisplay}
                 </div>
               </div>
             </div>
@@ -1010,7 +1499,23 @@ export default function Analysis() {
               </div>
             </div>
 
-          </div>
+          </div>}
+
+          {verifiedResults && normalizeStatus(status) === "COMPLETED" &&
+          job.previous_satellite_image_id ? (
+            <SatelliteComparisonViewer
+              key={`comparison-${job.id}`}
+              forestAreaId={job.forest_area_id || selectedArea}
+              jobId={job.id}
+            />
+          ) : null}
+
+          {verifiedResults && normalizeStatus(status) === "COMPLETED" &&
+          !job.previous_satellite_image_id ? (
+            <div className="analysis-alert success" role="status">
+              This automatic seasonal job completed. The swipe and side-by-side viewer is available for explicit observation-pair jobs.
+            </div>
+          ) : null}
 
           <div className="analysis-two-column">
 
@@ -1040,6 +1545,11 @@ export default function Analysis() {
                     {job.job_type ||
                       "AUTOMATIC"}
                   </span>
+                </div>
+
+                <div className="image-row">
+                  <span className="image-label">Status</span>
+                  <span className="image-value">{statusLabel(status)}</span>
                 </div>
 
                 <div className="image-row">
@@ -1079,6 +1589,12 @@ export default function Analysis() {
                 </div>
 
               </div>
+
+              {job.execution_log && (
+                <div className="analysis-progress-log" role="status">
+                  {job.execution_log}
+                </div>
+              )}
             </div>
 
             <div className="analysis-card">
@@ -1086,7 +1602,7 @@ export default function Analysis() {
                 Sentinel-2 Processing
               </h2>
 
-              <div className="image-info">
+              {verifiedResults ? <div className="image-info">
 
                 <div className="image-row">
                   <span className="image-label">
@@ -1116,9 +1632,7 @@ export default function Analysis() {
                   </span>
 
                   <span className="image-value">
-                    {formatNumber(
-                      job.cloud_cover_percentage
-                    )}%
+                    {formatMeasurement(job.cloud_cover_percentage, "%")}
                   </span>
                 </div>
 
@@ -1128,9 +1642,7 @@ export default function Analysis() {
                   </span>
 
                   <span className="image-value">
-                    {formatNumber(
-                      job.ndvi_threshold
-                    )}
+                    {formatMeasurement(job.ndvi_threshold)}
                   </span>
                 </div>
 
@@ -1141,15 +1653,20 @@ export default function Analysis() {
 
                   <span className="image-value">
                     {job.duration_seconds
-                      ? `${formatNumber(
+                      ? formatMeasurement(
                           job.duration_seconds,
+                          " seconds",
                           1
-                        )} seconds`
+                        )
                       : "Processing"}
                   </span>
                 </div>
 
-              </div>
+              </div> : (
+                <p className="analysis-selection-hint">
+                  Processing metrics and imagery will appear only after this exact job completes and its outputs pass verification.
+                </p>
+              )}
             </div>
 
           </div>
@@ -1201,9 +1718,7 @@ export default function Analysis() {
                 </strong>
 
                 <span>
-                  Significant vegetation reduction
-                  is evaluated as possible
-                  deforestation.
+                  NDVI decline identifies potential vegetation change for review. It does not by itself confirm deforestation.
                 </span>
               </div>
 
@@ -1225,9 +1740,8 @@ export default function Analysis() {
 
             <p>
               Select a forest area and click
-              <strong> Run Analysis </strong>
-              to begin Sentinel-2 deforestation
-              analysis.
+              <strong> Run selected-pair analysis </strong>
+              after choosing two acquired observations. The automatic seasonal workflow is also available above.
             </p>
 
           </div>

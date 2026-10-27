@@ -364,6 +364,24 @@ export default function RegisterForestArea({
       );
     }
 
+    /*
+     * The two length ceilings below are the widths of the
+     * columns these values are stored in. The form used to
+     * allow 30 and 200, which the database then refused,
+     * and the officer was told only that the area "could
+     * not be saved". Stating the limit here keeps the
+     * failure in front of the field that caused it.
+     */
+
+    if (
+      forestCode.length >
+      20
+    ) {
+      return (
+        "Forest code cannot exceed 20 characters."
+      );
+    }
+
     if (!name) {
       return "Please enter the forest area name.";
     }
@@ -374,6 +392,15 @@ export default function RegisterForestArea({
     ) {
       return (
         "Forest area name must contain at least 3 characters."
+      );
+    }
+
+    if (
+      name.length >
+      150
+    ) {
+      return (
+        "Forest area name cannot exceed 150 characters."
       );
     }
 
@@ -702,13 +729,14 @@ export default function RegisterForestArea({
                   handleChange
                 }
                 placeholder="e.g. FW-CB-005"
-                maxLength={30}
+                maxLength={20}
                 required
               />
 
               <small>
                 Enter a unique ForestWatch
-                identification code.
+                identification code, up to 20
+                characters.
               </small>
 
             </div>
@@ -730,7 +758,7 @@ export default function RegisterForestArea({
                   handleChange
                 }
                 placeholder="e.g. Kitwe Community Forest"
-                maxLength={200}
+                maxLength={150}
                 required
               />
 

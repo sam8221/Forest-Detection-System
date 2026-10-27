@@ -58,6 +58,7 @@ if TYPE_CHECKING:
     from app.models.alert_recipient import AlertRecipient
     from app.models.detection import Detection
     from app.models.email_queue import EmailQueue
+    from app.models.sms_queue import SmsQueue
 
 
 class Alert(AuditMixin, Base):
@@ -165,6 +166,13 @@ class Alert(AuditMixin, Base):
 
     email_queue: Mapped[list["EmailQueue"]] = relationship(
         "EmailQueue",
+        back_populates="alert",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+    sms_queue: Mapped[list["SmsQueue"]] = relationship(
+        "SmsQueue",
         back_populates="alert",
         cascade="all, delete-orphan",
         lazy="selectin",

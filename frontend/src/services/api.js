@@ -54,6 +54,31 @@ export function onSessionExpired(handler) {
   return () => sessionExpiredHandlers.delete(handler);
 }
 
+/**
+ * Report an ended session to every subscriber.
+ *
+ * The response interceptor below calls this for requests
+ * made through this client. Pages that call fetch() directly
+ * -- the satellite download status and acquisition requests
+ * do, because they need per-request abort signals -- must
+ * call it themselves, otherwise an expired token surfaces as
+ * a bare "Could not validate credentials." message and the
+ * officer is left on a page that can no longer load anything.
+ */
+export function notifySessionExpired() {
+  localStorage.removeItem("access_token");
+  localStorage.removeItem("token");
+
+  sessionExpiredHandlers.forEach((handler) => {
+    try {
+      handler();
+    } catch {
+      // A failing subscriber must not stop the others
+      // from being told the session ended.
+    }
+  });
+}
+
 // ---------------------------------------------------------
 // Attach JWT token automatically
 // ---------------------------------------------------------
@@ -97,17 +122,7 @@ api.interceptors.response.use(
     );
 
     if (status === 401 && !isLoginAttempt) {
-      localStorage.removeItem("access_token");
-      localStorage.removeItem("token");
-
-      sessionExpiredHandlers.forEach((handler) => {
-        try {
-          handler();
-        } catch {
-          // A failing subscriber must not stop the others
-          // from being told the session ended.
-        }
-      });
+      notifySessionExpired();
     }
 
     return Promise.reject(error);
