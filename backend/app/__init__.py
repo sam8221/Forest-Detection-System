@@ -36,3 +36,23 @@ Project:
     Using Sentinel-2 Imagery in the Copperbelt, Zambia
 ===========================================================
 """
+
+# ---------------------------------------------------------
+# Coordinate reference data
+#
+# This runs before any other module in the package, which is
+# the point: GDAL reads the PROJ and GDAL data paths once,
+# when it initialises on the first rasterio import, so they
+# have to be correct before app.services is reached. A
+# PostGIS installation on the machine sets those paths to its
+# own older PROJ database and every EPSG lookup then fails.
+# See app/core/geospatial_env.py for the full account.
+#
+# app.core.geospatial_env imports only the standard library,
+# so this does not give the package a heavyweight import or
+# reach outside app.core.
+# ---------------------------------------------------------
+
+from app.core import geospatial_env as _geospatial_env
+
+_geospatial_env.configure()

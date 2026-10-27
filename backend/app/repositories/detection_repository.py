@@ -37,7 +37,7 @@ Version:
 ===========================================================
 """
 
-from sqlalchemy import false
+from sqlalchemy import false, func
 from sqlalchemy.orm import Query, Session
 
 from app.models.detection import Detection
@@ -540,3 +540,79 @@ class DetectionRepository:
 
         self.db.delete(detection)
         self.db.commit()
+    # ---------------------------------------------------------
+    # Measured Totals For One Analysis Job
+    # ---------------------------------------------------------
+    def measured_totals_for_job(
+        self,
+        analysis_job_id: int,
+    ) -> dict[str, float | int | None]:
+        """
+        Return what one analysis job actually measured.
+
+        Args:
+            analysis_job_id:
+                The job whose detections are summarised.
+
+        Returns:
+            A mapping with:
+
+            detection_count
+                How many qualifying detections the job
+                produced. Zero is a real result, not a
+                missing one: a job can complete having found
+                nothing.
+
+            detected_area_hectares
+                The summed area of those detections, or None
+                when there are none. None rather than 0.0,
+                because "no area was measured" and "an area
+                of zero was measured" are different
+                statements and the interface must be able to
+                tell them apart.
+
+            mean_confidence_score
+                The mean of the detections' confidence
+                indicators, or None when there are none.
+
+        Unscoped by design. The caller has already resolved
+        the job through AnalysisRepository.get_by_id_for_user,
+        so jurisdiction has been enforced on the job; the
+        detections summarised here all belong to that job's
+        forest area by construction.
+        """
+
+        count, total_area, mean_confidence = (
+            self.db.query(
+                func.count(Detection.id),
+                func.sum(Detection.detected_area_hectares),
+                func.avg(Detection.confidence_score),
+            )
+            .filter(
+                Detection.analysis_job_id == analysis_job_id,
+            )
+            .one()
+        )
+
+        if not count:
+            return {
+                "detection_count": 0,
+                "detected_area_hectares": None,
+                "mean_confidence_score": None,
+            }
+
+        return {
+            "detection_count": int(count),
+
+            "detected_area_hectares": (
+                float(total_area)
+                if total_area is not None
+                else None
+            ),
+
+            "mean_confidence_score": (
+                float(mean_confidence)
+                if mean_confidence is not None
+                else None
+            ),
+        }

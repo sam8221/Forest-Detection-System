@@ -79,3 +79,93 @@ NDVI_NODATA: float = -9999.0
 NDVI_MINIMUM: float = -1.0
 
 NDVI_MAXIMUM: float = 1.0
+
+
+# ---------------------------------------------------------
+# Sentinel-2 processing level
+#
+# The pipeline requires Level-2A: bottom-of-atmosphere
+# surface reflectance, which also carries the SCL band the
+# cloud mask depends on. Level-1C is top-of-atmosphere and
+# has no SCL band, so an L1C product cannot be masked and
+# its NDVI is not comparable with an L2A scene's.
+#
+# The level therefore has to be checked before a product
+# enters an analysis. The difficulty is that the same level
+# reaches us under several names: the Copernicus OData
+# catalogue reports the processingLevel attribute as
+# "Level-2A" on some responses, copernicus_service falls
+# back to the productType spelling "S2MSI2A" when the
+# attribute is absent, and sentinel_service writes the short
+# form "L2A" when it registers a product itself.
+#
+# Comparing against one literal spelling therefore rejected
+# genuine Level-2A products depending only on which code
+# path registered them. Recognition is done against an
+# explicit set of accepted spellings rather than by pattern
+# matching, so no Level-1C spelling can ever satisfy it by
+# resembling one of these.
+# ---------------------------------------------------------
+
+#: The spelling stored for newly registered products.
+SENTINEL2_LEVEL_2A: str = "L2A"
+
+#: Accepted spellings of Level-2A, compared after folding to
+#: upper case and discarding separators, so that "Level-2A",
+#: "level_2a" and "LEVEL-2A" all reduce to "LEVEL2A".
+SENTINEL2_LEVEL_2A_SPELLINGS: frozenset[str] = frozenset(
+    {
+        "L2A",
+        "LEVEL2A",
+        "S2MSI2A",
+        "MSIL2A",
+    }
+)
+
+
+def processing_level_key(value: object) -> str:
+    """
+    Reduce a processing level to its comparable form.
+
+    Folds to upper case and drops every character that is
+    not a letter or digit, so the hyphen in "Level-2A" and
+    the underscore in "level_2a" do not make two spellings
+    of one level look like two levels.
+    """
+
+    return "".join(
+        character
+        for character in str(value).upper()
+        if character.isalnum()
+    )
+
+
+def is_level_2a(value: object) -> bool:
+    """
+    Report whether a recorded processing level is Level-2A.
+
+    Returns False for None, for an empty value and for any
+    unrecognised spelling, so a product whose level was
+    never recorded is treated as unusable rather than
+    assumed to be Level-2A.
+    """
+
+    return processing_level_key(value) in SENTINEL2_LEVEL_2A_SPELLINGS
+
+
+def normalize_processing_level(value: object) -> str:
+    """
+    Return the spelling to store for a processing level.
+
+    A recognised Level-2A spelling becomes the canonical
+    "L2A" so that newly registered products are consistent
+    with each other. Anything else is passed through
+    unchanged: an unrecognised level is recorded as the
+    catalogue reported it, because rewriting it would hide
+    what was actually acquired.
+    """
+
+    if is_level_2a(value):
+        return SENTINEL2_LEVEL_2A
+
+    return str(value)
