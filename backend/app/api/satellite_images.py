@@ -202,8 +202,12 @@ def _execute_satellite_download_job(
             if not should_persist:
                 return
 
-            job_service.report_progress(
-                job,
+            # By job id, on its own session. This runs on the
+            # transfer threads while the main thread is inside
+            # the download holding `db`, and one SQLAlchemy
+            # Session cannot be shared that way.
+            SatelliteDownloadJobService.record_progress(
+                job_id,
                 status=progress_status,
                 downloaded_bytes=downloaded_bytes,
                 total_bytes=total_bytes,
@@ -226,7 +230,7 @@ def _execute_satellite_download_job(
     except Exception as exc:
         # Keep provider details and request internals out of API-visible
         # errors; the class name is enough for server-side diagnosis.
-        logger.error(
+        logger.exception(
             "Satellite download job %s failed (%s)",
             job_id,
             type(exc).__name__,
@@ -648,7 +652,15 @@ def download_sentinel_product(
         )
     )
 
-    if existing is not None:
+    # Refused only when the registered product is actually
+    # complete. A row whose local files are missing an input the
+    # analysis opens must be re-acquirable: it is registered, so
+    # the catalogue showed it as acquired, and it was rejected
+    # here, so nothing could replace it. An officer had five such
+    # products and no way to act on any of them.
+    if existing is not None and SentinelService(db).local_product_is_complete(
+        existing
+    ):
 
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

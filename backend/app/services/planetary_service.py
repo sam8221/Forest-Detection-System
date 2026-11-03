@@ -38,6 +38,7 @@ Version:
 from __future__ import annotations
 
 import logging
+import time
 
 import requests
 
@@ -108,6 +109,50 @@ class PlanetaryService:
     # acquisitions rather than an arbitrary cap.
     SEARCH_LIMIT = 20
 
+    # -----------------------------------------------------
+    # Retry policy
+    #
+    # The catalogue is a public service under variable load.
+    # Measured against it from this system, the same search
+    # returned in 1.8 seconds at one point and 504 Gateway
+    # Timeout after 16 seconds a quarter of an hour later,
+    # with the request unchanged. Narrowing the search made
+    # no reliable difference: with the service busy, a
+    # single-scene request was no faster than a twenty-scene
+    # one. The cost is the service's, not the query's, so
+    # the answer is to tolerate a slow or failed attempt
+    # rather than to ask for less.
+    #
+    # Three attempts, because the failure being absorbed is
+    # a moment of load rather than an outage; an outage
+    # should still be reported promptly instead of being
+    # retried at length.
+    # -----------------------------------------------------
+
+    REQUEST_ATTEMPTS = 3
+
+    # Waited before the second and third attempts. Short:
+    # an officer is watching the dashboard, and the delay
+    # is there to let a burst pass, not to wait out a fault.
+    RETRY_BACKOFF_SECONDS = (1.0, 2.0)
+
+    # Statuses worth attempting again. A gateway timeout or
+    # a rate limit is a statement about the moment; a 404
+    # is a statement about the request, and repeating it
+    # only makes the officer wait longer for the same answer.
+    RETRY_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+
+    # The ceiling on everything a scene lookup does, across
+    # both of its requests and every retry.
+    #
+    # The dashboard gives this endpoint 60 seconds before it
+    # gives up on its own, so a lookup that ran longer would
+    # be abandoned by the browser and its result wasted. The
+    # budget stays below that with room to spare, and the
+    # officer is told the catalogue is unavailable while
+    # they are still waiting to be told something.
+    TOTAL_BUDGET_SECONDS = 45.0
+
     def __init__(self) -> None:
         """
         Load configuration for the catalogue endpoint.
@@ -128,9 +173,16 @@ class PlanetaryService:
         url: str,
         params: dict | None = None,
         description: str = "catalogue",
+        deadline: float | None = None,
     ) -> dict:
         """
         Perform a GET request and return the decoded body.
+
+        A timeout, a connection failure or a transient error
+        status is attempted again, up to REQUEST_ATTEMPTS
+        times and only while the deadline allows. Anything
+        that will not change on a second attempt — a 404, a
+        body that is not JSON — is reported immediately.
 
         Args:
             url:
@@ -140,6 +192,11 @@ class PlanetaryService:
             description:
                 What is being fetched, used in the log line
                 so a failure can be traced to a step.
+            deadline:
+                time.monotonic() value past which no further
+                attempt is started and no attempt is allowed
+                to run. None allows the full per-request
+                timeout with no overall ceiling.
 
         Returns:
             dict: The decoded JSON body.
@@ -151,63 +208,210 @@ class PlanetaryService:
                 not JSON.
         """
 
-        try:
-            response = requests.get(
-                url,
-                params=params,
-                timeout=self.timeout,
-            )
+        last_error: Exception | None = None
 
-            response.raise_for_status()
+        for attempt in range(1, self.REQUEST_ATTEMPTS + 1):
 
-            return response.json()
+            timeout = self.remaining_timeout(deadline)
 
-        except requests.Timeout as exc:
-            # Logged with the exception so the cause is
-            # recoverable from the server log, while the
-            # caller receives only the sentence below.
-            logger.warning(
-                "Planetary Computer %s request timed out "
-                "after %.1fs: %s",
-                description,
-                self.timeout,
-                exc,
-            )
+            if timeout is None:
+                # The budget is spent. Report the failure
+                # that spent it rather than a new one.
+                logger.warning(
+                    "Planetary Computer %s gave up: the "
+                    "time allowed for the lookup was used "
+                    "up after %d attempt(s)",
+                    description,
+                    attempt - 1,
+                )
 
+                raise PlanetaryUnavailableError(
+                    "The satellite imagery catalogue did "
+                    "not respond in time. This does not "
+                    "affect detections or alerts."
+                ) from last_error
+
+            try:
+                response = requests.get(
+                    url,
+                    params=params,
+                    timeout=timeout,
+                )
+
+                response.raise_for_status()
+
+                return response.json()
+
+            except requests.Timeout as exc:
+                # Logged with the exception so the cause is
+                # recoverable from the server log, while the
+                # caller receives only the sentence below.
+                logger.warning(
+                    "Planetary Computer %s request timed "
+                    "out after %.1fs (attempt %d of %d): "
+                    "%s",
+                    description,
+                    timeout,
+                    attempt,
+                    self.REQUEST_ATTEMPTS,
+                    exc,
+                )
+
+                last_error = exc
+
+            except requests.HTTPError as exc:
+                status = (
+                    exc.response.status_code
+                    if exc.response is not None
+                    else None
+                )
+
+                if status not in self.RETRY_STATUS_CODES:
+                    logger.warning(
+                        "Planetary Computer %s request "
+                        "failed: %s",
+                        description,
+                        exc,
+                    )
+
+                    raise PlanetaryUnavailableError(
+                        "The satellite imagery catalogue "
+                        "could not be reached. This does "
+                        "not affect detections or alerts."
+                    ) from exc
+
+                logger.warning(
+                    "Planetary Computer %s returned %s "
+                    "(attempt %d of %d)",
+                    description,
+                    status,
+                    attempt,
+                    self.REQUEST_ATTEMPTS,
+                )
+
+                last_error = exc
+
+            except requests.RequestException as exc:
+                logger.warning(
+                    "Planetary Computer %s request failed "
+                    "(attempt %d of %d): %s",
+                    description,
+                    attempt,
+                    self.REQUEST_ATTEMPTS,
+                    exc,
+                )
+
+                last_error = exc
+
+            except ValueError as exc:
+                # raise_for_status passed but the body was
+                # not JSON, which means the catalogue
+                # answered with something unexpected.
+                # Repeating the request will not make it
+                # parse.
+                logger.warning(
+                    "Planetary Computer %s returned a body "
+                    "that is not JSON: %s",
+                    description,
+                    exc,
+                )
+
+                raise PlanetaryUnavailableError(
+                    "The satellite imagery catalogue "
+                    "returned an unexpected response."
+                ) from exc
+
+            self.wait_before_retry(attempt, deadline)
+
+        # Every attempt was spent on a fault worth retrying.
+        logger.warning(
+            "Planetary Computer %s failed after %d "
+            "attempts: %s",
+            description,
+            self.REQUEST_ATTEMPTS,
+            last_error,
+        )
+
+        if isinstance(last_error, requests.Timeout):
             raise PlanetaryUnavailableError(
                 "The satellite imagery catalogue did not "
                 "respond in time. This does not affect "
                 "detections or alerts."
-            ) from exc
+            ) from last_error
 
-        except requests.RequestException as exc:
-            logger.warning(
-                "Planetary Computer %s request failed: %s",
-                description,
-                exc,
+        raise PlanetaryUnavailableError(
+            "The satellite imagery catalogue could not be "
+            "reached. This does not affect detections or "
+            "alerts."
+        ) from last_error
+
+    # -----------------------------------------------------
+    # RETRY SUPPORT
+    # -----------------------------------------------------
+
+    def remaining_timeout(
+        self,
+        deadline: float | None,
+    ) -> float | None:
+        """
+        Return the timeout the next attempt may use.
+
+        Args:
+            deadline:
+                time.monotonic() value the lookup must
+                finish by, or None for no ceiling.
+
+        Returns:
+            float | None:
+                The per-attempt timeout, or None when there
+                is no longer enough time to be worth
+                starting another attempt.
+        """
+
+        if deadline is None:
+            return self.timeout
+
+        remaining = deadline - time.monotonic()
+
+        # Below a second there is no realistic prospect of
+        # the catalogue answering, and starting an attempt
+        # only delays the message the officer is waiting for.
+        if remaining < 1.0:
+            return None
+
+        return min(self.timeout, remaining)
+
+    def wait_before_retry(
+        self,
+        attempt: int,
+        deadline: float | None,
+    ) -> None:
+        """
+        Pause between attempts, without overrunning.
+
+        Args:
+            attempt:
+                The attempt just completed, counting from 1.
+            deadline:
+                time.monotonic() value the lookup must
+                finish by, or None for no ceiling.
+        """
+
+        if attempt > len(self.RETRY_BACKOFF_SECONDS):
+            return
+
+        delay = self.RETRY_BACKOFF_SECONDS[attempt - 1]
+
+        if deadline is not None:
+            # Never sleep past the deadline: the time is
+            # better spent on the attempt itself.
+            delay = min(
+                delay,
+                max(0.0, deadline - time.monotonic()),
             )
 
-            raise PlanetaryUnavailableError(
-                "The satellite imagery catalogue could not "
-                "be reached. This does not affect "
-                "detections or alerts."
-            ) from exc
-
-        except ValueError as exc:
-            # raise_for_status passed but the body was not
-            # JSON, which means the catalogue answered with
-            # something unexpected.
-            logger.warning(
-                "Planetary Computer %s returned a body "
-                "that is not JSON: %s",
-                description,
-                exc,
-            )
-
-            raise PlanetaryUnavailableError(
-                "The satellite imagery catalogue returned "
-                "an unexpected response."
-            ) from exc
+        if delay > 0:
+            time.sleep(delay)
 
     # -----------------------------------------------------
     # SCENE SELECTION
@@ -315,6 +519,15 @@ class PlanetaryService:
         # province without a code change.
         bbox = self.settings.monitoring_bbox
 
+        # One budget covers the search, the tile endpoint
+        # lookup and every retry of either, so a slow search
+        # cannot leave the second request with the whole
+        # allowance still to spend.
+        deadline = (
+            time.monotonic()
+            + self.TOTAL_BUDGET_SECONDS
+        )
+
         search = self.request_json(
             url=f"{self.stac_url}/search",
             params={
@@ -326,6 +539,7 @@ class PlanetaryService:
                 "sortby": "-datetime",
             },
             description="scene search",
+            deadline=deadline,
         )
 
         item = self.select_scene(
@@ -350,6 +564,7 @@ class PlanetaryService:
         tilejson = self.request_json(
             url=tilejson_url,
             description="tile endpoint",
+            deadline=deadline,
         )
 
         tiles = tilejson.get("tiles", [])

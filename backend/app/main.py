@@ -26,6 +26,7 @@ Version:
 ===========================================================
 """
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -36,6 +37,7 @@ from app.api.alerts import router as alerts_router
 from app.api.analysis import router as analysis_router
 from app.api.auth import router as auth_router
 from app.api.analytics import router as analytics_router
+from app.api.cloud_monitoring import router as cloud_monitoring_router
 from app.api.monitoring import router as monitoring_router
 from app.api.dashboard import router as dashboard_router
 from app.api.detections import router as detections_router
@@ -46,14 +48,20 @@ from app.api.forest_areas import router as forest_areas_router
 from app.api.health import router as health_router
 from app.api.planetary_computer import router as planetary_computer_router
 from app.api.satellite_images import router as satellite_images_router
+from app.api.support import router as support_router
 from app.api.sentinel_wms import router as sentinel_wms_router
 from app.api.users import router as users_router
 
 from app.core.config import get_settings
+from app.core.logging_config import configure_logging
 from app.services.analysis_scheduler import AnalysisScheduler
 from app.services.analysis_worker import recover_abandoned_analysis_jobs
 from app.services.email_scheduler import EmailScheduler
 from app.services.sms_scheduler import SmsScheduler
+
+
+logger = logging.getLogger(__name__)
+
 
 def recover_abandoned_satellite_download_jobs() -> None:
     """Fail transfers whose worker was stopped with the API process."""
@@ -67,17 +75,17 @@ def recover_abandoned_satellite_download_jobs() -> None:
     try:
         recovered_count = SatelliteDownloadJobService(db).fail_abandoned()
         if recovered_count:
-            print(
-                "[ForestWatch] Recovered "
-                f"{recovered_count} abandoned satellite download job(s)."
+            logger.info(
+                "Recovered %s abandoned satellite download job(s).",
+                recovered_count,
             )
     except Exception as exc:
         db.rollback()
         # This must not prevent startup when a deployment has not yet
         # applied the migration that creates the download-job table.
-        print(
-            "[ForestWatch] Could not recover abandoned satellite downloads "
-            f"({type(exc).__name__})."
+        logger.warning(
+            "Could not recover abandoned satellite downloads (%s).",
+            type(exc).__name__,
         )
     finally:
         db.close()
@@ -98,7 +106,10 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         # Keep the API available when recovery cannot reach PostgreSQL. The
         # scheduler retries recovery and queue polling in its normal loop.
-        print(f"[ForestWatch] Could not recover analysis jobs: {type(exc).__name__}")
+        logger.warning(
+            "Could not recover analysis jobs: %s",
+            type(exc).__name__,
+        )
     recover_abandoned_satellite_download_jobs()
 
     analysis_scheduler = AnalysisScheduler(interval_seconds=1)
@@ -110,10 +121,6 @@ async def lifespan(app: FastAPI):
     )
 
     email_scheduler.start()
-
-    print(
-        "[ForestWatch] Email scheduler started."
-    )
 
     # -----------------------------------------------------
     # SMS notifications
@@ -142,10 +149,6 @@ async def lifespan(app: FastAPI):
 
         email_scheduler.stop()
 
-        print(
-            "[ForestWatch] Email scheduler stopped."
-        )
-
 
 def create_application() -> FastAPI:
     """
@@ -153,6 +156,11 @@ def create_application() -> FastAPI:
     """
 
     settings = get_settings()
+
+    # Before anything else: every module in this application
+    # reports through a logger, and without this call the
+    # root logger has no handler and discards all of it.
+    configure_logging()
 
     app = FastAPI(
         title="ForestWatch Zambia API",
@@ -196,10 +204,26 @@ def create_application() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
+        allow_origin_regex=(
+            r"^https?://(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$"
+            if settings.is_development
+            else None
+        ),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.get("/", include_in_schema=False, tags=["operations"])
+    def api_root() -> dict[str, str | None]:
+        """Provide a useful response when someone opens the API base URL."""
+
+        return {
+            "name": "ForestWatch Zambia API",
+            "status": "ok",
+            "health": f"{settings.api_v1_prefix.rstrip('/')}/health",
+            "docs": "/docs" if settings.is_development else None,
+        }
 
     app.include_router(
         health_router,
@@ -257,12 +281,22 @@ def create_application() -> FastAPI:
     )
 
     app.include_router(
+        support_router,
+        prefix=settings.api_v1_prefix,
+    )
+
+    app.include_router(
         dashboard_router,
         prefix=settings.api_v1_prefix,
     )
 
     app.include_router(
         analytics_router,
+        prefix=settings.api_v1_prefix,
+    )
+
+    app.include_router(
+        cloud_monitoring_router,
         prefix=settings.api_v1_prefix,
     )
 

@@ -280,3 +280,52 @@ def configure() -> None:
 
         if bundled_gdal is not None:
             os.environ["GDAL_DATA"] = str(bundled_gdal)
+
+
+#: GDAL settings that affect only how fast a raster is read,
+#: never what it contains. Each is applied once, before
+#: rasterio is imported, and only when the environment does
+#: not already set it, so a deployment can still override any
+#: of them.
+#:
+#: GDAL_NUM_THREADS
+#:     JPEG 2000 decoding is the single most expensive step in
+#:     this pipeline: every Sentinel-2 band is a JP2, and NDVI,
+#:     the cloud mask and the true-colour preview each decode
+#:     one. Left unset, GDAL decodes on one core while the rest
+#:     of the machine idles.
+#:
+#: GDAL_CACHEMAX
+#:     Block cache, in megabytes. The pipeline reads the same
+#:     window of the same band more than once - NDVI, then the
+#:     mask, then the preview - and a cache large enough to
+#:     hold that window serves the later reads from memory.
+#:
+#: VSI_CACHE / VSI_CACHE_SIZE
+#:     Caches file reads beneath the block cache, which is what
+#:     makes reading a band out of a .SAFE.zip through
+#:     /vsizip/ reasonable.
+_RASTER_PERFORMANCE_DEFAULTS = {
+    "GDAL_NUM_THREADS": "ALL_CPUS",
+    "GDAL_CACHEMAX": "512",
+    "VSI_CACHE": "TRUE",
+    "VSI_CACHE_SIZE": "67108864",
+}
+
+
+def configure_raster_performance() -> None:
+    """
+    Apply GDAL read-performance settings for this process.
+
+    These change how long a raster takes to read, not what is
+    read. Values already present in the environment are left
+    alone, so a deployment that needs different limits sets
+    them there and this does nothing.
+
+    Safe to call more than once.
+    """
+
+    for name, value in _RASTER_PERFORMANCE_DEFAULTS.items():
+
+        if not os.environ.get(name):
+            os.environ[name] = value

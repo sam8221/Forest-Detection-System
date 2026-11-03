@@ -29,7 +29,9 @@ from sqlalchemy.orm import Session
 
 from app.core.security import (
     create_access_token,
+    generate_temporary_password,
     hash_password,
+    password_fingerprint,
     verify_password,
 )
 from app.models.audit_log import AuditLog
@@ -201,6 +203,15 @@ class AuthService:
             {
                 "sub": user.email,
                 "role": user.role.value,
+
+                # Ties this token to the password in force
+                # when it was issued. Changing or resetting
+                # the password changes the fingerprint, and
+                # every token carrying the old one stops
+                # verifying. See password_fingerprint.
+                "pwd": password_fingerprint(
+                    user.password_hash
+                ),
             }
         )
 
@@ -316,6 +327,87 @@ class AuthService:
         user.must_change_password = False
 
         return self.repository.update(user)
+
+    # ---------------------------------------------------------
+    # Reset Password
+    # ---------------------------------------------------------
+    def reset_password(
+        self,
+        user: User,
+        performed_by: User,
+    ) -> str:
+        """
+        Replace an account's password with a generated one.
+
+        For an officer who cannot sign in. The administrator
+        does not choose the password: a chosen one tends to
+        follow a pattern across accounts, and an
+        administrator who knows an officer's password can
+        act as them, which leaves the audit trail unable to
+        say who did something.
+
+        The password is returned once, to be shown to the
+        administrator who asked for it, and never stored in
+        plain text. What is kept is the bcrypt hash and an
+        audit entry naming both parties.
+
+        The account is marked as needing a password change,
+        so the officer replaces it at their next sign-in and
+        the administrator's knowledge of it expires with
+        first use.
+
+        Args:
+            user:
+                The account to reset.
+            performed_by:
+                The administrator carrying out the reset.
+
+        Returns:
+            str: The generated password, in plain text.
+        """
+
+        temporary_password = generate_temporary_password()
+
+        user.password_hash = hash_password(
+            temporary_password
+        )
+
+        # Replacing the password invalidates every token
+        # issued under the previous one, because each
+        # carries a fingerprint of the hash it was issued
+        # with. A reset therefore ends any session already
+        # open on the account, which is the point of
+        # resetting it when an account may be compromised.
+        user.must_change_password = True
+
+        # -----------------------------------------------------
+        # Audit (requirement FR-19)
+        #
+        # The administrator, the officer, the action and the
+        # time. Never the password: an audit trail is read by
+        # people who are not entitled to the account, and a
+        # password written here would outlive the reset in a
+        # table nobody thinks of as holding credentials.
+        # -----------------------------------------------------
+
+        self.db.add(
+            AuditLog(
+                user_id=performed_by.id,
+                action="PASSWORD_RESET",
+                entity_type="User",
+                entity_id=user.id,
+                detail=(
+                    f"Temporary password issued for "
+                    f"{user.email} by {performed_by.email}. "
+                    f"The account must set a new password at "
+                    f"the next sign-in."
+                ),
+            )
+        )
+
+        self.repository.update(user)
+
+        return temporary_password
 
     # ---------------------------------------------------------
     # Update Last Login

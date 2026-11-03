@@ -33,6 +33,8 @@ Version:
 
 from __future__ import annotations
 
+import logging
+
 from pathlib import Path
 
 import numpy as np
@@ -42,6 +44,9 @@ from rasterio.enums import Resampling
 from rasterio.warp import reproject
 
 from app.core.constants import NDVI_NODATA
+
+
+logger = logging.getLogger(__name__)
 
 
 class CloudMaskService:
@@ -416,25 +421,24 @@ class CloudMaskService:
                 scl_src.res
             )
 
-        print(
-            "SCL size:",
+        logger.debug(
+            "SCL size: %s x %s",
             scl_width,
-            "x",
             scl_height,
         )
 
-        print(
-            "SCL resolution:",
+        logger.debug(
+            "SCL resolution: %s",
             scl_resolution,
         )
 
-        print(
-            "SCL CRS:",
+        logger.debug(
+            "SCL CRS: %s",
             scl_crs,
         )
 
-        print(
-            "SCL bounds:",
+        logger.debug(
+            "SCL bounds: %s",
             scl_bounds,
         )
 
@@ -470,25 +474,24 @@ class CloudMaskService:
                 ndvi_src.res
             )
 
-        print(
-            "NDVI size:",
+        logger.debug(
+            "NDVI size: %s x %s",
             ndvi_width,
-            "x",
             ndvi_height,
         )
 
-        print(
-            "NDVI resolution:",
+        logger.debug(
+            "NDVI resolution: %s",
             ndvi_resolution,
         )
 
-        print(
-            "NDVI CRS:",
+        logger.debug(
+            "NDVI CRS: %s",
             ndvi_crs,
         )
 
-        print(
-            "NDVI bounds:",
+        logger.debug(
+            "NDVI bounds: %s",
             ndvi_bounds,
         )
 
@@ -530,12 +533,10 @@ class CloudMaskService:
 
         if scl_crs is None:
 
-            print(
-                "WARNING: SCL raster has no CRS."
-            )
-
-            print(
-                "Using CRS from reference NDVI."
+            logger.warning(
+                "The SCL raster has no CRS. Using the CRS "
+                "of the reference NDVI, which comes from "
+                "the same Sentinel-2 tile."
             )
 
             scl_crs = ndvi_crs
@@ -578,7 +579,7 @@ class CloudMaskService:
             init_dest_nodata=True,
         )
 
-        print(
+        logger.debug(
             "SCL resampled from 20 m to 10 m."
         )
 
@@ -666,32 +667,18 @@ class CloudMaskService:
             * 100
         )
 
-        print(
-            "Valid pixels:",
+        # Reported at INFO rather than DEBUG: how much of a
+        # scene survived cloud masking is the figure that
+        # decides whether a detection from it can be
+        # believed, so it belongs in the ordinary record of
+        # an analysis rather than in diagnostic output.
+        logger.info(
+            "Cloud mask: %s valid pixels (%.2f%%), "
+            "%s masked (%.2f%%).",
             valid_pixels,
-        )
-
-        print(
-            "Masked pixels:",
+            valid_percentage,
             masked_pixels,
-        )
-
-        print(
-            "Valid percentage:",
-            round(
-                valid_percentage,
-                2,
-            ),
-            "%",
-        )
-
-        print(
-            "Masked percentage:",
-            round(
-                masked_percentage,
-                2,
-            ),
-            "%",
+            masked_percentage,
         )
 
         return output_path

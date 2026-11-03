@@ -33,6 +33,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    text,
 )
 
 from sqlalchemy.orm import (
@@ -120,6 +121,34 @@ class User(AuditMixin, Base):
         comment=(
             "Mobile number for SMS alerts, in E.164 form. "
             "Null when the officer has not supplied one."
+        ),
+    )
+
+    # ---------------------------------------------------------
+    # SMS PREFERENCE
+    #
+    # Mapped once migration d9f4a7c1e835 added the column,
+    # which it did. The mapping deliberately waited for it:
+    # mapping a column the database does not have makes
+    # every query against this table fail with "column
+    # users.sms_notifications_enabled does not exist", which
+    # takes down signing in along with everything else.
+    #
+    # Defaults to true, so an officer who registers a number
+    # is opted in. That matches the behaviour that existed
+    # before the preference, and it is the reading that
+    # app.services.sms_recipients.officer_accepts_alert_sms
+    # still falls back to.
+    # ---------------------------------------------------------
+
+    sms_notifications_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+        comment=(
+            "Whether automatic deforestation alert SMS "
+            "are sent to this officer."
         ),
     )
 

@@ -33,7 +33,7 @@
  * ===========================================================
  */
 
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 
 import { API_URL as CONFIG_API_URL } from "../config";
 import {
@@ -108,18 +108,21 @@ export default function Alerts() {
   // TOKEN
   // =========================================================
 
-  const getToken = () => {
+  // Reads the stored token when called rather than when
+  // defined, so it holds one identity for the life of the
+  // page and the loader below can depend on it.
+  const getToken = useCallback(() => {
     return (
       localStorage.getItem("access_token") ||
       localStorage.getItem("token")
     );
-  };
+  }, []);
 
   // =========================================================
   // FETCH ALERTS
   // =========================================================
 
-  const fetchAlerts = async () => {
+  const fetchAlerts = useCallback(async () => {
     try {
       setLoading(true);
       setError("");
@@ -167,11 +170,11 @@ export default function Alerts() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [getToken]);
 
   useEffect(() => {
     fetchAlerts();
-  }, []);
+  }, [fetchAlerts]);
 
   // =========================================================
   // ALERT ACTION

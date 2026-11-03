@@ -9,10 +9,50 @@ from app.models.user import User
 from app.services.sms_service import normalise_msisdn
 
 
+#: Whether users.sms_notifications_enabled is mapped yet.
+#:
+#: The preference column arrives with migration d9f4a7c1e835.
+#: Until it is applied the attribute does not exist, and this
+#: module treats every officer as opted in -- which is exactly
+#: the behaviour before the preference existed, so an
+#: unmigrated deployment keeps sending as it always did rather
+#: than silently stopping.
+#:
+#: Read once at import. The column cannot appear while the
+#: process is running: applying a migration requires a
+#: restart to re-map the model.
+PREFERENCE_IS_MAPPED = hasattr(
+    User,
+    "sms_notifications_enabled",
+)
+
+
+def officer_accepts_alert_sms(user) -> bool:
+    """
+    Whether this officer wants automatic alert SMS.
+
+    Args:
+        user:
+            The officer account.
+
+    Returns:
+        True when the preference is on, or when the column
+        is not yet present.
+    """
+
+    return bool(
+        getattr(
+            user,
+            "sms_notifications_enabled",
+            True,
+        )
+    )
+
+
 def eligible_sms_officers_query(db, forest_area, district):
     """Build the active officer query for a forest area's jurisdiction."""
 
-    return db.query(User).filter(
+    query = db.query(User).filter(
         User.is_active.is_(True),
         or_(
             and_(
@@ -26,6 +66,17 @@ def eligible_sms_officers_query(db, forest_area, district):
         ),
     )
 
+    # Applied in the query rather than after it, so an
+    # officer who has switched automatic notifications off is
+    # never queued in the first place and no row is written
+    # recording a message they declined.
+    if PREFERENCE_IS_MAPPED:
+        query = query.filter(
+            User.sms_notifications_enabled.is_(True)
+        )
+
+    return query
+
 
 def sms_recipient_authorization_reason(user, forest_area) -> str | None:
     """Return why an account cannot receive this area's SMS alert."""
@@ -35,6 +86,15 @@ def sms_recipient_authorization_reason(user, forest_area) -> str | None:
 
     if not user.is_active:
         return "recipient_inactive"
+
+    # Re-checked here as well as in the query above, because
+    # a message can sit in the queue between being raised and
+    # being submitted. An officer who switches notifications
+    # off in that window has withdrawn consent before the
+    # message left, and the queue row is skipped rather than
+    # sent.
+    if not officer_accepts_alert_sms(user):
+        return "notifications_disabled"
 
     if user.role == UserRole.DISTRICT_FORESTRY_OFFICER:
         if user.district_id == forest_area.district_id:

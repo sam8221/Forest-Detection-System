@@ -29,7 +29,7 @@
  * =========================================================
  */
 
-import React, {
+import {
   useCallback,
   useEffect,
   useState,

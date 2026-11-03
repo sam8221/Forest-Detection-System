@@ -139,14 +139,25 @@ export default function Analytics() {
   const [reportError, setReportError] = useState("");
   const [reportNotice, setReportNotice] = useState("");
 
-  const token = () =>
-    localStorage.getItem("access_token") ||
-    localStorage.getItem("token");
+  // Both read the stored token when called, not when
+  // defined, so neither depends on a render. Holding one
+  // identity for the life of the page lets the effects below
+  // declare them honestly instead of carrying a dependency
+  // that changed on every render.
+  const token = useCallback(
+    () =>
+      localStorage.getItem("access_token") ||
+      localStorage.getItem("token"),
+    []
+  );
 
-  const headers = () => ({
-    "Content-Type": "application/json",
-    ...(token() ? { Authorization: `Bearer ${token()}` } : {}),
-  });
+  const headers = useCallback(
+    () => ({
+      "Content-Type": "application/json",
+      ...(token() ? { Authorization: `Bearer ${token()}` } : {}),
+    }),
+    [token]
+  );
 
   // =======================================================
   // QUERY STRING
@@ -246,7 +257,7 @@ export default function Analytics() {
     } finally {
       setLoading(false);
     }
-  }, [queryString]);
+  }, [queryString, headers]);
 
   useEffect(() => {
     load();
@@ -264,7 +275,7 @@ export default function Analytics() {
         setForestAreas(Array.isArray(body) ? body : [])
       )
       .catch(() => setForestAreas([]));
-  }, []);
+  }, [headers]);
 
   // =======================================================
   // GENERATE AND DOWNLOAD

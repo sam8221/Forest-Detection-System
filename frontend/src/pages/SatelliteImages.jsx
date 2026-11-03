@@ -56,7 +56,13 @@
  * ===========================================================
  */
 
-import React, { useEffect, useReducer, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 
 import { API_URL as CONFIG_API_URL } from "../config";
 import {
@@ -125,14 +131,19 @@ export default function SatelliteImages({ onAnalyseImage }) {
   // AUTHENTICATION
   // =========================================================
 
-  const getToken = () => {
+  // The token and the headers built from it are read when
+  // called, not when defined, so each holds one identity for
+  // the life of the page. That lets the loaders below, and
+  // the effects that run them, declare what they use instead
+  // of carrying a dependency that changed every render.
+  const getToken = useCallback(() => {
     return (
       localStorage.getItem("access_token") ||
       localStorage.getItem("token")
     );
-  };
+  }, []);
 
-  const getHeaders = () => {
+  const getHeaders = useCallback(() => {
     const token = getToken();
 
     return {
@@ -143,7 +154,7 @@ export default function SatelliteImages({ onAnalyseImage }) {
           }
         : {}),
     };
-  };
+  }, [getToken]);
 
   // =========================================================
   // DEFAULT DATES
@@ -170,7 +181,7 @@ export default function SatelliteImages({ onAnalyseImage }) {
   // LOAD FOREST AREAS
   // =========================================================
 
-  const fetchForestAreas = async () => {
+  const fetchForestAreas = useCallback(async () => {
     try {
       const response = await fetch(
         `${API_URL}/api/v1/forest-areas`,
@@ -196,12 +207,17 @@ export default function SatelliteImages({ onAnalyseImage }) {
 
       setForestAreas(areas);
 
-      if (
-        areas.length > 0 &&
-        !selectedForestArea
-      ) {
+      if (areas.length > 0) {
+        // Set from the previous value rather than from the
+        // selection captured when this was defined, so a
+        // choice the officer has already made is kept and
+        // only an empty selection is filled. Reading it
+        // through the updater also keeps this loader from
+        // depending on the selection, which would otherwise
+        // make the initial load run again -- resetting the
+        // date fields -- on every change of area.
         setSelectedForestArea(
-          String(areas[0].id)
+          (current) => current || String(areas[0].id)
         );
       }
     } catch (err) {
@@ -210,13 +226,13 @@ export default function SatelliteImages({ onAnalyseImage }) {
         err
       );
     }
-  };
+  }, [getHeaders]);
 
   // =========================================================
   // LOAD REGISTERED SATELLITE IMAGES
   // =========================================================
 
-  const fetchSatelliteImages = async () => {
+  const fetchSatelliteImages = useCallback(async () => {
     try {
       setLoading(true);
       setError("");
@@ -252,9 +268,9 @@ export default function SatelliteImages({ onAnalyseImage }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [getHeaders]);
 
-  const fetchDownloadJobs = async (forestAreaId, signal) => {
+  const fetchDownloadJobs = useCallback(async (forestAreaId, signal) => {
     const response = await fetch(
       `${API_URL}/api/v1/satellite-images/downloads?forest_area_id=${encodeURIComponent(forestAreaId)}`,
       {
@@ -284,7 +300,7 @@ export default function SatelliteImages({ onAnalyseImage }) {
       throw error;
     }
     return Array.isArray(data) ? data : [];
-  };
+  }, [getHeaders]);
 
   const retryDownloadStatusCheck = async () => {
     if (!selectedForestArea || downloadStatusRetrying) return;
@@ -558,13 +574,20 @@ export default function SatelliteImages({ onAnalyseImage }) {
     fetchSatelliteImages();
     fetchForestAreas();
 
+    // Read once here rather than through the ref inside the
+    // cleanup. The map itself is never replaced, so this is
+    // the same map either way, and taking it now states that
+    // the controllers aborted on unmount are the ones this
+    // page registered.
+    const acquireControllers = acquireControllersRef.current;
+
     return () => {
-      for (const controller of acquireControllersRef.current.values()) {
+      for (const controller of acquireControllers.values()) {
         controller.abort();
       }
-      acquireControllersRef.current.clear();
+      acquireControllers.clear();
     };
-  }, []);
+  }, [fetchSatelliteImages, fetchForestAreas]);
 
   useEffect(() => {
     if (!selectedForestArea) return undefined;
@@ -611,7 +634,7 @@ export default function SatelliteImages({ onAnalyseImage }) {
       cancelled = true;
       controller.abort();
     };
-  }, [selectedForestArea]);
+  }, [selectedForestArea, fetchDownloadJobs, fetchSatelliteImages]);
 
   const hasActiveDownload = Object.values(downloadJobs).some((job) =>
     isSatelliteDownloadActive(job?.status)
@@ -676,7 +699,13 @@ export default function SatelliteImages({ onAnalyseImage }) {
       window.clearTimeout(timeoutId);
       controller?.abort();
     };
-  }, [selectedForestArea, hasActiveDownload, downloadStatusRetryKey]);
+  }, [
+    selectedForestArea,
+    hasActiveDownload,
+    downloadStatusRetryKey,
+    fetchDownloadJobs,
+    fetchSatelliteImages,
+  ]);
 
   // =========================================================
   // FORMAT DATE
@@ -1151,15 +1180,26 @@ export default function SatelliteImages({ onAnalyseImage }) {
 
                 {products.map((product) => {
                   const downloadJob = downloadJobs[product.product_id];
-                  const isAcquired = images.some(
+                  const registered = images.find(
                     (image) =>
                       image.product_id === product.product_id &&
                       image.is_downloaded === true
                   );
+                  // Registered is not the same as usable. A
+                  // product whose local files are incomplete
+                  // offers "Reacquire" rather than a dead
+                  // "Acquired" the officer cannot act on.
+                  const needsReacquire =
+                    Boolean(registered) &&
+                    registered.is_ready_for_analysis === false;
                   const buttonState = getSatelliteDownloadButtonState(
                     downloadJob,
-                    isAcquired,
-                    Boolean(downloadStatusError)
+                    Boolean(registered),
+                    Boolean(downloadStatusError),
+                    needsReacquire
+                      ? registered.readiness_reason ||
+                          "This product's local files are incomplete. Acquire it again."
+                      : null
                   );
                   const downloadStatus = String(
                     downloadJob?.status || ""
@@ -1291,9 +1331,16 @@ export default function SatelliteImages({ onAnalyseImage }) {
 
                           {buttonState.label === "Acquired" ? (
                             <CheckCircle2 size={15} />
-                          ) : buttonState.active &&
-                            (downloadStatus === "PREPARING" ||
-                              downloadStatus === "VALIDATING") ? (
+                          ) : buttonState.active ? (
+                            /*
+                              Spinning for every active stage, not
+                              only while preparing and validating.
+                              A transfer whose size the provider
+                              does not declare has no percentage to
+                              show, and with a static icon beside
+                              it the button looked stuck for the
+                              whole download.
+                            */
                             <RefreshCw
                               size={15}
                               className="refresh-spinning"

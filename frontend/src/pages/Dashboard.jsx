@@ -71,17 +71,24 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
+  useRef,
   useState,
 } from "react";
 
 import {
   AlertTriangle,
+  BellRing,
   CheckCircle2,
   Clock3,
   Leaf,
+  Map as MapIcon,
   RefreshCw,
   Satellite,
+  Search,
+  SendHorizontal,
   TreePine,
+  X,
   XCircle,
 } from "lucide-react";
 
@@ -101,6 +108,12 @@ import "leaflet/dist/leaflet.css";
 
 import api from "../services/api";
 import { TOKEN_KEY } from "../services/auth";
+import {
+  satelliteSignature,
+  shouldReloadImagery,
+} from "../services/dashboardUpdates";
+import { formatZambiaShortTime } from "../services/zambiaTime";
+import CloudMonitoringCard from "../components/CloudMonitoringCard";
 
 
 import { API_URL as CONFIG_API_URL } from "../config";
@@ -235,10 +248,75 @@ const DEFAULT_CENTER = [
 ];
 
 
+/*
+  How often the dashboard asks for new figures.
+
+  Sentinel-2 revisits the Copperbelt about every five days,
+  so the imagery itself does not change minute to minute.
+  What does change on that scale is this system's own work
+  on it: a product finishing downloading, a queued analysis
+  completing, and the detections that analysis writes. A
+  minute is short enough that an officer watching a job
+  finish sees the result without reaching for Refresh, and
+  long enough that a dashboard left open all day costs about
+  sixty requests an hour against one small summary endpoint.
+*/
+const AUTO_REFRESH_INTERVAL_MS = 60000;
+
+
+/*
+  How many refreshes may fail in a row before automatic
+  updating stops.
+
+  A dashboard that keeps polling a backend that is down
+  turns one outage into a flood of requests, and an officer
+  is better told that the figures have stopped updating than
+  left reading figures that quietly stopped.
+*/
+const AUTO_REFRESH_FAILURE_LIMIT = 4;
+
+
 function SentinelMapView({ sentinel }) {
   const map = useMap();
 
+  /*
+    Whether the officer has moved the map themselves.
+
+    The map is drawn immediately and the scene summary
+    arrives a second or two later, so without this the view
+    would be re-centred under the hands of anyone who had
+    already started panning. A map that moves on its own
+    while being read is worse than one centred slightly off
+    the newest scene.
+
+    Only drag and wheel are watched. fitBounds raises
+    movestart and zoomstart itself, so listening for those
+    would make the map count its own correction as an
+    interaction.
+  */
+  const officerMovedMap = useRef(false);
+
   useEffect(() => {
+    const remember = () => {
+      officerMovedMap.current = true;
+    };
+
+    map.on("dragstart", remember);
+    map.on("wheel", remember);
+
+    return () => {
+      map.off("dragstart", remember);
+      map.off("wheel", remember);
+    };
+  }, [map]);
+
+  useEffect(() => {
+    if (
+      officerMovedMap.current
+    ) {
+      return;
+    }
+
     if (
       !sentinel ||
       !Array.isArray(sentinel.bounds) ||
@@ -291,7 +369,66 @@ function SentinelMapView({ sentinel }) {
 }
 
 
-export default function Dashboard() {
+/**
+ * Keep the Leaflet viewport the size of its container.
+ *
+ * The map panel is stretched by the dashboard grid to the
+ * height of the panels beside it, so the container can
+ * change size after Leaflet has measured it — when the
+ * summary figures arrive and alter the height of the column
+ * next to the map, for instance. Leaflet watches the window
+ * for resizes but not its own container, and a container
+ * that grew underneath it leaves the imagery drawn for the
+ * size it had before.
+ */
+function MapFillsContainer() {
+  const map = useMap();
+
+  useEffect(() => {
+    if (
+      typeof ResizeObserver ===
+      "undefined"
+    ) {
+      return undefined;
+    }
+
+    let frame = 0;
+
+    const observer =
+      new ResizeObserver(() => {
+        /*
+          Coalesced into one call per frame. The observer can
+          report several times while a grid row settles, and
+          each invalidateSize redraws every visible tile.
+        */
+        cancelAnimationFrame(frame);
+
+        frame = requestAnimationFrame(
+          () => {
+            map.invalidateSize({
+              animate: false,
+            });
+          }
+        );
+      });
+
+    observer.observe(
+      map.getContainer()
+    );
+
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [map]);
+
+  return null;
+}
+
+
+export default function Dashboard({
+  onOpenMonitoringMap,
+}) {
   const [dashboard, setDashboard] =
     useState(null);
 
@@ -321,7 +458,10 @@ export default function Dashboard() {
   // never left unexplained.
   const [layerError, setLayerError] = useState("");
 
-  const [mapLoading, setMapLoading] =
+  // Whether the scene summary lookup is in flight. It
+  // gates the notice in the corner of the map, never the
+  // map itself.
+  const [sceneLoading, setSceneLoading] =
     useState(true);
 
   const [error, setError] =
@@ -336,12 +476,62 @@ export default function Dashboard() {
   const [refreshing, setRefreshing] =
     useState(false);
 
+  // Set once automatic updating has given up, so the page
+  // can say so rather than appear current while standing
+  // still. The officer can start it again.
+  const [liveUpdatesPaused, setLiveUpdatesPaused] =
+    useState(false);
 
+  // Consecutive failed background refreshes, and the last
+  // state of the data the map and scene were drawn from.
+  // Both are refs: neither should cause a render on its own,
+  // and the poller needs to read them without being rebuilt
+  // every time they change.
+  const autoRefreshFailuresRef = useRef(0);
+
+  const dataSignatureRef = useRef(null);
+
+  // Changes when new satellite imagery lands. Held as state
+  // rather than only in the ref above because the cloud card
+  // has to re-render on it; the ref exists to compare
+  // signatures without causing one.
+  const [satelliteStamp, setSatelliteStamp] = useState(null);
+
+
+  // Which detection status the officer is looking at, and a
+  // forest-area name to narrow it further. Both are held on
+  // the page: see the note over the derived lists below.
+  const [statusFilter, setStatusFilter] =
+    useState("ALL");
+
+  const [areaQuery, setAreaQuery] =
+    useState("");
+
+  // The moment the summary figures last arrived. Set only
+  // on a successful response, so a failed refresh does not
+  // make stale figures look current.
+  const [lastUpdated, setLastUpdated] =
+    useState(null);
+
+
+  /**
+   * Load the summary figures.
+   *
+   * A silent load is a background refresh: it shows no
+   * spinner and, if it fails, neither reports an error nor
+   * disturbs the figures already on screen. It returns the
+   * data so the caller can see whether anything changed,
+   * and null if the request failed.
+   */
   const loadDashboard =
-    useCallback(async () => {
+    useCallback(async ({
+      silent = false,
+    } = {}) => {
       try {
-        setLoading(true);
-        setError("");
+        if (!silent) {
+          setLoading(true);
+          setError("");
+        }
 
         const response =
           await api.get(
@@ -351,17 +541,38 @@ export default function Dashboard() {
         setDashboard(
           response.data
         );
+
+        setLastUpdated(
+          new Date()
+        );
+
+        return response.data;
       } catch (err) {
         console.error(
           "Dashboard error:",
           err
         );
 
-        setError(
-          "Unable to load dashboard data. Please make sure the ForestWatch Zambia backend is running."
-        );
+        /*
+          A failed background refresh replaces nothing. The
+          figures already on screen stay, and lastUpdated is
+          deliberately left alone so the timestamp ages in
+          view: an officer can see for themselves that what
+          they are reading is no longer current, which is
+          more use than an error over figures that are still
+          broadly right.
+        */
+        if (!silent) {
+          setError(
+            "Unable to load dashboard data. Please make sure the ForestWatch Zambia backend is running."
+          );
+        }
+
+        return null;
       } finally {
-        setLoading(false);
+        if (!silent) {
+          setLoading(false);
+        }
       }
     }, []);
 
@@ -463,7 +674,7 @@ export default function Dashboard() {
   const loadSentinel =
     useCallback(async () => {
       try {
-        setMapLoading(true);
+        setSceneLoading(true);
         setSentinelError("");
 
         const response =
@@ -525,7 +736,7 @@ export default function Dashboard() {
         );
 
       } finally {
-        setMapLoading(
+        setSceneLoading(
           false
         );
       }
@@ -560,6 +771,157 @@ export default function Dashboard() {
   ]);
 
 
+  // =========================================================
+  // AUTOMATIC UPDATING
+  //
+  // The figures on this page are the result of work that
+  // finishes while nobody is watching: a satellite product
+  // downloads, a queued analysis runs, detections are
+  // written. Without this the dashboard showed whatever was
+  // true when it was opened, and an officer had no way of
+  // knowing new results existed except by pressing Refresh.
+  //
+  // Three things keep the cost of that honest:
+  //
+  //   Each pass asks only for the summary. The map and the
+  //   scene are reloaded solely when that summary shows the
+  //   underlying data has actually moved, so a quiet hour
+  //   costs one small request a minute and nothing else.
+  //
+  //   A hidden tab is not polled at all.
+  //
+  //   Repeated failures stop it rather than retrying
+  //   forever against a backend that is down.
+  //
+  // The passes are chained with a timeout rather than run
+  // from an interval, so a slow response delays the next
+  // request instead of letting them overlap.
+  // =========================================================
+
+  useEffect(() => {
+    if (liveUpdatesPaused) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    let timeoutId;
+
+    function schedule() {
+      if (cancelled) {
+        return;
+      }
+
+      timeoutId = window.setTimeout(
+        tick,
+        AUTO_REFRESH_INTERVAL_MS
+      );
+    }
+
+    async function tick() {
+      /*
+        Nothing is fetched for a dashboard nobody is looking
+        at. This is checked when the request is due rather
+        than by stopping the timer, so a tab returned to is
+        brought up to date by the handler below without
+        waiting out a further minute.
+      */
+      if (document.hidden) {
+        schedule();
+        return;
+      }
+
+      const data =
+        await loadDashboard({
+          silent: true,
+        });
+
+      if (cancelled) {
+        return;
+      }
+
+      if (!data) {
+        autoRefreshFailuresRef.current += 1;
+
+        if (
+          autoRefreshFailuresRef.current >=
+          AUTO_REFRESH_FAILURE_LIMIT
+        ) {
+          setLiveUpdatesPaused(true);
+          return;
+        }
+
+        schedule();
+        return;
+      }
+
+      autoRefreshFailuresRef.current = 0;
+
+      const signature =
+        satelliteSignature(data);
+
+      const reload =
+        shouldReloadImagery(
+          dataSignatureRef.current,
+          signature
+        );
+
+      dataSignatureRef.current = signature;
+
+      if (reload) {
+        loadMapData();
+        loadSentinel();
+
+        // New imagery means the cloud cover recorded for
+        // this district can have changed, so the cloud card
+        // refetches rather than waiting out its own timer.
+        setSatelliteStamp(signature);
+      }
+
+      schedule();
+    }
+
+    // Coming back to the tab asks straight away rather than
+    // leaving the officer looking at figures from whenever
+    // they last left it.
+    const refreshOnReturn = () => {
+      if (document.hidden) {
+        return;
+      }
+
+      window.clearTimeout(timeoutId);
+      tick();
+    };
+
+    document.addEventListener(
+      "visibilitychange",
+      refreshOnReturn
+    );
+
+    schedule();
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+
+      document.removeEventListener(
+        "visibilitychange",
+        refreshOnReturn
+      );
+    };
+  }, [
+    liveUpdatesPaused,
+    loadDashboard,
+    loadMapData,
+    loadSentinel,
+  ]);
+
+
+  const resumeLiveUpdates = useCallback(() => {
+    autoRefreshFailuresRef.current = 0;
+    setLiveUpdatesPaused(false);
+  }, []);
+
+
   const statistics =
     dashboard?.statistics || {};
 
@@ -577,9 +939,153 @@ export default function Dashboard() {
     {};
 
 
-  const tileUrl =
-    sentinel?.tiles?.[0] ||
-    null;
+  // =========================================================
+  // DRILL-DOWN FILTERS
+  //
+  // The page already holds every detection it draws and every
+  // forest area it needs to name them, so narrowing happens
+  // here rather than by asking the API again. Nothing below
+  // adds a request, a query parameter or an endpoint: the
+  // records already fetched are simply filtered before they
+  // are drawn.
+  //
+  // One filter feeds both the map and the table, so the two
+  // can never disagree about what is being looked at.
+  // =========================================================
+
+  // Detections carry a forest area id, not its name, so the
+  // name search needs the areas indexed by id. Built once per
+  // change of areas rather than searched per detection.
+  const forestNameById = useMemo(() => {
+    const index = new Map();
+
+    forestAreas.forEach((forest) => {
+      index.set(
+        Number(forest.id),
+        String(forest.name || "")
+      );
+    });
+
+    return index;
+  }, [forestAreas]);
+
+
+  const normalisedQuery =
+    areaQuery.trim().toLowerCase();
+
+  const filtersActive =
+    statusFilter !== "ALL" ||
+    normalisedQuery !== "";
+
+
+  const matchesFilters = useCallback(
+    (status, forestName) => {
+      if (
+        statusFilter !== "ALL" &&
+        String(status || "").toUpperCase() !==
+          statusFilter
+      ) {
+        return false;
+      }
+
+      if (!normalisedQuery) {
+        return true;
+      }
+
+      return String(forestName || "")
+        .toLowerCase()
+        .includes(normalisedQuery);
+    },
+    [statusFilter, normalisedQuery]
+  );
+
+
+  // Drawn on the map.
+  const visibleDetections = useMemo(
+    () =>
+      detections.filter((detection) =>
+        matchesFilters(
+          detection.status,
+          forestNameById.get(
+            Number(detection.forest_area_id)
+          )
+        )
+      ),
+    [
+      detections,
+      forestNameById,
+      matchesFilters,
+    ]
+  );
+
+
+  // Listed in the table. These arrive already named by the
+  // dashboard endpoint, so they are matched on their own
+  // forest_name rather than through the index above.
+  const visibleRecentDetections = useMemo(
+    () =>
+      (
+        dashboard?.recent_detections || []
+      ).filter((detection) =>
+        matchesFilters(
+          detection.status,
+          detection.forest_name
+        )
+      ),
+    [dashboard, matchesFilters]
+  );
+
+
+  const clearFilters = useCallback(() => {
+    setStatusFilter("ALL");
+    setAreaQuery("");
+  }, []);
+
+
+  // The counts come from the dashboard endpoint, which has
+  // already scoped them to the officer's jurisdiction, so a
+  // chip can never advertise records they may not open.
+  const statusFilterOptions = [
+    {
+      id: "ALL",
+      label: "All",
+      count:
+        detectionStatistics.total_detections ??
+        0,
+    },
+    {
+      id: "PENDING",
+      label: "Pending",
+      count:
+        detectionStatistics.pending_detections ??
+        0,
+    },
+    {
+      id: "VERIFIED",
+      label: "Verified",
+      count:
+        detectionStatistics.verified_detections ??
+        0,
+    },
+    {
+      id: "REJECTED",
+      label: "Rejected",
+      count:
+        detectionStatistics.rejected_detections ??
+        0,
+    },
+  ];
+
+
+  // Named from the same list the switch over the map is
+  // built from, so the toolbar cannot disagree with the
+  // layer being drawn.
+  const activeImageryLabel =
+    IMAGERY_OPTIONS.find(
+      (layer) =>
+        layer.id === sentinelLayer
+    )?.label ||
+    BASE_IMAGERY.label;
 
 
   if (
@@ -587,17 +1093,7 @@ export default function Dashboard() {
     !dashboard
   ) {
     return (
-      <div
-        className="dashboard-loading"
-        style={{
-          minHeight: "100vh",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          flexDirection: "column",
-          gap: "12px",
-        }}
-      >
+      <div className="dashboard-loading">
         <RefreshCw
           size={30}
           className="refresh-spin"
@@ -616,17 +1112,7 @@ export default function Dashboard() {
     !dashboard
   ) {
     return (
-      <div
-        className="dashboard-error"
-        style={{
-          minHeight: "100vh",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          gap: "15px",
-          padding: "30px",
-        }}
-      >
+      <div className="dashboard-error">
         <AlertTriangle
           size={30}
         />
@@ -654,13 +1140,7 @@ export default function Dashboard() {
 
 
   return (
-    <div
-      className="dashboard-page"
-      style={{
-        width: "100%",
-        minHeight: "100vh",
-      }}
-    >
+    <div className="dashboard-page">
 
       <div className="dashboard-heading">
 
@@ -676,35 +1156,95 @@ export default function Dashboard() {
           <p>
             Monitor forest areas,
             satellite imagery,
-            deforestation detections
+            potential vegetation loss
             and alerts across the
-            Copperbelt, Zambia.
+            Copperbelt Province,
+            Zambia.
           </p>
         </div>
 
 
-        <button
-          className="refresh-button"
-          onClick={
-            refreshAll
-          }
-          disabled={
-            refreshing
-          }
-        >
-          <RefreshCw
-            size={16}
-            className={
-              refreshing
-                ? "refresh-spin"
-                : ""
-            }
-          />
+        <div className="dashboard-heading-actions">
 
-          {refreshing
-            ? "Refreshing..."
-            : "Refresh Data"}
-        </button>
+          <button
+            className="refresh-button"
+            onClick={
+              refreshAll
+            }
+            disabled={
+              refreshing
+            }
+          >
+            <RefreshCw
+              size={16}
+              className={
+                refreshing
+                  ? "refresh-spin"
+                  : ""
+              }
+            />
+
+            {refreshing
+              ? "Refreshing..."
+              : "Refresh Data"}
+          </button>
+
+          {/*
+            Shown only once a request has actually succeeded.
+            An invented "just now" would be worse than no
+            timestamp at all, because an officer uses this to
+            judge whether the figures are worth acting on.
+          */}
+          {lastUpdated && (
+            <span className="dashboard-last-updated">
+              Updated
+              {" "}
+              {formatZambiaShortTime(lastUpdated)}
+            </span>
+          )}
+
+          {/*
+            Says whether the figures are keeping themselves
+            current. Without it an officer cannot tell a
+            dashboard that is quiet because nothing has
+            happened from one that is quiet because it
+            stopped asking.
+          */}
+          {liveUpdatesPaused ? (
+            <span className="dashboard-live is-paused">
+
+              <i
+                className="dashboard-live-dot"
+                aria-hidden="true"
+              />
+
+              Updates paused
+
+              <button
+                type="button"
+                className="dashboard-live-resume"
+                onClick={
+                  resumeLiveUpdates
+                }
+              >
+                Resume
+              </button>
+
+            </span>
+          ) : (
+            <span className="dashboard-live">
+
+              <i
+                className="dashboard-live-dot"
+                aria-hidden="true"
+              />
+
+              Updating automatically
+
+            </span>
+          )}
+
+        </div>
 
       </div>
 
@@ -753,6 +1293,7 @@ export default function Dashboard() {
 
         <StatCard
           title="Alerts"
+          tone="critical"
           value={
             alerts.total_alerts ??
             0
@@ -793,7 +1334,7 @@ export default function Dashboard() {
       </div>
 
 
-      <section className="dashboard-section">
+      <section className="dashboard-section dashboard-map-section">
 
         <div className="section-heading">
 
@@ -816,87 +1357,49 @@ export default function Dashboard() {
 
           </div>
 
+          {/*
+            The dashboard map is deliberately small. Field
+            work is planned on the Monitoring Map page, so
+            there has to be a way through to it from here.
+            Navigation is App's responsibility, as it is for
+            every other page.
+          */}
+          {onOpenMonitoringMap && (
+            <button
+              type="button"
+              className="section-action"
+              onClick={onOpenMonitoringMap}
+            >
+              <MapIcon
+                size={15}
+                aria-hidden="true"
+              />
+
+              Open Monitoring Map
+            </button>
+          )}
+
         </div>
 
 
-        <div
-          style={{
-            display: "flex",
-            justifyContent:
-              "space-between",
-            alignItems:
-              "center",
-            flexWrap:
-              "wrap",
-            gap: "12px",
-            padding:
-              "12px 16px",
-            background:
-              "#ffffff",
-            border:
-              "1px solid #e2e8e4",
-            borderBottom:
-              "none",
-            borderRadius:
-              "12px 12px 0 0",
-          }}
-        >
+        <div className="map-toolbar">
 
-          <div
-            style={{
-              display:
-                "flex",
-              alignItems:
-                "center",
-              gap: "10px",
-            }}
-          >
+          <div className="map-toolbar-layer">
 
             <Satellite
-              size={18}
+              size={17}
+              aria-hidden="true"
             />
 
             <strong>
-              Sentinel-2
+              {activeImageryLabel}
             </strong>
-
-            <select
-              value="True Color"
-              disabled
-              style={{
-                padding:
-                  "7px 12px",
-                border:
-                  "1px solid #cbd5d1",
-                borderRadius:
-                  "7px",
-                background:
-                  "#ffffff",
-              }}
-            >
-              <option>
-                True Color
-              </option>
-            </select>
 
           </div>
 
 
           {sentinel && (
-            <div
-              style={{
-                display:
-                  "flex",
-                gap:
-                  "15px",
-                flexWrap:
-                  "wrap",
-                fontSize:
-                  "12px",
-                color:
-                  "#475569",
-              }}
-            >
+            <div className="map-toolbar-scene">
 
               <span>
                 Image:
@@ -934,135 +1437,37 @@ export default function Dashboard() {
         </div>
 
 
-        <div
-          style={{
-            position:
-              "relative",
-            width:
-              "100%",
-            height:
-              "620px",
-            background:
-              "#d6d9d7",
-            overflow:
-              "hidden",
-            borderRadius:
-              "0 0 12px 12px",
-          }}
-        >
+        <div className="map-canvas">
 
-          {mapLoading && (
+          {/* Scene lookup and map loading run independently. */}
+          {sceneLoading && (
             <div
-              style={{
-                position:
-                  "absolute",
-                inset: 0,
-                zIndex: 2000,
-                display:
-                  "flex",
-                flexDirection:
-                  "column",
-                alignItems:
-                  "center",
-                justifyContent:
-                  "center",
-                gap: "12px",
-                background:
-                  "rgba(255,255,255,.92)",
-              }}
+              className="map-canvas-loading"
+              role="status"
+              aria-live="polite"
             >
 
               <RefreshCw
-                size={32}
+                size={15}
                 className="refresh-spin"
+                aria-hidden="true"
               />
 
-              <strong>
-                Loading Sentinel-2 imagery...
-              </strong>
+              <div>
 
-              <span
-                style={{
-                  fontSize:
-                    "13px",
-                  color:
-                    "#64748b",
-                }}
-              >
-                Microsoft Planetary
-                Computer
-              </span>
+                <strong>
+                  Checking latest scene
+                </strong>
+
+                <span>
+                  Microsoft Planetary
+                  Computer
+                </span>
+
+              </div>
 
             </div>
           )}
-
-
-          {/* =================================================
-              SCENE LOOKUP FAILURE
-
-              Rendered inline, above the map rather than
-              over it. A panel covering the map would make a
-              failure of the scene lookup look like a
-              failure of the map itself.
-
-              It is not. The lookup supplies the acquisition
-              date, the cloud figure and an initial centre.
-              The imagery itself comes from the Copernicus
-              proxy and the base layer from Esri, and both
-              keep working when the lookup does not, which
-              the map's own comment below already notes.
-
-              So the notice now sits along the top edge and
-              leaves the map visible and usable underneath.
-              An officer can still pan, switch layers and
-              read detections while the scene summary is
-              unavailable.
-            ================================================= */}
-
-          {!mapLoading &&
-            sentinelError && (
-              <div
-                className="map-scene-notice"
-                role="status"
-                aria-live="polite"
-              >
-
-                <XCircle
-                  size={18}
-                  aria-hidden="true"
-                />
-
-                <div className="map-scene-notice-text">
-
-                  <strong>
-                    Latest scene details
-                    unavailable
-                  </strong>
-
-                  <span>
-                    {sentinelError}{" "}
-                    The map below is
-                    unaffected.
-                  </span>
-
-                </div>
-
-                <button
-                  type="button"
-                  className="refresh-button"
-                  onClick={
-                    loadSentinel
-                  }
-                >
-                  <RefreshCw
-                    size={15}
-                  />
-
-                  Try Again
-                </button>
-
-              </div>
-            )}
 
 
           {/* =================================================
@@ -1076,646 +1481,744 @@ export default function Dashboard() {
               Copperbelt rather than disappearing.
               ================================================= */}
 
-          {!mapLoading && (
+          <MapContainer
+            center={
+              sentinel?.center
+                ? [
+                    Number(
+                      sentinel
+                        .center[1]
+                    ),
+                    Number(
+                      sentinel
+                        .center[0]
+                    ),
+                  ]
+                : DEFAULT_CENTER
+            }
+            zoom={10}
+            minZoom={6}
+            maxZoom={18}
+            scrollWheelZoom={
+              true
+            }
+            zoomControl={
+              false
+            }
+            attributionControl={
+              true
+            }
+            style={{
+              width:
+                "100%",
+              height:
+                "100%",
+            }}
+          >
 
-              <MapContainer
-                key={
-                  sentinel?.item_id || "copperbelt"
-                }
-                center={
-                  sentinel?.center
-                    ? [
-                        Number(
-                          sentinel
-                            .center[1]
-                        ),
-                        Number(
-                          sentinel
-                            .center[0]
-                        ),
-                      ]
-                    : DEFAULT_CENTER
-                }
-                zoom={10}
-                minZoom={6}
+            <SentinelMapView
+              sentinel={
+                sentinel
+              }
+            />
+
+
+            <MapFillsContainer />
+
+
+            {/* =================================================
+                COPERNICUS SENTINEL-2 IMAGERY
+
+                Served through this system's own proxy,
+                which keeps the Sentinel Hub instance
+                identifier on the server instead of
+                exposing it in the page source.
+
+                The token travels as a query parameter
+                because a Leaflet tile layer requests
+                images with plain <img> tags and cannot
+                set an Authorization header.
+
+                There is no street base layer. This map
+                exists to show vegetation.
+                ================================================= */}
+
+            {sentinelLayer === BASE_IMAGERY.id && (
+              <TileLayer
+                key="esri-satellite"
+                url={ESRI_IMAGERY_URL}
+                tileSize={256}
+                minZoom={0}
                 maxZoom={18}
-                scrollWheelZoom={
-                  true
+                maxNativeZoom={18}
+                keepBuffer={3}
+                attribution={
+                  "Imagery © Esri, Maxar, Earthstar " +
+                  "Geographics"
                 }
-                zoomControl={
-                  false
+              />
+            )}
+
+            {sentinelLayer === STREET_IMAGERY.id && (
+              <TileLayer
+                key="esri-street"
+                url={ESRI_STREET_URL}
+                tileSize={256}
+                minZoom={0}
+                maxZoom={18}
+                maxNativeZoom={18}
+                keepBuffer={3}
+                attribution="© Esri"
+              />
+            )}
+
+            {isSentinelLayer(sentinelLayer) && (
+              <WMSTileLayer
+                key={
+                  `${sentinelLayer}-copernicus`
                 }
-                attributionControl={
-                  true
+                url={
+                  `${API_URL}/api/v1/sentinel/wms`
                 }
-                style={{
-                  width:
-                    "100%",
-                  height:
-                    "100%",
+                params={{
+                  LAYERS: sentinelLayer,
+                  FORMAT: "image/png",
+                  TRANSPARENT: false,
+                  access_token: getAccessToken(),
                 }}
-              >
+                tileSize={512}
+                minZoom={0}
+                maxZoom={18}
+                keepBuffer={1}
+                updateWhenIdle={true}
+                updateWhenZooming={false}
+                attribution={
+                  "Sentinel-2 © Copernicus Data Space Ecosystem"
+                }
+                eventHandlers={{
+                  /*
+                    Without this a failed tile is simply
+                    blank. An expired session is the
+                    common cause, and it looked
+                    identical to "this layer is broken",
+                    which is what made these layers seem
+                    not to work at all.
+                  */
+                  tileerror: () =>
+                    setLayerError(
+                      "Sentinel-2 imagery could not be " +
+                        "loaded. If you have been " +
+                        "signed in a while, sign out " +
+                        "and back in, then try again."
+                    ),
+                  tileload: () => setLayerError(""),
+                }}
+              />
+            )}
 
-                <SentinelMapView
-                  sentinel={
-                    sentinel
-                  }
+            {/*
+              Place names drawn over whichever imagery is
+              selected, so the officer can tell where
+              they are while still looking at vegetation.
+              Pointless over the street map, which
+              already carries its own labels.
+            */}
+            {showLabels &&
+              sentinelLayer !== STREET_IMAGERY.id && (
+                <TileLayer
+                  key="esri-labels"
+                  url={ESRI_LABELS_URL}
+                  tileSize={256}
+                  minZoom={0}
+                  maxZoom={18}
+                  maxNativeZoom={18}
+                  opacity={0.9}
+                  zIndex={400}
                 />
+              )}
 
 
-                {/* =================================================
-                    COPERNICUS SENTINEL-2 IMAGERY
+            {forestAreas.map(
+              (
+                forest
+              ) => {
 
-                    Served through this system's own proxy,
-                    which keeps the Sentinel Hub instance
-                    identifier on the server instead of
-                    exposing it in the page source.
+                const coordinates =
+                  parseGeometry(
+                    forest.geometry
+                  );
 
-                    The token travels as a query parameter
-                    because a Leaflet tile layer requests
-                    images with plain <img> tags and cannot
-                    set an Authorization header.
+                if (
+                  !coordinates ||
+                  coordinates.length <
+                    3
+                ) {
+                  return null;
+                }
 
-                    There is no street base layer. This map
-                    exists to show vegetation.
-                    ================================================= */}
-
-                {sentinelLayer === BASE_IMAGERY.id && (
-                  <TileLayer
-                    key="esri-satellite"
-                    url={ESRI_IMAGERY_URL}
-                    tileSize={256}
-                    minZoom={0}
-                    maxZoom={18}
-                    maxNativeZoom={18}
-                    keepBuffer={3}
-                    attribution={
-                      "Imagery © Esri, Maxar, Earthstar " +
-                      "Geographics"
-                    }
-                  />
-                )}
-
-                {sentinelLayer === STREET_IMAGERY.id && (
-                  <TileLayer
-                    key="esri-street"
-                    url={ESRI_STREET_URL}
-                    tileSize={256}
-                    minZoom={0}
-                    maxZoom={18}
-                    maxNativeZoom={18}
-                    keepBuffer={3}
-                    attribution="© Esri"
-                  />
-                )}
-
-                {isSentinelLayer(sentinelLayer) && (
-                  <WMSTileLayer
+                return (
+                  <Polygon
                     key={
-                      `${sentinelLayer}-copernicus`
+                      `forest-${forest.id}`
                     }
-                    url={
-                      `${API_URL}/api/v1/sentinel/wms`
+                    positions={
+                      coordinates
                     }
-                    params={{
-                      LAYERS: sentinelLayer,
-                      FORMAT: "image/png",
-                      TRANSPARENT: false,
-                      access_token: getAccessToken(),
+                    pathOptions={{
+                      color:
+                        "#16A34A",
+                      weight:
+                        2,
+                      fillColor:
+                        "#22C55E",
+                      fillOpacity:
+                        0.18,
                     }}
-                    tileSize={512}
-                    minZoom={0}
-                    maxZoom={18}
-                    keepBuffer={1}
-                    updateWhenIdle={true}
-                    updateWhenZooming={false}
-                    attribution={
-                      "Sentinel-2 © Copernicus Data Space Ecosystem"
-                    }
-                    eventHandlers={{
-                      /*
-                        Without this a failed tile is simply
-                        blank. An expired session is the
-                        common cause, and it looked
-                        identical to "this layer is broken",
-                        which is what made these layers seem
-                        not to work at all.
-                      */
-                      tileerror: () =>
-                        setLayerError(
-                          "Sentinel-2 imagery could not be " +
-                            "loaded. If you have been " +
-                            "signed in a while, sign out " +
-                            "and back in, then try again."
-                        ),
-                      tileload: () => setLayerError(""),
-                    }}
-                  />
-                )}
+                  >
 
-                {/*
-                  Place names drawn over whichever imagery is
-                  selected, so the officer can tell where
-                  they are while still looking at vegetation.
-                  Pointless over the street map, which
-                  already carries its own labels.
-                */}
-                {showLabels &&
-                  sentinelLayer !== STREET_IMAGERY.id && (
-                    <TileLayer
-                      key="esri-labels"
-                      url={ESRI_LABELS_URL}
-                      tileSize={256}
-                      minZoom={0}
-                      maxZoom={18}
-                      maxNativeZoom={18}
-                      opacity={0.9}
-                      zIndex={400}
-                    />
-                  )}
+                    <Popup>
 
+                      <strong>
+                        {forest.name ||
+                          `Forest Area #${forest.id}`}
+                      </strong>
 
-                {forestAreas.map(
-                  (
-                    forest
-                  ) => {
+                      <hr />
 
-                    const coordinates =
-                      parseGeometry(
-                        forest.geometry
-                      );
+                      <div>
+                        Area:
+                        {" "}
+                        {Number(
+                          forest.area_hectares ||
+                            0
+                        ).toFixed(
+                          2
+                        )}
+                        {" "}
+                        ha
+                      </div>
 
-                    if (
-                      !coordinates ||
-                      coordinates.length <
-                        3
-                    ) {
-                      return null;
-                    }
+                      {forest.district_name && (
+                        <div>
+                          District:
+                          {" "}
+                          {
+                            forest.district_name
+                          }
+                        </div>
+                      )}
 
-                    return (
-                      <Polygon
-                        key={
-                          `forest-${forest.id}`
-                        }
-                        positions={
-                          coordinates
-                        }
-                        pathOptions={{
-                          color:
-                            "#16A34A",
-                          weight:
-                            2,
-                          fillColor:
-                            "#22C55E",
-                          fillOpacity:
-                            0.18,
-                        }}
-                      >
+                    </Popup>
 
-                        <Popup>
-
-                          <strong>
-                            {forest.name ||
-                              `Forest Area #${forest.id}`}
-                          </strong>
-
-                          <hr />
-
-                          <div>
-                            Area:
-                            {" "}
-                            {Number(
-                              forest.area_hectares ||
-                                0
-                            ).toFixed(
-                              2
-                            )}
-                            {" "}
-                            ha
-                          </div>
-
-                          {forest.district_name && (
-                            <div>
-                              District:
-                              {" "}
-                              {
-                                forest.district_name
-                              }
-                            </div>
-                          )}
-
-                        </Popup>
-
-                      </Polygon>
-                    );
-                  }
-                )}
-
-
-                {detections.map(
-                  (
-                    detection
-                  ) => {
-
-                    const forest =
-                      forestAreas.find(
-                        (
-                          item
-                        ) =>
-                          Number(
-                            item.id
-                          ) ===
-                          Number(
-                            detection.forest_area_id
-                          )
-                      );
-
-                    if (
-                      !forest
-                    ) {
-                      return null;
-                    }
-
-                    const coordinates =
-                      parseGeometry(
-                        forest.geometry
-                      );
-
-                    const center =
-                      getPolygonCenter(
-                        coordinates
-                      );
-
-                    if (
-                      !center
-                    ) {
-                      return null;
-                    }
-
-                    return (
-                      <CircleMarker
-                        key={
-                          `detection-${detection.id}`
-                        }
-                        center={
-                          center
-                        }
-                        radius={
-                          8
-                        }
-                        pathOptions={{
-                          color:
-                            "#991B1B",
-                          weight:
-                            2,
-                          fillColor:
-                            "#DC2626",
-                          fillOpacity:
-                            0.95,
-                        }}
-                      >
-
-                        <Popup>
-
-                          <strong>
-                            Deforestation Detection
-                            #
-                            {
-                              detection.id
-                            }
-                          </strong>
-
-                          <hr />
-
-                          <div>
-                            Detected Area:
-                            {" "}
-                            {Number(
-                              detection.detected_area_hectares ||
-                                0
-                            ).toFixed(
-                              2
-                            )}
-                            {" "}
-                            ha
-                          </div>
-
-                          <div>
-                            Confidence:
-                            {" "}
-                            {formatConfidence(
-                              detection.confidence_score
-                            )}
-                          </div>
-
-                          <div>
-                            Status:
-                            {" "}
-                            {
-                              detection.status ||
-                              "PENDING"
-                            }
-                          </div>
-
-                        </Popup>
-
-                      </CircleMarker>
-                    );
-                  }
-                )}
-
-
-                <ZoomControl
-                  position="bottomright"
-                />
-
-                <ScaleControl
-                  position="bottomleft"
-                />
-
-                {/* =================================================
-                    IMAGERY SELECTOR
-
-                    NDVI is the layer that actually shows
-                    vegetation loss, so it has to be
-                    reachable rather than buried. Rendered
-                    outside the Leaflet pane so it sits
-                    above the tiles.
-                    ================================================= */}
-
-                <div className="map-layer-switch">
-
-                  {IMAGERY_OPTIONS.map((layer) => (
-                    <button
-                      key={layer.id}
-                      type="button"
-                      title={layer.help}
-                      className={
-                        sentinelLayer === layer.id
-                          ? "map-layer-option active"
-                          : "map-layer-option"
-                      }
-                      onClick={(event) => {
-                        // Leaflet would otherwise treat the
-                        // click as a map interaction.
-                        event.stopPropagation();
-                        setSentinelLayer(layer.id);
-                      }}
-                    >
-                      {layer.label}
-                    </button>
-                  ))}
-
-                  {/*
-                    Separated from the imagery choices: this
-                    is an overlay drawn on top of whichever
-                    of them is selected, not an alternative
-                    to them.
-                  */}
-                  {sentinelLayer !== STREET_IMAGERY.id && (
-                    <label
-                      className="map-label-toggle"
-                      title={
-                        "Show town and district names over " +
-                        "the imagery"
-                      }
-                      onClick={(event) =>
-                        event.stopPropagation()
-                      }
-                    >
-                      <input
-                        type="checkbox"
-                        checked={showLabels}
-                        onChange={(event) =>
-                          setShowLabels(
-                            event.target.checked
-                          )
-                        }
-                      />
-                      Place names
-                    </label>
-                  )}
-
-                </div>
-
-                {/*
-                  Sentinel Hub renders each view on request,
-                  which takes appreciably longer than serving
-                  a prepared tile. Saying so removes the
-                  main reason the map felt broken: a long
-                  pause with nothing explaining it.
-                */}
-                {isSentinelLayer(sentinelLayer) &&
-                  !layerError && (
-                    <div className="map-layer-hint">
-                      Sentinel-2 imagery is rendered on
-                      request and may take a few seconds to
-                      appear.
-                    </div>
-                  )}
-
-                {layerError && (
-                  <div className="map-layer-hint error">
-                    {layerError}
-                  </div>
-                )}
-
-              </MapContainer>
+                  </Polygon>
+                );
+              }
             )}
 
 
-          {sentinel &&
-            !sentinelError && (
-              <div
-                style={{
-                  position:
-                    "absolute",
-                  top:
-                    "15px",
-                  right:
-                    "15px",
-                  zIndex:
-                    1000,
-                  padding:
-                    "10px 14px",
-                  borderRadius:
-                    "8px",
-                  background:
-                    "rgba(255,255,255,.94)",
-                  boxShadow:
-                    "0 2px 8px rgba(0,0,0,.25)",
-                  fontSize:
-                    "12px",
-                  lineHeight:
-                    "1.6",
-                }}
-              >
+            {visibleDetections.map(
+              (
+                detection
+              ) => {
 
-                <strong>
-                  Sentinel-2 L2A
-                </strong>
+                const forest =
+                  forestAreas.find(
+                    (
+                      item
+                    ) =>
+                      Number(
+                        item.id
+                      ) ===
+                      Number(
+                        detection.forest_area_id
+                      )
+                  );
 
-                <br />
+                if (
+                  !forest
+                ) {
+                  return null;
+                }
 
-                Acquisition:
-                {" "}
-                {formatDate(
-                  sentinel.datetime
-                )}
+                const coordinates =
+                  parseGeometry(
+                    forest.geometry
+                  );
 
-                <br />
+                const center =
+                  getPolygonCenter(
+                    coordinates
+                  );
 
-                Cloud cover:
-                {" "}
-                {Number(
-                  sentinel.cloud_cover ??
-                    0
-                ).toFixed(2)}
-                %
+                if (
+                  !center
+                ) {
+                  return null;
+                }
 
+                return (
+                  <CircleMarker
+                    key={
+                      `detection-${detection.id}`
+                    }
+                    center={
+                      center
+                    }
+                    radius={
+                      8
+                    }
+                    pathOptions={{
+                      color:
+                        "#991B1B",
+                      weight:
+                        2,
+                      fillColor:
+                        "#DC2626",
+                      fillOpacity:
+                        0.95,
+                    }}
+                  >
+
+                    <Popup>
+
+                      <strong>
+                        Deforestation Detection
+                        #
+                        {
+                          detection.id
+                        }
+                      </strong>
+
+                      <hr />
+
+                      <div>
+                        Detected Area:
+                        {" "}
+                        {Number(
+                          detection.detected_area_hectares ||
+                            0
+                        ).toFixed(
+                          2
+                        )}
+                        {" "}
+                        ha
+                      </div>
+
+                      <div>
+                        Confidence:
+                        {" "}
+                        {formatConfidence(
+                          detection.confidence_score
+                        )}
+                      </div>
+
+                      <div>
+                        Status:
+                        {" "}
+                        {
+                          detection.status ||
+                          "PENDING"
+                        }
+                      </div>
+
+                    </Popup>
+
+                  </CircleMarker>
+                );
+              }
+            )}
+
+
+            <ZoomControl
+              position="bottomright"
+            />
+
+            <ScaleControl
+              position="bottomleft"
+            />
+
+            {/* =================================================
+                IMAGERY SELECTOR
+
+                NDVI is the layer that actually shows
+                vegetation loss, so it has to be
+                reachable rather than buried. Rendered
+                outside the Leaflet pane so it sits
+                above the tiles.
+                ================================================= */}
+
+            <div className="map-layer-switch">
+
+              {IMAGERY_OPTIONS.map((layer) => (
+                <button
+                  key={layer.id}
+                  type="button"
+                  title={layer.help}
+                  className={
+                    sentinelLayer === layer.id
+                      ? "map-layer-option active"
+                      : "map-layer-option"
+                  }
+                  onClick={(event) => {
+                    // Leaflet would otherwise treat the
+                    // click as a map interaction.
+                    event.stopPropagation();
+                    setSentinelLayer(layer.id);
+                  }}
+                >
+                  {layer.label}
+                </button>
+              ))}
+
+              {/*
+                Separated from the imagery choices: this
+                is an overlay drawn on top of whichever
+                of them is selected, not an alternative
+                to them.
+              */}
+              {sentinelLayer !== STREET_IMAGERY.id && (
+                <label
+                  className="map-label-toggle"
+                  title={
+                    "Show town and district names over " +
+                    "the imagery"
+                  }
+                  onClick={(event) =>
+                    event.stopPropagation()
+                  }
+                >
+                  <input
+                    type="checkbox"
+                    checked={showLabels}
+                    onChange={(event) =>
+                      setShowLabels(
+                        event.target.checked
+                      )
+                    }
+                  />
+                  Place names
+                </label>
+              )}
+
+            </div>
+
+            {/*
+              Sentinel Hub renders each view on request,
+              which takes appreciably longer than serving
+              a prepared tile. Saying so removes the
+              main reason the map felt broken: a long
+              pause with nothing explaining it.
+            */}
+            {isSentinelLayer(sentinelLayer) &&
+              !layerError &&
+              !sentinelError && (
+                <div className="map-layer-hint">
+                  Sentinel-2 imagery is rendered on
+                  request and may take a few seconds to
+                  appear.
+                </div>
+              )}
+
+            {layerError && (
+              <div className="map-layer-hint error">
+                {layerError}
               </div>
             )}
 
-        </div>
+            {/*
+              The scene lookup and the monitoring data fail
+              independently of a tile request, and both
+              failures were recorded and never shown, so
+              either one left the map looking merely empty.
+              They report here, in the same slot as a tile
+              failure, so one place explains why the map is
+              not showing what the officer expected.
+            */}
+            {sentinelError && (
+              <div className="map-layer-hint error">
+                {sentinelError}
+              </div>
+            )}
 
-      </section>
+            {mapError && (
+              <div className="map-layer-hint error">
+                {mapError}
+              </div>
+            )}
 
-
-      <section className="dashboard-section">
-
-        <div className="section-heading">
-
-          <div>
-
-            <h2>
-              Monitoring Summary
-            </h2>
-
-            <p>
-              Current ForestWatch
-              system status.
-            </p>
-
-          </div>
-
-        </div>
-
-
-        <div className="status-grid">
-
-          <StatusPanel
-            title="Detection Status"
-            items={[
-              {
-                label:
-                  "Total Detections",
-                value:
-                  detectionStatistics.total_detections ??
-                  0,
-                icon:
-                  <Leaf
-                    size={18}
-                  />,
-              },
-              {
-                label:
-                  "Pending Verification",
-                value:
-                  detectionStatistics.pending_detections ??
-                  0,
-                icon:
-                  <Clock3
-                    size={18}
-                  />,
-              },
-              {
-                label:
-                  "Verified",
-                value:
-                  detectionStatistics.verified_detections ??
-                  0,
-                icon:
-                  <CheckCircle2
-                    size={18}
-                  />,
-              },
-              {
-                label:
-                  "Rejected",
-                value:
-                  detectionStatistics.rejected_detections ??
-                  0,
-                icon:
-                  <XCircle
-                    size={18}
-                  />,
-              },
-            ]}
-          />
+          </MapContainer>
 
 
-          <StatusPanel
-            title="Satellite Imagery"
-            items={[
-              {
-                label:
-                  "Total Images",
-                value:
-                  satelliteImages.total_images ??
-                  0,
-                icon:
-                  <Satellite
-                    size={18}
-                  />,
-              },
-              {
-                label:
-                  "Processed",
-                value:
-                  satelliteImages.processed_images ??
-                  0,
-                icon:
-                  <CheckCircle2
-                    size={18}
-                  />,
-              },
-              {
-                label:
-                  "Latest Source",
-                value:
-                  sentinel
-                    ? "Sentinel-2"
-                    : "Unavailable",
-                icon:
-                  <Satellite
-                    size={18}
-                  />,
-              },
-              {
-                label:
-                  "Cloud Cover",
-                value:
-                  sentinel
-                    ? `${Number(
-                        sentinel.cloud_cover ??
-                          0
-                      ).toFixed(2)}%`
-                    : "—",
-                icon:
-                  <Clock3
-                    size={18}
-                  />,
-              },
-            ]}
-          />
+          {/*
+            The scene summary used to be repeated here, in a
+            panel over the top right of the map. It said
+            exactly what the toolbar above the map already
+            says — the product, the acquisition date and the
+            cloud figure — and it sat on top of the imagery
+            switch, covering the NDVI option and the place
+            names toggle.
+
+            Two copies of the same three facts, one of them
+            obscuring the controls: the copy over the map is
+            the one to drop.
+          */}
 
         </div>
 
       </section>
 
 
-      <section className="dashboard-section">
+      <aside className="dashboard-summary-column">
+
+        {/* Cloud conditions first in this column: whether
+            the imagery is usable is the question an officer
+            asks before reading the detection counts below,
+            because it decides whether those counts are
+            based on anything they can see. */}
+        <CloudMonitoringCard
+          refreshSignal={satelliteStamp}
+        />
+
+        <StatusPanel
+          title="Detection Status"
+          footer={
+            <DistributionBar
+              total={
+                detectionStatistics.total_detections ??
+                0
+              }
+              segments={[
+                {
+                  label: "Verified",
+                  value:
+                    detectionStatistics.verified_detections ??
+                    0,
+                  tone: "verified",
+                  active:
+                    statusFilter ===
+                    "VERIFIED",
+                  onSelect: () =>
+                    setStatusFilter(
+                      "VERIFIED"
+                    ),
+                },
+                {
+                  label: "Pending",
+                  value:
+                    detectionStatistics.pending_detections ??
+                    0,
+                  tone: "pending",
+                  active:
+                    statusFilter ===
+                    "PENDING",
+                  onSelect: () =>
+                    setStatusFilter(
+                      "PENDING"
+                    ),
+                },
+                {
+                  label: "Rejected",
+                  value:
+                    detectionStatistics.rejected_detections ??
+                    0,
+                  tone: "rejected",
+                  active:
+                    statusFilter ===
+                    "REJECTED",
+                  onSelect: () =>
+                    setStatusFilter(
+                      "REJECTED"
+                    ),
+                },
+              ]}
+            />
+          }
+          items={[
+            {
+              label:
+                "Total Detections",
+              value:
+                detectionStatistics.total_detections ??
+                0,
+              icon:
+                <Leaf
+                  size={18}
+                />,
+              active:
+                statusFilter === "ALL",
+              onSelect: () =>
+                setStatusFilter("ALL"),
+            },
+            {
+              label:
+                "Pending Verification",
+              value:
+                detectionStatistics.pending_detections ??
+                0,
+              icon:
+                <Clock3
+                  size={18}
+                />,
+              active:
+                statusFilter ===
+                "PENDING",
+              onSelect: () =>
+                setStatusFilter(
+                  "PENDING"
+                ),
+            },
+            {
+              label:
+                "Verified",
+              value:
+                detectionStatistics.verified_detections ??
+                0,
+              icon:
+                <CheckCircle2
+                  size={18}
+                />,
+              active:
+                statusFilter ===
+                "VERIFIED",
+              onSelect: () =>
+                setStatusFilter(
+                  "VERIFIED"
+                ),
+            },
+            {
+              label:
+                "Rejected",
+              tone: "rejected",
+              value:
+                detectionStatistics.rejected_detections ??
+                0,
+              icon:
+                <XCircle
+                  size={18}
+                />,
+              active:
+                statusFilter ===
+                "REJECTED",
+              onSelect: () =>
+                setStatusFilter(
+                  "REJECTED"
+                ),
+            },
+          ]}
+        />
+
+
+        <StatusPanel
+          title="Alert Delivery"
+          items={[
+            {
+              label:
+                "Sent",
+              value:
+                alerts.sent_alerts ??
+                0,
+              icon:
+                <SendHorizontal
+                  size={18}
+                />,
+            },
+            {
+              label:
+                "Pending",
+              value:
+                alerts.pending_alerts ??
+                0,
+              icon:
+                <Clock3
+                  size={18}
+                />,
+            },
+            {
+              label:
+                "Failed",
+              tone: "failed",
+              value:
+                alerts.failed_alerts ??
+                0,
+              icon:
+                <XCircle
+                  size={18}
+                />,
+            },
+            {
+              label:
+                "Resolved",
+              value:
+                alerts.resolved_alerts ??
+                0,
+              icon:
+                <CheckCircle2
+                  size={18}
+                />,
+            },
+          ]}
+        />
+
+
+        <StatusPanel
+          title="Satellite Imagery"
+          items={[
+            {
+              label:
+                "Total Images",
+              value:
+                satelliteImages.total_images ??
+                0,
+              icon:
+                <Satellite
+                  size={18}
+                />,
+            },
+            {
+              label:
+                "Processed",
+              value:
+                satelliteImages.processed_images ??
+                0,
+              icon:
+                <CheckCircle2
+                  size={18}
+                />,
+            },
+            {
+              label:
+                "Latest Source",
+              value:
+                sentinel
+                  ? "Sentinel-2"
+                  : "Unavailable",
+              icon:
+                <Satellite
+                  size={18}
+                />,
+            },
+            {
+              label:
+                "Cloud Cover",
+              value:
+                sentinel
+                  ? `${Number(
+                      sentinel.cloud_cover ??
+                        0
+                    ).toFixed(2)}%`
+                  : "—",
+              icon:
+                <Clock3
+                  size={18}
+                />,
+            },
+          ]}
+        />
+
+      </aside>
+
+
+      <section className="dashboard-section dashboard-detections-section">
 
         <div className="section-heading">
 
@@ -1737,9 +2240,26 @@ export default function Dashboard() {
         </div>
 
 
+        <DetectionFilters
+          options={
+            statusFilterOptions
+          }
+          active={statusFilter}
+          onSelect={setStatusFilter}
+          query={areaQuery}
+          onQueryChange={setAreaQuery}
+          onClear={clearFilters}
+          filtersActive={filtersActive}
+          showing={
+            visibleDetections.length
+          }
+          total={detections.length}
+        />
+
+
         <div className="table-container">
 
-          <table>
+          <table className="dashboard-table">
 
             <thead>
 
@@ -1772,10 +2292,9 @@ export default function Dashboard() {
 
             <tbody>
 
-              {dashboard?.recent_detections
-                ?.length ? (
+              {visibleRecentDetections.length ? (
 
-                dashboard.recent_detections.map(
+                visibleRecentDetections.map(
                   (
                     detection
                   ) => (
@@ -1840,7 +2359,34 @@ export default function Dashboard() {
                     colSpan="5"
                     className="empty-table"
                   >
-                    No recent detections.
+                    {/*
+                      An empty list because nothing was found
+                      and an empty list because the filters
+                      exclude everything are different
+                      situations, and the officer's next move
+                      differs: wait for the next analysis, or
+                      widen the filter. Saying which it is
+                      keeps an active filter from reading as
+                      "there are no detections".
+                    */}
+                    {filtersActive ? (
+                      <>
+                        No detections match the
+                        current filters.
+                        {" "}
+                        <button
+                          type="button"
+                          className="empty-table-action"
+                          onClick={
+                            clearFilters
+                          }
+                        >
+                          Clear filters
+                        </button>
+                      </>
+                    ) : (
+                      "No recent detections."
+                    )}
                   </td>
 
                 </tr>
@@ -1856,7 +2402,7 @@ export default function Dashboard() {
       </section>
 
 
-      <section className="dashboard-section">
+      <section className="dashboard-section dashboard-alerts-section">
 
         <div className="section-heading">
 
@@ -1895,8 +2441,9 @@ export default function Dashboard() {
 
                   <div className="alert-icon">
 
-                    <AlertTriangle
-                      size={18}
+                    <BellRing
+                      size={17}
+                      aria-hidden="true"
                     />
 
                   </div>
@@ -2180,13 +2727,14 @@ function StatCard({
   value,
   subtitle,
   icon,
+  tone,
 }) {
   return (
     <div className="stat-card">
 
       <div className="stat-card-top">
 
-        <div className="stat-icon">
+        <div className={`stat-icon${tone ? ` stat-icon--${tone}` : ""}`}>
           {icon}
         </div>
 
@@ -2212,9 +2760,159 @@ function StatCard({
 }
 
 
+/**
+ * Status chips and a name search that narrow what the map
+ * draws and what the table lists.
+ *
+ * The chips carry the counts the dashboard endpoint already
+ * returns, so how much sits behind each one is visible
+ * before it is chosen. Selecting a chip filters the records
+ * already on the page; it does not navigate and it does not
+ * fetch, so the figures cannot shift underneath the officer
+ * while they are reading them.
+ */
+function DetectionFilters({
+  options,
+  active,
+  onSelect,
+  query,
+  onQueryChange,
+  onClear,
+  filtersActive,
+  showing,
+  total,
+}) {
+  return (
+    <div className="detection-filters">
+
+      <div
+        className="filter-chips"
+        role="group"
+        aria-label="Filter detections by status"
+      >
+
+        {options.map(
+          (option) => (
+
+            <button
+              key={option.id}
+              type="button"
+              className={
+                `filter-chip${
+                  option.id === active
+                    ? " is-active"
+                    : ""
+                }`
+              }
+              aria-pressed={
+                option.id === active
+              }
+              onClick={() =>
+                onSelect(option.id)
+              }
+            >
+
+              {option.label}
+
+              <span className="filter-chip-count">
+                {option.count}
+              </span>
+
+            </button>
+
+          )
+        )}
+
+      </div>
+
+
+      <div className="filter-tools">
+
+        <div className="filter-search">
+
+          <Search
+            size={15}
+            aria-hidden="true"
+          />
+
+          <input
+            type="search"
+            value={query}
+            placeholder="Search forest area"
+            aria-label="Search detections by forest area name"
+            onChange={(event) =>
+              onQueryChange(
+                event.target.value
+              )
+            }
+          />
+
+        </div>
+
+
+        {/*
+          Offered only when something is actually filtered,
+          so the control is never a dead button sitting next
+          to an unfiltered list.
+        */}
+        {filtersActive && (
+          <button
+            type="button"
+            className="filter-clear"
+            onClick={onClear}
+          >
+
+            <X
+              size={14}
+              aria-hidden="true"
+            />
+
+            Clear
+
+          </button>
+        )}
+
+      </div>
+
+
+      {/*
+        Announced politely rather than assertively: the count
+        changes on every keystroke of the search, and an
+        assertive region would interrupt the officer mid-word.
+      */}
+      <p
+        className="filter-count"
+        role="status"
+        aria-live="polite"
+      >
+
+        <strong>
+          {showing}
+        </strong>
+
+        {" of "}
+
+        {total}
+
+        {total === 1
+          ? " detection"
+          : " detections"}
+
+        {filtersActive
+          ? " match"
+          : " shown"}
+
+      </p>
+
+    </div>
+  );
+}
+
+
 function StatusPanel({
   title,
   items,
+  footer,
 }) {
   return (
     <div className="status-panel">
@@ -2229,35 +2927,235 @@ function StatusPanel({
         {items.map(
           (
             item
-          ) => (
+          ) => {
 
-            <div
-              className="status-item"
-              key={
-                item.label
-              }
-            >
+            const content = (
+              <>
+                <div className="status-item-label">
 
-              <div className="status-item-label">
+                  {item.icon}
 
-                {item.icon}
+                  <span>
+                    {
+                      item.label
+                    }
+                  </span>
 
-                <span>
+                </div>
+
+
+                <strong>
                   {
+                    item.value
+                  }
+                </strong>
+              </>
+            );
+
+            // A row that filters is a control and is built
+            // as a button, so it carries its pressed state
+            // and reaches the keyboard. A row that only
+            // reports a figure stays plain text rather than
+            // offering an interaction that does nothing.
+            if (
+              typeof item.onSelect !==
+              "function"
+            ) {
+              return (
+                <div
+                  className={`status-item${item.tone ? ` status-item--${item.tone}` : ""}`}
+                  key={
                     item.label
                   }
-                </span>
+                >
+                  {content}
+                </div>
+              );
+            }
 
-              </div>
-
-
-              <strong>
-                {
-                  item.value
+            return (
+              <button
+                type="button"
+                key={
+                  item.label
                 }
+                className={
+                  `status-item status-item-action${
+                    item.tone
+                      ? ` status-item--${item.tone}`
+                      : ""
+                  }${
+                    item.active
+                      ? " is-active"
+                      : ""
+                  }`
+                }
+                aria-pressed={Boolean(
+                  item.active
+                )}
+                onClick={
+                  item.onSelect
+                }
+              >
+                {content}
+              </button>
+            );
+          }
+        )}
+
+      </div>
+
+
+      {footer}
+
+    </div>
+  );
+}
+
+
+/**
+ * Show how a total divides between its parts.
+ *
+ * Drawn from counts the dashboard endpoint already returns.
+ * Nothing is estimated: a zero total renders no bar at all
+ * rather than an empty frame suggesting a figure is missing.
+ */
+function DistributionBar({
+  total,
+  segments,
+}) {
+  const sum =
+    Number(total) || 0;
+
+  if (
+    sum <= 0
+  ) {
+    return null;
+  }
+
+  return (
+    <div className="distribution">
+
+      <div
+        className="distribution-bar"
+        role="img"
+        aria-label={
+          segments
+            .map(
+              (segment) =>
+                `${segment.label}: ${segment.value}`
+            )
+            .join(", ")
+        }
+      >
+
+        {segments.map(
+          (segment) => {
+
+            const share =
+              (Number(
+                segment.value
+              ) || 0) / sum;
+
+            if (
+              share <= 0
+            ) {
+              return null;
+            }
+
+            const className =
+              `distribution-segment ` +
+              `distribution-${segment.tone}`;
+
+            // The bar already shows how the total divides.
+            // Where a segment can also select that part, it
+            // becomes a button so the proportion an officer
+            // is reading is the thing they can act on.
+            if (
+              typeof segment.onSelect !==
+              "function"
+            ) {
+              return (
+                <span
+                  key={
+                    segment.label
+                  }
+                  className={className}
+                  style={{
+                    width:
+                      `${share * 100}%`,
+                  }}
+                />
+              );
+            }
+
+            return (
+              <button
+                type="button"
+                key={
+                  segment.label
+                }
+                className={
+                  `${className} ` +
+                  `distribution-segment-action${
+                    segment.active
+                      ? " is-active"
+                      : ""
+                  }`
+                }
+                style={{
+                  width:
+                    `${share * 100}%`,
+                }}
+                title={
+                  `${segment.label}: ${segment.value}`
+                }
+                aria-pressed={Boolean(
+                  segment.active
+                )}
+                aria-label={
+                  `Show only ` +
+                  `${segment.label.toLowerCase()} ` +
+                  `detections`
+                }
+                onClick={
+                  segment.onSelect
+                }
+              />
+            );
+          }
+        )}
+
+      </div>
+
+
+      <div className="distribution-key">
+
+        {segments.map(
+          (segment) => (
+
+            <span
+              key={
+                segment.label
+              }
+              className="distribution-key-item"
+            >
+
+              <i
+                className={
+                  `distribution-dot ` +
+                  `distribution-${segment.tone}`
+                }
+                aria-hidden="true"
+              />
+
+              {segment.label}
+              {" "}
+              <strong>
+                {segment.value}
               </strong>
 
-            </div>
+            </span>
 
           )
         )}

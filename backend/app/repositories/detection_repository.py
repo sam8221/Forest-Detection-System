@@ -37,7 +37,7 @@ Version:
 ===========================================================
 """
 
-from sqlalchemy import false, func
+from sqlalchemy import case, false, func
 from sqlalchemy.orm import Query, Session
 
 from app.models.detection import Detection
@@ -615,4 +615,57 @@ class DetectionRepository:
                 if mean_confidence is not None
                 else None
             ),
+        }
+
+    def confirmed_totals_for_job(
+        self,
+        analysis_job_id: int,
+    ) -> dict[str, float | int | None]:
+        """Return review totals for the detections from one job.
+
+        CLOSED detections are included because only VERIFIED detections
+        can be closed. PENDING and REJECTED counts are kept separate so
+        the client can distinguish an unreviewed candidate from a
+        confirmed result or an officer rejection.
+        """
+
+        confirmed_statuses = [DetectionStatus.VERIFIED, DetectionStatus.CLOSED]
+
+        confirmed_count, total_area, pending_count, rejected_count = (
+            self.db.query(
+                func.sum(
+                    case(
+                        (Detection.status.in_(confirmed_statuses), 1),
+                        else_=0,
+                    )
+                ),
+                func.sum(
+                    case(
+                        (
+                            Detection.status.in_(confirmed_statuses),
+                            Detection.detected_area_hectares,
+                        ),
+                        else_=None,
+                    )
+                ),
+                func.sum(
+                    case((Detection.status == DetectionStatus.PENDING, 1), else_=0)
+                ),
+                func.sum(
+                    case((Detection.status == DetectionStatus.REJECTED, 1), else_=0)
+                ),
+            )
+            .filter(
+                Detection.analysis_job_id == analysis_job_id,
+            )
+            .one()
+        )
+
+        return {
+            "confirmed_detection_count": int(confirmed_count or 0),
+            "confirmed_detected_area_hectares": (
+                float(total_area) if total_area is not None else None
+            ),
+            "pending_detection_count": int(pending_count or 0),
+            "rejected_detection_count": int(rejected_count or 0),
         }

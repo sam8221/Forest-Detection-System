@@ -5,13 +5,20 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy.exc import IntegrityError
+import logging
+
+from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.database.session import SessionLocal
 from app.models.satellite_download_job import (
     ACTIVE_DOWNLOAD_STATUSES,
     SatelliteDownloadJob,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def calculate_download_percentage(
@@ -95,6 +102,80 @@ class SatelliteDownloadJobService:
             if existing is None:
                 raise
             return existing, False
+
+    @staticmethod
+    def record_progress(
+        job_id: str,
+        *,
+        status: str,
+        downloaded_bytes: int,
+        total_bytes: int | None,
+        transfer_complete: bool = False,
+        session_factory=SessionLocal,
+    ) -> None:
+        """
+        Record transfer progress on its own database session.
+
+        Args:
+            job_id:
+                The job to update, by identifier rather than by
+                ORM instance: an instance belongs to the session
+                that loaded it, and this does not run there.
+
+        Why a session of its own:
+
+            The members of a product are transferred
+            concurrently, so progress is reported from several
+            threads while the main thread is still inside the
+            download. Writing it through the session the
+            download itself uses means one SQLAlchemy Session is
+            operated on by several threads, which it refuses:
+
+                IllegalStateChangeError
+                ResourceClosedError
+
+            Both were observed against this code, and both
+            killed a transfer that had otherwise succeeded, with
+            the bytes already on disk. A short session per write
+            shares no state to corrupt.
+
+        A failure here is logged and swallowed. Progress
+        reporting must never be the reason an acquisition fails;
+        the worst outcome is a percentage that stops advancing.
+        """
+
+        percentage = calculate_download_percentage(
+            max(0, downloaded_bytes),
+            total_bytes if total_bytes and total_bytes > 0 else None,
+            transfer_complete=transfer_complete,
+        )
+
+        db: Session = session_factory()
+
+        try:
+            db.execute(
+                update(SatelliteDownloadJob)
+                .where(SatelliteDownloadJob.job_id == job_id)
+                .values(
+                    status=status,
+                    downloaded_bytes=max(0, downloaded_bytes),
+                    total_bytes=(
+                        total_bytes
+                        if total_bytes and total_bytes > 0
+                        else None
+                    ),
+                    progress_percentage=percentage,
+                )
+            )
+            db.commit()
+        except SQLAlchemyError:
+            db.rollback()
+            logger.exception(
+                "Could not record progress for satellite download job %s",
+                job_id,
+            )
+        finally:
+            db.close()
 
     def report_progress(
         self,

@@ -29,7 +29,8 @@
  * ===========================================================
  */
 
-import React, {
+import {
+  useCallback,
   useEffect,
   useState,
 } from "react";
@@ -38,6 +39,7 @@ import ForestMap from "../components/ForestMap";
 
 
 import { API_URL as CONFIG_API_URL } from "../config";
+import { assertSessionAlive } from "../services/api";
 const API_URL = CONFIG_API_URL;
 
 export default function RegisterForestArea({
@@ -97,8 +99,12 @@ export default function RegisterForestArea({
   /**
    * Builds the authorization headers required by
    * protected ForestWatch API endpoints.
+   *
+   * Reads the stored token when called rather than when
+   * defined, so it holds one identity for the life of the
+   * page and the district loader can depend on it.
    */
-  const getAuthHeaders = () => {
+  const getAuthHeaders = useCallback(() => {
     const token =
       localStorage.getItem(
         "access_token"
@@ -119,7 +125,7 @@ export default function RegisterForestArea({
           }
         : {}),
     };
-  };
+  }, []);
 
   // ---------------------------------------------------------
   // District loading
@@ -131,7 +137,7 @@ export default function RegisterForestArea({
    * District information is loaded from the database
    * rather than being hardcoded in the frontend.
    */
-  const fetchDistricts = async () => {
+  const fetchDistricts = useCallback(async () => {
     try {
       setDistrictsLoading(true);
       setDistrictError("");
@@ -145,6 +151,15 @@ export default function RegisterForestArea({
               getAuthHeaders(),
           }
         );
+
+      /*
+        An expired token has to end the session rather than
+        be reported as a failure to load districts. This
+        page uses fetch() directly, so it never reaches the
+        response interceptor that does this for requests
+        sent through the API client.
+      */
+      await assertSessionAlive(response);
 
       if (!response.ok) {
         throw new Error(
@@ -177,7 +192,7 @@ export default function RegisterForestArea({
         false
       );
     }
-  };
+  }, [getAuthHeaders]);
 
   /**
    * Load districts when the registration
@@ -185,7 +200,7 @@ export default function RegisterForestArea({
    */
   useEffect(() => {
     fetchDistricts();
-  }, []);
+  }, [fetchDistricts]);
 
   // ---------------------------------------------------------
   // Form helpers
@@ -528,6 +543,15 @@ export default function RegisterForestArea({
               ),
           }
         );
+
+      /*
+        Checked before the body is examined. A session that
+        ended while the form was being filled in is not a
+        rejected registration, and telling the officer their
+        credentials could not be validated leaves them on a
+        page that can no longer submit anything.
+      */
+      await assertSessionAlive(response);
 
       const responseData =
         await response

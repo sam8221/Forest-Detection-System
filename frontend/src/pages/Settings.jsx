@@ -51,11 +51,15 @@
  * ===========================================================
  */
 
-import React, { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 
 import { API_URL as CONFIG_API_URL } from "../config";
 import { validateZambianPhoneNumber } from "../services/phoneNumber";
+import {
+  describeSmsStatus,
+  describeTestOutcome,
+} from "../services/smsSettings";
 const API_URL = CONFIG_API_URL;
 
 export default function Settings() {
@@ -93,20 +97,36 @@ export default function Settings() {
   });
 
   /*
+   * SMS notification settings for the signed-in officer.
+   *
+   * Held apart from the profile form above because they are
+   * saved through their own endpoint: an officer may change
+   * their own number and preference, while changing anyone
+   * else's remains an administrator action.
+   */
+  const [smsSettings, setSmsSettings] = useState(null);
+  const [smsPhoneDraft, setSmsPhoneDraft] = useState("");
+  const [smsSaving, setSmsSaving] = useState(false);
+  const [smsTesting, setSmsTesting] = useState(false);
+  const [smsTogglePending, setSmsTogglePending] = useState(false);
+  const [smsError, setSmsError] = useState("");
+  const [smsMessage, setSmsMessage] = useState("");
+
+  /*
    * Retrieve the JWT access token created during authentication.
    */
-  const getToken = () => {
+  const getToken = useCallback(() => {
     return (
       localStorage.getItem("access_token") ||
       localStorage.getItem("token")
     );
-  };
+  }, []);
 
   /*
    * Convert FastAPI error responses into readable messages.
    * Supports standard API errors and Pydantic validation errors.
    */
-  const getErrorMessage = async (response, fallback) => {
+  const getErrorMessage = useCallback(async (response, fallback) => {
     try {
       const data = await response.json();
 
@@ -125,12 +145,12 @@ export default function Settings() {
     } catch {
       return fallback;
     }
-  };
+  }, []);
 
   /*
    * Retrieve the currently authenticated user's profile.
    */
-  const loadProfile = async () => {
+  const loadProfile = useCallback(async () => {
     try {
       const token = getToken();
 
@@ -175,12 +195,12 @@ export default function Settings() {
       console.error("Settings profile error:", err);
       throw err;
     }
-  };
+  }, [getToken, getErrorMessage]);
 
   /*
    * Retrieve all registered users for administrator management.
    */
-  const loadUsers = async () => {
+  const loadUsers = useCallback(async () => {
     try {
       setUsersLoading(true);
 
@@ -230,7 +250,88 @@ export default function Settings() {
     } finally {
       setUsersLoading(false);
     }
-  };
+  }, [getToken, getErrorMessage]);
+
+  /*
+   * Load the signed-in officer's SMS notification settings.
+   */
+  const loadSmsSettings = useCallback(async () => {
+    const token = getToken();
+
+    if (!token) {
+      return null;
+    }
+
+    const response = await fetch(
+      `${API_URL}/api/v1/users/profile/sms`,
+      {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        await getErrorMessage(
+          response,
+          "Unable to load your SMS notification settings."
+        )
+      );
+    }
+
+    const data = await response.json();
+
+    setSmsSettings(data);
+    setSmsPhoneDraft(data.phone_number || "");
+
+    return data;
+  }, [getToken, getErrorMessage]);
+
+  /*
+   * Save the officer's own number or notification preference.
+   *
+   * Only the fields passed are sent, so saving a number
+   * cannot silently switch notifications back on for an
+   * officer who turned them off.
+   */
+  const saveSmsSettings = useCallback(
+    async (changes) => {
+      const token = getToken();
+
+      const response = await fetch(
+        `${API_URL}/api/v1/users/profile/sms`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(changes),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(
+          await getErrorMessage(
+            response,
+            "Unable to save your SMS notification settings."
+          )
+        );
+      }
+
+      const data = await response.json();
+
+      setSmsSettings(data);
+      setSmsPhoneDraft(data.phone_number || "");
+
+      return data;
+    },
+    [getToken, getErrorMessage]
+  );
 
   /*
    * Load the authenticated profile when the settings page
@@ -253,6 +354,21 @@ export default function Settings() {
         ) {
           await loadUsers();
         }
+
+        /*
+         * Loaded after the profile, and separately, so that
+         * a failure to read the SMS settings leaves the
+         * rest of the page usable rather than replacing it
+         * with an error.
+         */
+        try {
+          await loadSmsSettings();
+        } catch (smsErr) {
+          setSmsError(
+            smsErr.message ||
+              "Unable to load your SMS notification settings."
+          );
+        }
       } catch (err) {
         setError(
           err.message ||
@@ -264,7 +380,7 @@ export default function Settings() {
     };
 
     initializeSettings();
-  }, []);
+  }, [loadProfile, loadUsers, loadSmsSettings]);
 
   /*
    * Update profile form state when an input changes.
@@ -563,6 +679,132 @@ export default function Settings() {
   /*
    * Save or clear one user's number from the admin list.
    */
+  /*
+   * Save the number the officer typed.
+   *
+   * Validated here before the request so an obvious mistake
+   * is reported next to the field rather than as a 422 from
+   * the server. The server validates it again regardless:
+   * this check is for speed of feedback, not for safety.
+   */
+  const handleSaveSmsNumber = async (event) => {
+    event.preventDefault();
+
+    setSmsError("");
+    setSmsMessage("");
+
+    const validationError =
+      validateZambianPhoneNumber(smsPhoneDraft);
+
+    if (validationError) {
+      setSmsError(validationError);
+      return;
+    }
+
+    try {
+      setSmsSaving(true);
+
+      const saved = await saveSmsSettings({
+        phone_number: smsPhoneDraft.trim() || null,
+      });
+
+      setSmsMessage(
+        saved.phone_number
+          ? `Number saved as ${saved.phone_number}.`
+          : "Your number has been cleared."
+      );
+    } catch (err) {
+      setSmsError(
+        err.message || "Unable to save your number."
+      );
+    } finally {
+      setSmsSaving(false);
+    }
+  };
+
+  /*
+   * Send the welcome message, only because this was clicked.
+   */
+  const handleSendTestSms = async () => {
+    setSmsError("");
+    setSmsMessage("");
+
+    try {
+      setSmsTesting(true);
+
+      const token = getToken();
+
+      const response = await fetch(
+        `${API_URL}/api/v1/users/profile/sms/test`,
+        {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(
+          await getErrorMessage(
+            response,
+            "The welcome message could not be sent."
+          )
+        );
+      }
+
+      const outcome = describeTestOutcome(
+        await response.json()
+      );
+
+      if (outcome.ok) {
+        setSmsMessage(outcome.message);
+      } else {
+        setSmsError(outcome.message);
+      }
+    } catch (err) {
+      setSmsError(
+        err.message || "The welcome message could not be sent."
+      );
+    } finally {
+      setSmsTesting(false);
+    }
+  };
+
+  /*
+   * Switch automatic notifications on or off.
+   */
+  const handleToggleSmsNotifications = async () => {
+    setSmsError("");
+    setSmsMessage("");
+
+    const next = !(
+      smsSettings?.sms_notifications_enabled !== false
+    );
+
+    try {
+      setSmsTogglePending(true);
+
+      await saveSmsSettings({
+        sms_notifications_enabled: next,
+      });
+
+      setSmsMessage(
+        next
+          ? "Automatic alert messages are on."
+          : "Automatic alert messages are off."
+      );
+    } catch (err) {
+      setSmsError(
+        err.message ||
+          "Unable to change your notification preference."
+      );
+    } finally {
+      setSmsTogglePending(false);
+    }
+  };
+
   const handleSavePhoneNumber = async (userId) => {
     const phoneNumber = phoneDrafts[userId] || "";
     const validationMessage =
@@ -966,6 +1208,199 @@ export default function Settings() {
                 </button>
               </div>
             </form>
+          </div>
+
+          {/* =================================================
+              SMS NOTIFICATION SETTINGS
+
+              The officer registers the number that automatic
+              deforestation alerts are sent to, confirms the
+              channel works, and decides whether to receive
+              them.
+
+              Saved through its own endpoint, so an officer
+              manages their own number without an
+              administrator. Changing anyone else's number
+              remains an administrator action in the user
+              table further down this page.
+          ================================================= */}
+          <div
+            className="section-heading"
+            style={{
+              marginTop: "34px",
+            }}
+          >
+            <div>
+              <h2>SMS Notification Settings</h2>
+
+              <p>
+                Register the mobile number that receives
+                automatic alerts when suspected
+                deforestation is detected in your
+                monitoring area.
+              </p>
+            </div>
+          </div>
+
+          <div
+            className="settings-card sms-settings-card"
+            style={{
+              width: "500px",
+              maxWidth: "100%",
+            }}
+          >
+            {/* Status first: it answers the question the
+                officer actually has, which is whether an
+                alert would reach them right now. */}
+            {smsSettings && (
+              <div
+                className={
+                  `sms-status sms-status-${
+                    describeSmsStatus(smsSettings).tone
+                  }`
+                }
+                role="status"
+              >
+                <span className="sms-status-badge">
+                  <i
+                    className="sms-status-dot"
+                    aria-hidden="true"
+                  />
+
+                  {describeSmsStatus(smsSettings).label}
+                </span>
+
+                <p>
+                  {describeSmsStatus(smsSettings).detail}
+                </p>
+              </div>
+            )}
+
+            {smsError && (
+              <div className="settings-error">
+                {smsError}
+              </div>
+            )}
+
+            {smsMessage && (
+              <div className="settings-message">
+                {smsMessage}
+              </div>
+            )}
+
+            <form onSubmit={handleSaveSmsNumber}>
+              <div className="settings-field">
+                <label htmlFor="sms-phone-number">
+                  Phone Number
+                </label>
+
+                <input
+                  id="sms-phone-number"
+                  name="sms_phone_number"
+                  type="tel"
+                  inputMode="tel"
+                  autoComplete="tel"
+                  value={smsPhoneDraft}
+                  onChange={(event) =>
+                    setSmsPhoneDraft(event.target.value)
+                  }
+                  placeholder="+260 977 123 456"
+                  aria-describedby="sms-phone-number-help"
+                />
+
+                <small id="sms-phone-number-help">
+                  A Zambian mobile number. 0977123456 and
+                  +260977123456 are both accepted and are
+                  stored the same way. Leave blank to clear
+                  the saved number.
+                </small>
+              </div>
+
+              <div className="sms-actions">
+                <button
+                  type="submit"
+                  className="primary-button"
+                  disabled={smsSaving}
+                >
+                  {smsSaving
+                    ? "Saving..."
+                    : "Save Number"}
+                </button>
+
+                {/* Sending is only ever started here, by
+                    this click. Disabled without a saved
+                    number, because there is nowhere to
+                    send it. */}
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={handleSendTestSms}
+                  disabled={
+                    smsTesting ||
+                    !smsSettings?.phone_number
+                  }
+                  title={
+                    smsSettings?.phone_number
+                      ? "Send the welcome message to your saved number"
+                      : "Save a number before sending the welcome message"
+                  }
+                >
+                  {smsTesting
+                    ? "Sending..."
+                    : "Send Welcome SMS"}
+                </button>
+              </div>
+            </form>
+
+            <div className="sms-preference">
+              <div className="sms-preference-text">
+                <strong>
+                  Automatic Notifications
+                </strong>
+
+                <small>
+                  {smsSettings?.preference_supported ===
+                  false
+                    ? "This setting needs a pending database migration before it can be changed."
+                    : "Receive an SMS whenever a new deforestation alert is raised for your area."}
+                </small>
+              </div>
+
+              <button
+                type="button"
+                className={
+                  `sms-toggle${
+                    smsSettings?.sms_notifications_enabled !==
+                    false
+                      ? " is-on"
+                      : ""
+                  }`
+                }
+                role="switch"
+                aria-checked={
+                  smsSettings?.sms_notifications_enabled !==
+                  false
+                }
+                aria-label="Automatic SMS notifications"
+                onClick={handleToggleSmsNotifications}
+                disabled={
+                  smsTogglePending ||
+                  !smsSettings ||
+                  smsSettings.preference_supported === false
+                }
+              >
+                <span className="sms-toggle-track">
+                  <span className="sms-toggle-thumb" />
+                </span>
+
+                <span className="sms-toggle-label">
+                  {smsSettings?.sms_notifications_enabled !==
+                  false
+                    ? "On"
+                    : "Off"}
+                </span>
+              </button>
+            </div>
           </div>
 
           {/* =================================================

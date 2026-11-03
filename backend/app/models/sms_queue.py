@@ -133,11 +133,18 @@ class SmsQueue(AuditMixin, Base):
     # ---------------------------------------------------------
     # Alert
     # ---------------------------------------------------------
-    alert_id: Mapped[int] = mapped_column(
+    alert_id: Mapped[int | None] = mapped_column(
         ForeignKey("alerts.id"),
-        nullable=False,
+        nullable=True,
         index=True,
-        comment="Alert this message notifies.",
+        comment=(
+            "Alert this message notifies. Null for the test "
+            "message an officer sends themselves when "
+            "registering a number, which belongs to no "
+            "alert. Null is therefore the one marker that "
+            "distinguishes a registration test from a real "
+            "notification in this record."
+        ),
     )
 
     # ---------------------------------------------------------

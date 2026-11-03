@@ -36,6 +36,7 @@ Note:
 """
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -269,6 +270,53 @@ def test_pixel_count_converts_to_hectares(tmp_path) -> None:
         1.0,
         atol=1e-6,
     )
+
+
+def test_measurement_summary_uses_the_threshold_recorded_for_its_job(monkeypatch):
+    previous = np.full((2, 2), 0.80, dtype=np.float32)
+    latest = np.full((2, 2), 0.80, dtype=np.float32)
+    latest[0, 0] = 0.55
+
+    class Dataset:
+        transform = from_origin(500000.0, 8600000.0, 10.0, 10.0)
+        crs = None
+
+        def __init__(self, values):
+            self.values = values
+
+        def read(self, _band):
+            return self.values
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    def open_raster(path):
+        return Dataset(previous if path == "previous" else latest)
+
+    monkeypatch.setattr(
+        "app.services.detection_service.rasterio.open",
+        open_raster,
+    )
+
+    service = DetectionService.__new__(DetectionService)
+    # The configured threshold differs deliberately from the job's
+    # threshold so this catches accidental use of global settings.
+    service.settings = SimpleNamespace(
+        ndvi_threshold=0.30,
+        min_detection_area_hectares=0.50,
+    )
+
+    summary = service.summarise_measurement(
+        previous_ndvi_path="previous",
+        latest_ndvi_path="latest",
+        ndvi_threshold=0.20,
+    )
+
+    assert summary["ndvi_threshold"] == 0.20
+    assert summary["candidate_pixels"] == 1
 
 
 def test_fifty_pixels_is_half_a_hectare(tmp_path) -> None:

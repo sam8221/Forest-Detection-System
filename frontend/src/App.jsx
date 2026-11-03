@@ -77,21 +77,25 @@
  */
 
 import {
+  lazy,
+  useCallback,
   useEffect,
   useRef,
   useState,
+  Suspense,
 } from "react";
 
 import {
   AlertTriangle,
   Bell,
+  RefreshCw,
   CheckCircle2,
-  ChevronDown,
   Clock,
   BarChart3,
   Map as MapIcon,
   LayoutDashboard,
   Leaf,
+  MessageSquare,
   LogOut,
   Info,
   Menu,
@@ -105,22 +109,54 @@ import {
   X,
 } from "lucide-react";
 
-import Analysis from "./pages/Analysis";
-import Analytics from "./pages/Analytics";
-import Monitoring from "./pages/Monitoring";
-import Alerts from "./pages/Alerts";
 import Dashboard from "./pages/Dashboard";
-import Detections from "./pages/Detections";
-import ForestAreaDetails from "./pages/ForestAreaDetails";
-import ForestAreas from "./pages/ForestAreas";
 import Login from "./pages/Login";
-import RegisterForestArea from "./pages/RegisterForestArea";
-import SatelliteImages from "./pages/SatelliteImages";
-import SettingsPage from "./pages/Settings";
-import About from "./pages/About";
-import UserManagement from "./pages/UserManagement";
+
+// ---------------------------------------------------------
+// Pages loaded on first visit rather than at startup
+//
+// Everything was in one bundle, so signing in downloaded the
+// OpenLayers monitoring map, the charting library and the
+// satellite comparison viewer before the dashboard could be
+// drawn — on a connection in the field, before an officer
+// had asked for any of it.
+//
+// Login and Dashboard stay eager. One is the first screen an
+// unauthenticated visitor sees and the other is where
+// signing in lands, so deferring either would only add a
+// spinner to a page that is always needed.
+//
+// Nothing about navigation changes: the same component
+// renders for the same activePage, one network request later
+// the first time it is opened, and from cache afterwards.
+// ---------------------------------------------------------
+
+const Analysis = lazy(() => import("./pages/Analysis"));
+const Analytics = lazy(() => import("./pages/Analytics"));
+const Monitoring = lazy(() => import("./pages/Monitoring"));
+const Alerts = lazy(() => import("./pages/Alerts"));
+const Detections = lazy(() => import("./pages/Detections"));
+const ForestAreaDetails = lazy(() =>
+  import("./pages/ForestAreaDetails")
+);
+const ForestAreas = lazy(() => import("./pages/ForestAreas"));
+const RegisterForestArea = lazy(() =>
+  import("./pages/RegisterForestArea")
+);
+const SatelliteImages = lazy(() =>
+  import("./pages/SatelliteImages")
+);
+const SettingsPage = lazy(() => import("./pages/Settings"));
+const About = lazy(() => import("./pages/About"));
+const UserManagement = lazy(() =>
+  import("./pages/UserManagement")
+);
+const QueriesSupport = lazy(() =>
+  import("./pages/QueriesSupport")
+);
 
 import DistrictBreakdown from "./components/DistrictBreakdown";
+import LiveClock from "./components/LiveClock";
 import useCurrentUser from "./hooks/useCurrentUser";
 import { onSessionExpired } from "./services/api";
 
@@ -164,8 +200,21 @@ function App() {
   const [selectedForestId, setSelectedForestId] =
     useState(null);
 
+  const [selectedSupportQueryId, setSelectedSupportQueryId] =
+    useState(null);
+
   const [analysisSelection, setAnalysisSelection] =
     useState(null);
+
+  // Held at one identity rather than rebuilt inline on every
+  // render. The analysis page memoises the loader that calls
+  // this, so a handler that changed each render would make
+  // that loader change too and refetch the forest areas on
+  // every render of this component.
+  const clearAnalysisSelection = useCallback(
+    () => setAnalysisSelection(null),
+    []
+  );
 
   const [notifications, setNotifications] =
     useState([]);
@@ -239,12 +288,16 @@ function App() {
     },
   ];
 
-  if (isAdministrator(currentUser)) {
-    navigation.push({
-      name: "User Management",
-      icon: ShieldCheck,
-    });
-  }
+  navigation.push(
+    {
+      name: "Queries & Support",
+      icon: MessageSquare,
+    },
+    {
+      name: "Settings",
+      icon: Settings,
+    }
+  );
 
   // -------------------------------------------------------
   // End the session when the server rejects the token
@@ -296,36 +349,33 @@ function App() {
         return;
       }
 
-      const response = await fetch(
-        `${API_URL}/api/v1/alerts`,
-        {
-          method: "GET",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-        }
-      );
+      const headers = {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      };
+      const [alertsResponse, supportResponse] = await Promise.all([
+        fetch(`${API_URL}/api/v1/alerts`, { method: "GET", headers }),
+        fetch(`${API_URL}/api/v1/support/notifications`, { method: "GET", headers }),
+      ]);
+      const alertData = alertsResponse.ok ? await alertsResponse.json() : [];
+      const supportData = supportResponse.ok ? await supportResponse.json() : [];
+      const merged = [
+        ...(Array.isArray(alertData) ? alertData.map((alert) => ({
+          ...alert, notification_key: `alert:${alert.id}`, is_support: false,
+        })) : []),
+        ...(Array.isArray(supportData) ? supportData.map((item) => ({
+          id: item.id, support_id: item.id, title: item.title,
+          message: item.message, created_at: item.created_at,
+          is_read: Boolean(item.read_at), is_resolved: false,
+          is_support: true, query_id: item.query_id,
+          notification_key: `support:${item.id}`,
+        })) : []),
+      ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+      setNotifications(merged);
 
-      if (!response.ok) {
-        throw new Error(
-          `Unable to load notifications. Server returned ${response.status}.`
-        );
-      }
-
-      const data = await response.json();
-
-      const alerts = Array.isArray(data)
-        ? data
-        : [];
-
-      setNotifications(alerts);
-
-      const backendReadIds = alerts
-        .filter(
-          (alert) => alert.is_read === true
-        )
-        .map((alert) => alert.id);
+      const backendReadIds = merged
+        .filter((notification) => notification.is_read === true)
+        .map((notification) => notification.notification_key);
 
       if (backendReadIds.length > 0) {
         setReadNotificationIds((current) => [
@@ -345,9 +395,7 @@ function App() {
     }
   };
 
-  const markNotificationAsRead = async (
-    alertId
-  ) => {
+  const markNotificationAsRead = async (notification) => {
     try {
       const token =
         localStorage.getItem("access_token") ||
@@ -360,12 +408,14 @@ function App() {
       setReadNotificationIds((current) => [
         ...new Set([
           ...current,
-          alertId,
+          notification.notification_key,
         ]),
       ]);
 
       const response = await fetch(
-        `${API_URL}/api/v1/alerts/${alertId}/read`,
+        notification.is_support
+          ? `${API_URL}/api/v1/support/notifications/${notification.support_id}/read`
+          : `${API_URL}/api/v1/alerts/${notification.id}/read`,
         {
           method: "PUT",
           headers: {
@@ -377,7 +427,7 @@ function App() {
 
       if (!response.ok) {
         console.error(
-          `Failed to mark alert ${alertId} as read.`
+          `Failed to mark notification ${notification.id} as read.`
         );
       }
     } catch (error) {
@@ -437,9 +487,7 @@ function App() {
     notifications.filter((notification) => {
       const isRead =
         notification.is_read === true ||
-        readNotificationIds.includes(
-          notification.id
-        );
+        readNotificationIds.includes(notification.notification_key);
 
       const isResolved =
         notification.is_resolved === true ||
@@ -569,6 +617,10 @@ function App() {
                       setAnalysisSelection(null);
                     }
 
+                    if (item.name === "Queries & Support") {
+                      setSelectedSupportQueryId(null);
+                    }
+
                     if (
                       item.name !==
                       "Forest Areas"
@@ -593,31 +645,31 @@ function App() {
         </div>
 
         <div className="sidebar-bottom">
-          <button
-            className={`nav-item ${
-              activePage === "Settings"
-                ? "active"
-                : ""
-            }`}
-            onClick={() => {
-              setActivePage("Settings");
-              setSelectedForestId(null);
-            }}
-          >
-            <Settings size={20} />
+          {isAdministrator(currentUser) && (
+            <button
+              className={`nav-item ${
+                activePage === "User Management"
+                  ? "active"
+                  : ""
+              }`}
+              onClick={() => {
+                setActivePage("User Management");
+                setSelectedForestId(null);
+              }}
+            >
+              <ShieldCheck size={20} />
 
-            {sidebarOpen && (
-              <span>
-                Settings
-              </span>
-            )}
-          </button>
+              {sidebarOpen && (
+                <span>
+                  User Management
+                </span>
+              )}
+            </button>
+          )}
 
-          {/* Sits below Settings rather than in the main
-              navigation: it describes the system rather than
-              being part of the monitoring work, and it is
-              also where an officer is sent when they need to
-              check whether the server is reachable. */}
+          {/* About remains below the navigation because it
+              describes the system rather than being a
+              monitoring destination. */}
           <button
             className={`nav-item ${
               activePage === "About"
@@ -638,21 +690,6 @@ function App() {
             )}
           </button>
 
-          {sidebarOpen && (
-            <div className="institution-card">
-              <ShieldCheck size={20} />
-
-              <div>
-                <strong>
-                  Zambia University
-                </strong>
-
-                <span>
-                  College of Technology
-                </span>
-              </div>
-            </div>
-          )}
         </div>
       </aside>
 
@@ -762,7 +799,7 @@ function App() {
                       </h3>
 
                       <span>
-                        Forest monitoring alerts
+                        Forest monitoring and support updates
                       </span>
                     </div>
 
@@ -802,8 +839,8 @@ function App() {
                           </strong>
 
                           <p>
-                            There are currently no
-                            forest monitoring alerts.
+                            There are currently no new
+                            forest monitoring or support updates.
                           </p>
                         </div>
                     )}
@@ -819,7 +856,7 @@ function App() {
                               notification.is_read ===
                                 true ||
                               readNotificationIds.includes(
-                                notification.id
+                                notification.notification_key
                               );
 
                             return (
@@ -833,19 +870,24 @@ function App() {
                                     ? "notification-read"
                                     : "notification-unread"
                                 }`}
-                                key={
-                                  notification.id
-                                }
+                                key={notification.notification_key}
                                 onClick={() => {
                                   if (!isRead) {
                                     markNotificationAsRead(
-                                      notification.id
+                                      notification
                                     );
+                                  }
+                                  if (notification.is_support && notification.query_id) {
+                                    setSelectedSupportQueryId(notification.query_id);
+                                    setActivePage("Queries & Support");
+                                    setNotificationOpen(false);
                                   }
                                 }}
                               >
                                 <div className="notification-item-icon">
-                                  {notification.priority ===
+                                  {notification.is_support ? (
+                                    <MessageSquare size={18} />
+                                  ) : notification.priority ===
                                   "CRITICAL" ? (
                                     <AlertTriangle
                                       size={18}
@@ -869,15 +911,13 @@ function App() {
                                       }
                                     </strong>
 
-                                    <span
-                                      className={getPriorityClass(
-                                        notification.priority
-                                      )}
-                                    >
-                                      {
-                                        notification.priority
-                                      }
-                                    </span>
+                                    {notification.is_support ? (
+                                      <span className="notification-support-tag">SUPPORT</span>
+                                    ) : (
+                                      <span className={getPriorityClass(notification.priority)}>
+                                        {notification.priority}
+                                      </span>
+                                    )}
                                   </div>
 
                                   <p>
@@ -938,6 +978,13 @@ function App() {
               )}
             </div>
 
+            {/* At the right-hand end, beside the account
+                block. Search, theme and notifications stay
+                together as one group of controls; the clock
+                is information, not a control, so it sits
+                after them rather than among them. */}
+            <LiveClock />
+
             <div
               className="user-profile"
               title={
@@ -969,7 +1016,6 @@ function App() {
                 </span>
               </div>
 
-              <ChevronDown size={17} />
             </div>
 
             {/*
@@ -991,6 +1037,29 @@ function App() {
         </header>
 
         <main className="content">
+
+          {/*
+            Holds the page area while a lazily loaded page
+            arrives. The shell — sidebar, header, footer —
+            stays on screen throughout, so navigation does
+            not flash: only the panel being opened waits.
+          */}
+          <Suspense
+            fallback={
+              <div
+                className="page-loading"
+                role="status"
+                aria-live="polite"
+              >
+                <RefreshCw
+                  size={20}
+                  className="refresh-spin"
+                  aria-hidden="true"
+                />
+                Loading...
+              </div>
+            }
+          >
 
           {/*
             An officer with no district or province assigned
@@ -1047,15 +1116,26 @@ function App() {
                 )}
               />
 
-              <Dashboard />
+              {/*
+                The dashboard shows a small map and offers a
+                way through to the full one. Navigation stays
+                here, as it does for Forest Areas and
+                Satellite Images.
+              */}
+              <Dashboard
+                onOpenMonitoringMap={() => {
+                  setSelectedForestId(null);
+                  setActivePage("Monitoring Map");
+                }}
+              />
             </>
           )}
 
           {activePage === "Analysis" && (
             <Analysis
               initialSelection={analysisSelection}
-              onSelectionConsumed={() =>
-                setAnalysisSelection(null)
+              onSelectionConsumed={
+                clearAnalysisSelection
               }
             />
           )}
@@ -1128,6 +1208,13 @@ function App() {
             <Alerts />
           )}
 
+          {activePage === "Queries & Support" && (
+            <QueriesSupport
+              currentUser={currentUser}
+              initialQueryId={selectedSupportQueryId}
+            />
+          )}
+
           {activePage ===
             "Satellite Images" && (
             <SatelliteImages
@@ -1157,6 +1244,7 @@ function App() {
             isAdministrator(currentUser) && (
               <UserManagement />
             )}
+          </Suspense>
         </main>
 
         <footer className="footer">

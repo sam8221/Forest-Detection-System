@@ -292,7 +292,24 @@ export default function SatelliteComparisonViewer({ forestAreaId, jobId }) {
 
   if (loading) return <div className="satellite-comparison-status">Loading selected Sentinel-2 observations...</div>;
   if (error) return <div className="satellite-comparison-error" role="alert">{error}</div>;
-  if (!detail || !resources || !changeUrl) return null;
+  // The observations block is checked as well as the detail
+  // itself. Reading detail.observations.previous without it
+  // throws for any response that arrives without one, and
+  // because this component sits inside the results section
+  // that exception unmounts the whole subtree: the stat
+  // tiles and the measurement panel disappear along with the
+  // viewer, so a partial comparison response reads as an
+  // analysis that produced nothing at all.
+  if (
+    !detail ||
+    !detail.observations ||
+    !detail.observations.previous ||
+    !detail.observations.recent ||
+    !resources ||
+    !changeUrl
+  ) {
+    return null;
+  }
 
   const previous = detail.observations.previous;
   const recent = detail.observations.recent;

@@ -47,6 +47,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import logging
+import math
 import re
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -766,7 +767,7 @@ class AnalysisService:
         self,
         job: AnalysisJob,
         cloud_cover: float,
-        vegetation_change: float,
+        vegetation_change: float | None,
         ndvi_threshold: float,
     ) -> None:
         """
@@ -780,7 +781,9 @@ class AnalysisService:
                 0.0 to 100.0, recorded so an officer can
                 see how much ground was actually observed.
             vegetation_change:
-                Confirmed change for the run, in hectares.
+                Percentage of comparable paired-NDVI pixels
+                with a significant change, or None when no
+                valid pixel comparison was recorded.
             ndvi_threshold:
                 The NDVI decline threshold this run applied,
                 stored on the job so a past result stays
@@ -1400,44 +1403,39 @@ class AnalysisService:
 
     @staticmethod
     def summarise_vegetation_change(
-        detections: list,
-    ) -> float:
+        measurement_summary: dict | None,
+    ) -> float | None:
         """
-        Reduce a run's detections to one percentage for the
-        analysis job record.
+        Read the pixel-based vegetation-change percentage
+        from the run's raster measurement summary.
 
         Args:
-            detections:
-                Detections created by this run.
+            measurement_summary:
+                Statistics calculated from the job's paired
+                previous and recent NDVI rasters.
 
         Returns:
-            The area-weighted mean NDVI loss, or 0.0 when
-            nothing was detected.
-
-        Weighting by area means a large clearing influences
-        the figure more than a small one. A plain average
-        would let a marginal half-hectare patch carry the
-        same weight as a fifty-hectare clearing.
+            The percentage of comparable pixels whose
+            absolute NDVI change meets the job threshold, or
+            None when the run has no valid measurement.
         """
 
-        if not detections:
-            return 0.0
+        if not measurement_summary or measurement_summary.get("measured") is not True:
+            return None
 
-        total_area = sum(
-            detection.detected_area_hectares or 0.0
-            for detection in detections
-        )
+        value = measurement_summary.get("significant_change_percentage")
+        if value is None:
+            return None
 
-        if total_area <= 0.0:
-            return 0.0
+        try:
+            percentage = float(value)
+        except (TypeError, ValueError):
+            return None
 
-        weighted_total = sum(
-            (detection.vegetation_loss_percentage or 0.0)
-            * (detection.detected_area_hectares or 0.0)
-            for detection in detections
-        )
+        if not math.isfinite(percentage) or not 0.0 <= percentage <= 100.0:
+            return None
 
-        return round(weighted_total / total_area, 2)
+        return percentage
 
     # =========================================================
     # RESOLVE A JOB'S SEASONAL WINDOWS
@@ -2240,19 +2238,14 @@ class AnalysisService:
                 )
 
             # -------------------------------------------------
-            # Summarise vegetation change for the job
-            #
-            # The job-level figure is the mean NDVI loss
-            # weighted by the area of each clearing, so a
-            # large clearing counts for more than a small
-            # one. An unweighted mean would let a marginal
-            # half-hectare patch pull the summary for the
-            # whole run.
+            # Store the same paired-pixel percentage exposed
+            # in measurement_summary. Detection records and
+            # their confidence remain separate results.
             # -------------------------------------------------
 
             vegetation_change = (
                 self.summarise_vegetation_change(
-                    detections
+                    job.measurement_summary
                 )
             )
 

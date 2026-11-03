@@ -41,6 +41,8 @@ Version:
 
 from __future__ import annotations
 
+import logging
+
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -65,6 +67,7 @@ from app.repositories.detection_repository import (
 )
 
 from app.services.alert_service import AlertService
+from app.services.change_statistics import summarise_ndvi_change
 from app.services.boundary_comparison_service import (
     validate_forest_boundary,
     validate_stored_forest_boundary,
@@ -94,6 +97,9 @@ from app.services.storage_paths import job_output_root
 WGS84_CRS = CRS.from_proj4(
     "+proj=longlat +datum=WGS84 +no_defs"
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 # =========================================================
@@ -403,6 +409,105 @@ class DetectionService:
     # =====================================================
     # EXTRACT DETECTION PATCHES
     # =====================================================
+
+    def summarise_measurement(
+        self,
+        previous_ndvi_path: str | Path,
+        latest_ndvi_path: str | Path,
+        boundary: Polygon | MultiPolygon | None = None,
+        ndvi_threshold: float | None = None,
+    ) -> dict | None:
+        """
+        Describe the NDVI change this run measured.
+
+        Args:
+            previous_ndvi_path:
+                Cloud-masked NDVI from the baseline date.
+            latest_ndvi_path:
+                Cloud-masked NDVI from the comparison date.
+            boundary:
+                Outline of the monitored forest area, in
+                EPSG:4326. Statistics cover only pixels
+                inside it, because a Sentinel-2 tile is
+                about 110 km square and the analysis was
+                commissioned for one forest area within it.
+            ndvi_threshold:
+                The threshold recorded for this analysis job.
+                Defaults to the configured value for callers
+                outside the job execution path.
+
+        Returns:
+            The summary, or None when it could not be
+            produced.
+
+        Descriptive only. It is computed from the same two
+        rasters the detection uses, but nothing it returns
+        feeds back into what is detected: a reporting step
+        that could alter a finding would be worse than no
+        reporting at all.
+
+        Failing to summarise never fails the analysis. The
+        detections are the result; this is the account of
+        how they were arrived at, and an account that cannot
+        be written is not a reason to discard a measurement
+        that succeeded.
+        """
+
+        try:
+            with rasterio.open(previous_ndvi_path) as source:
+                previous = source.read(1).astype(np.float32)
+
+                transform = source.transform
+
+                crs = source.crs
+
+            with rasterio.open(latest_ndvi_path) as source:
+                latest = source.read(1).astype(np.float32)
+
+            if previous.shape != latest.shape:
+                return None
+
+            inside_area = None
+
+            if boundary is not None and crs is not None:
+                boundary_in_raster_crs = transform_geom(
+                    WGS84_CRS,
+                    crs,
+                    boundary.__geo_interface__,
+                )
+
+                inside_area = geometry_mask(
+                    [boundary_in_raster_crs],
+                    out_shape=previous.shape,
+                    transform=transform,
+                    invert=True,
+                )
+
+            pixel_area_m2 = abs(transform.a) * abs(transform.e)
+
+            return summarise_ndvi_change(
+                previous=previous,
+                latest=latest,
+                pixel_area_m2=pixel_area_m2,
+                ndvi_threshold=(
+                    self.settings.ndvi_threshold
+                    if ndvi_threshold is None
+                    else ndvi_threshold
+                ),
+                minimum_area_hectares=(
+                    self.settings.min_detection_area_hectares
+                ),
+                inside_area=inside_area,
+            )
+
+        except Exception:
+            logger.exception(
+                "The measurement summary for this analysis "
+                "could not be produced. The detections are "
+                "unaffected."
+            )
+
+            return None
 
     def extract_detection_patches(
         self,
@@ -1460,6 +1565,22 @@ class DetectionService:
             / "confirmed_deforestation.tif"
         )
 
+        # Record the paired-pixel measurement before checking for
+        # detections left by an earlier attempt. A retry that reuses
+        # those same job records must still complete with the raster
+        # statistics from this job's observation pair.
+        if job.forest_area is None:
+            raise ValueError("The forest boundary for this analysis job is unavailable.")
+        boundary = validate_stored_forest_boundary(job.forest_area.geometry)
+        job.measurement_summary = self.summarise_measurement(
+            previous_ndvi_path=previous_ndvi,
+            latest_ndvi_path=latest_ndvi,
+            boundary=boundary,
+            ndvi_threshold=(
+                job.ndvi_threshold or self.settings.ndvi_threshold
+            ),
+        )
+
         # -------------------------------------------------
         # Prevent duplicate detections
         #
@@ -1496,17 +1617,6 @@ class DetectionService:
         # the analysis ran and confirmed no deforestation
         # large enough to report. The job still completes.
         # -------------------------------------------------
-
-        # The analysis is commissioned for one forest area,
-        # so the mask is restricted to it. Without this the
-        # clearings come from anywhere in the 110 km tile and
-        # are recorded against whichever area triggered the
-        # run, which puts a detection in the wrong district
-        # and takes the map, the district totals and the
-        # jurisdiction check with it.
-        if job.forest_area is None:
-            raise ValueError("The forest boundary for this analysis job is unavailable.")
-        boundary = validate_stored_forest_boundary(job.forest_area.geometry)
 
         patches = self.extract_detection_patches(
             previous_ndvi_path=previous_ndvi,

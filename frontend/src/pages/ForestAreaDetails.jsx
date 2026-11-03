@@ -21,7 +21,8 @@
  * ===========================================================
  */
 
-import React, {
+import {
+  useCallback,
   useEffect,
   useMemo,
   useState,
@@ -210,7 +211,10 @@ export default function ForestAreaDetails({
      AUTH HEADERS
      ======================================================= */
 
-  const getAuthHeaders = () => {
+  // Reads the stored token when called rather than when
+  // defined, so it holds one identity for the life of the
+  // page and the loader below can depend on it.
+  const getAuthHeaders = useCallback(() => {
     const token =
       localStorage.getItem(
         "access_token"
@@ -233,7 +237,7 @@ export default function ForestAreaDetails({
           }
         : {}),
     };
-  };
+  }, []);
 
 
   /* =======================================================
@@ -241,7 +245,7 @@ export default function ForestAreaDetails({
      ======================================================= */
 
   const fetchForestArea =
-    async () => {
+    useCallback(async () => {
       if (!forestId) {
         setError(
           "No forest area was selected."
@@ -322,7 +326,7 @@ export default function ForestAreaDetails({
       } finally {
         setLoading(false);
       }
-    };
+    }, [forestId, getAuthHeaders]);
 
 
   /* =======================================================
@@ -332,7 +336,7 @@ export default function ForestAreaDetails({
   useEffect(() => {
     fetchForestArea();
   }, [
-    forestId,
+    fetchForestArea,
   ]);
 
 

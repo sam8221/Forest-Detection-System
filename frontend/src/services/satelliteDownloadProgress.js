@@ -96,15 +96,39 @@ export function mergeSatelliteDownloadJobs(current, jobs) {
   return next;
 }
 
+/**
+ * What the acquire button for one catalogue product should say.
+ *
+ * @param reacquireReason
+ *   Why a product that IS registered still cannot be analysed,
+ *   as the backend reports it. A registered product whose local
+ *   files are incomplete must stay actionable: it was shown as
+ *   "Acquired", the analysis would not accept it, and the
+ *   officer had no control that would replace it.
+ */
 export function getSatelliteDownloadButtonState(
   job,
   isAcquired = false,
-  statusUnavailable = false
+  statusUnavailable = false,
+  reacquireReason = null
 ) {
   const status = String(job?.status || "").toUpperCase();
   const progress = job?.progress_percentage != null && Number.isFinite(Number(job.progress_percentage))
     ? Math.max(0, Math.min(100, Number(job.progress_percentage)))
     : null;
+
+  // Checked before "Acquired", because such a product is both:
+  // registered, and unusable. The second is what the officer
+  // needs to act on.
+  if (reacquireReason && !isSatelliteDownloadActive(status)) {
+    return {
+      label: "Reacquire",
+      disabled: false,
+      active: false,
+      progress: null,
+      error: reacquireReason,
+    };
+  }
 
   if (isAcquired || status === "COMPLETED") {
     return {

@@ -579,16 +579,13 @@ def get_analysis_job(
 
     results_verified, results_verification_error = _verified_completed_result(job, db)
 
-    # What this job actually measured, read back from the
-    # detections it produced rather than recomputed here.
-    #
-    # The interface used to read the affected area and the
-    # confidence from fields this response never carried, so
-    # every completed analysis displayed 0.00 ha at 0.00%
-    # confidence however much clearing it had found. Those
-    # are measurements, and a measurement that is not
-    # reported must not be shown as a value.
-    measured = DetectionRepository(db).measured_totals_for_job(job.id)
+    # Detection record totals are kept separate from the
+    # paired-raster measurement_summary. The latter reports
+    # pixel change and potential area; these aggregates report
+    # generated detections, confidence and officer review.
+    detection_repository = DetectionRepository(db)
+    measured = detection_repository.measured_totals_for_job(job.id)
+    confirmed = detection_repository.confirmed_totals_for_job(job.id)
 
     return {
         "id": job.id,
@@ -655,6 +652,22 @@ def get_analysis_job(
             job.execution_log
         ),
 
+        # What the run measured, as opposed to what it
+        # concluded: pixels compared, the NDVI change
+        # observed, the candidates found and the thresholds
+        # applied.
+        #
+        # Sent because a completed run reporting no
+        # deforestation otherwise carries no evidence of
+        # having measured anything, and a correct negative
+        # result is then indistinguishable from a broken
+        # pipeline. Null for a job that ran before this was
+        # recorded, which the interface reports as "not
+        # recorded" rather than as a measurement of zero.
+        "measurement_summary": (
+            job.measurement_summary
+        ),
+
         "created_at": (
             job.created_at
         ),
@@ -683,4 +696,17 @@ def get_analysis_job(
         "detected_area_hectares": measured["detected_area_hectares"],
 
         "mean_confidence_score": measured["mean_confidence_score"],
+
+        # Only an officer-verified (or subsequently closed) record is
+        # confirmed deforestation. The NDVI candidate area above remains
+        # in measurement_summary and is reported separately by the UI.
+        "confirmed_detection_count": confirmed["confirmed_detection_count"],
+
+        "confirmed_detected_area_hectares": confirmed[
+            "confirmed_detected_area_hectares"
+        ],
+
+        "pending_detection_count": confirmed["pending_detection_count"],
+
+        "rejected_detection_count": confirmed["rejected_detection_count"],
     }

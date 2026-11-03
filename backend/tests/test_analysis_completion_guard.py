@@ -133,6 +133,24 @@ def complete(service, job):
     )
 
 
+def test_vegetation_change_percentage_comes_from_the_raster_summary():
+    assert AnalysisService.summarise_vegetation_change(
+        {
+            "measured": True,
+            "significant_change_percentage": 12.5,
+        }
+    ) == 12.5
+
+    # A real zero stays a measured value; no comparable data stays absent.
+    assert AnalysisService.summarise_vegetation_change(
+        {"measured": True, "significant_change_percentage": 0.0}
+    ) == 0.0
+    assert AnalysisService.summarise_vegetation_change(
+        {"measured": False, "significant_change_percentage": 0.0}
+    ) is None
+    assert AnalysisService.summarise_vegetation_change(None) is None
+
+
 def test_a_run_with_all_its_outputs_completes(tmp_path):
     write_outputs(tmp_path)
     service = make_service(tmp_path)

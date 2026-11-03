@@ -86,6 +86,117 @@ class SendOutcome:
     skip_reason: str | None = None
 
 
+def log_unrecorded_attempt(
+    row,
+    reason: Exception | None = None,
+    context: str = "",
+) -> None:
+    """
+    Write an SMS attempt to the log when the database refused it.
+
+    Args:
+        row:
+            The SmsQueue row that could not be stored. Read
+            attribute by attribute so a partially built row
+            still produces a line.
+        reason:
+            The database error, when there was one.
+        context:
+            Where this happened, for the reader.
+
+    FR-19 requires every notification logged with the user
+    and the time. A message the provider accepted has been
+    sent and charged for whether or not the row committed,
+    so a failure to store it is the one moment when the
+    trail is most at risk of losing an event that really
+    happened.
+
+    This is the fallback, not the record: the log is not a
+    substitute for the table and the line says so. But an
+    event written somewhere can be reconciled later, and an
+    event written nowhere cannot be recovered at all.
+
+    Deliberately not a debug line and never silent. It is
+    logged at ERROR with everything the row would have
+    held, so that the attempt survives in the console and
+    in whatever collects it.
+    """
+
+    def field(name):
+        try:
+            return getattr(row, name, None)
+
+        except Exception:
+            return None
+
+    logger.error(
+        "SMS ATTEMPT NOT RECORDED%s. This message was "
+        "submitted to the provider but could not be written "
+        "to sms_queue, so it is missing from the "
+        "notification record and is reported here instead. "
+        "user_id=%s recipient=%s alert_id=%s status=%s "
+        "provider_message_id=%s provider_status=%s "
+        "provider_status_code=%s cost=%s submitted_at=%s "
+        "error=%s",
+        f" ({context})" if context else "",
+        field("recipient_user_id"),
+        field("recipient_phone"),
+        field("alert_id"),
+        getattr(field("status"), "value", field("status")),
+        field("provider_message_id"),
+        field("provider_status"),
+        field("provider_status_code"),
+        field("provider_cost"),
+        field("submitted_at"),
+        f"{type(reason).__name__}: {reason}" if reason else "unknown",
+    )
+
+
+@dataclass(frozen=True)
+class CycleResult:
+    """
+    What one pass over the SMS queue did.
+
+    Returned so the scheduler can say what happened rather
+    than only that it ran. A console that reports "SMS
+    scheduler started" and then nothing cannot distinguish a
+    worker quietly keeping up with the queue from one that
+    stopped doing anything at all.
+    """
+
+    submitted: int = 0
+
+    failed: int = 0
+
+    skipped: int = 0
+
+    #: Rows returned to PENDING for another attempt. Counted
+    #: apart from failures: a transport blip that will be
+    #: retried is not the same event as a message abandoned.
+    retrying: int = 0
+
+    @property
+    def total(self) -> int:
+        """How many rows the cycle handled."""
+
+        return (
+            self.submitted
+            + self.failed
+            + self.skipped
+            + self.retrying
+        )
+
+    def describe(self) -> str:
+        """A one-line summary for a log entry."""
+
+        return (
+            f"{self.submitted} submitted, "
+            f"{self.failed} failed, "
+            f"{self.skipped} skipped, "
+            f"{self.retrying} awaiting retry"
+        )
+
+
 def pending_sms_claim_query(db):
     """Select one pending row with a PostgreSQL worker lock."""
 
@@ -188,6 +299,158 @@ def apply_outcome(
         row.status = SmsQueueStatus.PENDING
 
 
+def submit_message(
+    sms_service: "SmsService",
+    recipient_phone: str,
+    message: str,
+    reference: str,
+) -> SendOutcome:
+    """
+    Submit one message and turn every outcome into a record.
+
+    Args:
+        sms_service:
+            Service to submit through.
+        recipient_phone:
+            Recipient in E.164 form.
+        message:
+            Body to send.
+        reference:
+            How to name this message in the log. A queued
+            message uses its row id; the registration test
+            names itself, because it has no row until this
+            has returned.
+
+    Returns:
+        The outcome, for apply_outcome to record. This
+        function raises nothing: every failure mode is
+        returned as an outcome, so one bad message can stop
+        neither the queue nor a request.
+
+    Shared by the queue worker and the registration test so
+    that a provider refusal, a dead connection and an
+    unreadable answer are judged identically whichever asked.
+    A test message reporting success where a real alert would
+    have failed would be worse than no test at all.
+    """
+
+    try:
+        recipient = sms_service.send_sms(
+            recipient_phone=recipient_phone,
+            message=message,
+        )
+
+    except SmsConfigurationError as exc:
+        # Not the message's fault and not transient.
+        logger.error(
+            "%s cannot be sent: %s",
+            reference,
+            exc,
+        )
+
+        return SendOutcome(
+            status=SmsQueueStatus.FAILED,
+            detail=str(exc),
+            retryable=False,
+        )
+
+    except SmsTransientError as exc:
+        logger.warning(
+            "%s could not reach the provider: %s",
+            reference,
+            exc,
+        )
+
+        return SendOutcome(
+            status=SmsQueueStatus.FAILED,
+            detail=str(exc),
+            retryable=True,
+        )
+
+    except SmsAmbiguousError as exc:
+        logger.error(
+            "%s has an unknown provider outcome; it will "
+            "not be retried to avoid a duplicate.",
+            reference,
+        )
+
+        return SendOutcome(
+            status=SmsQueueStatus.FAILED,
+            detail=str(exc),
+            retryable=False,
+        )
+
+    except SmsProviderError as exc:
+        logger.warning(
+            "%s was refused: %s",
+            reference,
+            exc,
+        )
+
+        return SendOutcome(
+            status=SmsQueueStatus.FAILED,
+            detail=str(exc),
+            retryable=False,
+        )
+
+    except Exception:
+        # A fault in this code rather than the provider's.
+        # Logged in full, recorded briefly, and not retried,
+        # because a bug repeats.
+        logger.exception(
+            "%s failed unexpectedly",
+            reference,
+        )
+
+        return SendOutcome(
+            status=SmsQueueStatus.FAILED,
+            detail=(
+                "The message could not be sent because of "
+                "an internal fault. See the server log."
+            ),
+            retryable=False,
+        )
+
+    # -----------------------------------------------------
+    # The provider answered. What it said decides the
+    # status, and it is recorded verbatim either way.
+    # -----------------------------------------------------
+
+    status, detail = classify_recipient(recipient)
+
+    raw_code = recipient.get("statusCode")
+
+    try:
+        code = int(raw_code)
+
+    except (TypeError, ValueError):
+        code = None
+
+    return SendOutcome(
+        status=status,
+        detail=detail,
+        # A refusal is the provider's decision about this
+        # message, so repeating it changes nothing.
+        retryable=False,
+        provider_message_id=(
+            str(recipient.get("messageId"))
+            if recipient.get("messageId")
+            else None
+        ),
+        provider_status_code=code,
+        provider_status=(
+            str(recipient.get("status"))[:50]
+            if recipient.get("status")
+            else None
+        ),
+        provider_cost=(
+            str(recipient.get("cost"))[:30]
+            if recipient.get("cost")
+            else None
+        ),
+    )
+
+
 # =========================================================
 # SMS WORKER
 # =========================================================
@@ -277,136 +540,40 @@ class SmsWorker:
                 skip_reason=skip_reason,
             )
 
-        try:
-            recipient = self.sms_service.send_sms(
-                recipient_phone=row.recipient_phone,
-                message=row.message,
-            )
-
-        except SmsConfigurationError as exc:
-            # Not the row's fault and not transient.
-            logger.error(
-                "SMS queue row %s cannot be sent: %s",
-                row.id,
-                exc,
-            )
-
-            return SendOutcome(
-                status=SmsQueueStatus.FAILED,
-                detail=str(exc),
-                retryable=False,
-            )
-
-        except SmsTransientError as exc:
-            logger.warning(
-                "SMS queue row %s could not reach the "
-                "provider: %s",
-                row.id,
-                exc,
-            )
-
-            return SendOutcome(
-                status=SmsQueueStatus.FAILED,
-                detail=str(exc),
-                retryable=True,
-            )
-
-        except SmsAmbiguousError as exc:
-            logger.error(
-                "SMS queue row %s has an unknown provider outcome; "
-                "it will not be retried to avoid a duplicate.",
-                row.id,
-            )
-
-            return SendOutcome(
-                status=SmsQueueStatus.FAILED,
-                detail=str(exc),
-                retryable=False,
-            )
-
-        except SmsProviderError as exc:
-            logger.warning(
-                "SMS queue row %s was refused: %s",
-                row.id,
-                exc,
-            )
-
-            return SendOutcome(
-                status=SmsQueueStatus.FAILED,
-                detail=str(exc),
-                retryable=False,
-            )
-
-        except Exception as exc:
-            # A fault in this code rather than the
-            # provider's. Logged in full, recorded briefly,
-            # and not retried, because a bug repeats.
-            logger.exception(
-                "SMS queue row %s failed unexpectedly",
-                row.id,
-            )
-
-            return SendOutcome(
-                status=SmsQueueStatus.FAILED,
-                detail=(
-                    "The message could not be sent because "
-                    "of an internal fault. See the server "
-                    "log."
-                ),
-                retryable=False,
-            )
-
-        # -----------------------------------------------------
-        # The provider answered. What it said decides the
-        # status, and it is recorded verbatim either way.
-        # -----------------------------------------------------
-
-        status, detail = classify_recipient(recipient)
-
-        raw_code = recipient.get("statusCode")
-
-        try:
-            code = int(raw_code)
-
-        except (TypeError, ValueError):
-            code = None
-
-        return SendOutcome(
-            status=status,
-            detail=detail,
-            # A refusal is the provider's decision about
-            # this message, so repeating it changes nothing.
-            retryable=False,
-            provider_message_id=(
-                str(recipient.get("messageId"))
-                if recipient.get("messageId")
-                else None
-            ),
-            provider_status_code=code,
-            provider_status=(
-                str(recipient.get("status"))[:50]
-                if recipient.get("status")
-                else None
-            ),
-            provider_cost=(
-                str(recipient.get("cost"))[:30]
-                if recipient.get("cost")
-                else None
-            ),
+        return submit_message(
+            self.sms_service,
+            recipient_phone=row.recipient_phone,
+            message=row.message,
+            reference=f"SMS queue row {row.id}",
         )
 
     # =========================================================
     # PROCESS QUEUE
     # =========================================================
 
-    def process_queue(self) -> None:
+    def process_queue(self) -> "CycleResult":
         """
         Process every pending message.
+
+        Returns:
+            What the cycle did, for the scheduler to report.
+            A cycle that found nothing is not the same event
+            as a cycle that sent four messages, and a
+            console showing only "started" cannot tell them
+            apart.
 
         Each row is committed on its own, so one failure
         neither rolls back a message already submitted nor
         stops the rest of the queue.
         """
+
+        submitted = 0
+
+        failed = 0
+
+        skipped = 0
+
+        retrying = 0
 
         while True:
             row = pending_sms_claim_query(self.db).first()
@@ -427,10 +594,27 @@ class SmsWorker:
 
             apply_outcome(row, outcome)
 
+            # Counted from the row rather than the outcome,
+            # because apply_outcome is what decides between
+            # them: a retryable failure with attempts left
+            # becomes PENDING again, and reporting that as a
+            # failure would overstate what happened.
+            if row.status is SmsQueueStatus.SUBMITTED:
+                submitted += 1
+
+            elif row.status is SmsQueueStatus.SKIPPED:
+                skipped += 1
+
+            elif row.status is SmsQueueStatus.PENDING:
+                retrying += 1
+
+            else:
+                failed += 1
+
             try:
                 self.db.commit()
 
-            except Exception:
+            except Exception as exc:
                 # The send already happened; failing to
                 # record it must not crash the worker and
                 # leave the row claimed for ever.
@@ -442,16 +626,35 @@ class SmsWorker:
                     row.id,
                 )
 
+                # The traceback above says what went wrong.
+                # This says what was lost, which is the part
+                # the notification record needs back.
+                log_unrecorded_attempt(
+                    row,
+                    reason=exc,
+                    context="alert message, queue worker",
+                )
+
+        return CycleResult(
+            submitted=submitted,
+            failed=failed,
+            skipped=skipped,
+            retrying=retrying,
+        )
+
     # =========================================================
     # RUN ONCE
     # =========================================================
 
-    def run_once(self) -> None:
+    def run_once(self) -> "CycleResult":
         """
         Execute one SMS-processing cycle.
+
+        Returns:
+            What the cycle did.
 
         Called by SmsScheduler, and usable from a management
         command or a cron entry without change.
         """
 
-        self.process_queue()
+        return self.process_queue()

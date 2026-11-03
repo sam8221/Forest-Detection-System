@@ -55,6 +55,12 @@ def totals_from(row):
     ).measured_totals_for_job(analysis_job_id=87)
 
 
+def confirmed_totals_from(row):
+    return DetectionRepository(
+        FakeAggregateSession(row)
+    ).confirmed_totals_for_job(analysis_job_id=87)
+
+
 def test_a_job_that_found_nothing_reports_no_area_rather_than_zero():
     """
     The shape PostgreSQL returns for a job with no
@@ -109,6 +115,28 @@ def test_aggregates_are_returned_as_plain_floats():
     assert totals["detected_area_hectares"] == pytest.approx(1.5)
 
 
+def test_confirmed_area_only_includes_officer_verified_detection_records():
+    totals = confirmed_totals_from((2, Decimal("3.75"), 1, 0))
+
+    assert totals == {
+        "confirmed_detection_count": 2,
+        "confirmed_detected_area_hectares": 3.75,
+        "pending_detection_count": 1,
+        "rejected_detection_count": 0,
+    }
+
+
+def test_no_verified_detections_returns_zero_count_and_no_area_sum():
+    totals = confirmed_totals_from((0, None, 0, 0))
+
+    assert totals == {
+        "confirmed_detection_count": 0,
+        "confirmed_detected_area_hectares": None,
+        "pending_detection_count": 0,
+        "rejected_detection_count": 0,
+    }
+
+
 def test_a_counted_detection_with_no_recorded_area_is_not_reported_as_zero():
     """
     Defensive: a detection row whose area was never written
@@ -127,8 +155,20 @@ def test_a_counted_detection_with_no_recorded_area_is_not_reported_as_zero():
 # THE RESPONSE
 # =========================================================
 
-def job_detail_response(monkeypatch, job, measured):
+def job_detail_response(monkeypatch, job, measured, confirmed=None):
     """Call the endpoint with its repositories stubbed out."""
+
+    confirmed = confirmed or {
+        "confirmed_detection_count": 0,
+        "confirmed_detected_area_hectares": None,
+        "pending_detection_count": 0,
+        "rejected_detection_count": 0,
+    }
+
+    detection_repository = SimpleNamespace(
+        measured_totals_for_job=lambda job_id: measured,
+        confirmed_totals_for_job=lambda job_id: confirmed,
+    )
 
     monkeypatch.setattr(
         analysis_api,
@@ -140,9 +180,7 @@ def job_detail_response(monkeypatch, job, measured):
     monkeypatch.setattr(
         analysis_api,
         "DetectionRepository",
-        lambda _db: SimpleNamespace(
-            measured_totals_for_job=lambda job_id: measured
-        ),
+        lambda _db: detection_repository,
     )
     # Whether the output rasters are on disk is not what
     # these tests are about; that has its own suite.
@@ -179,6 +217,12 @@ def completed_job(**changes):
         "ndvi_threshold": 0.3,
         "error_message": None,
         "execution_log": None,
+        # What the run measured, as opposed to what it
+        # concluded. None here stands for a job that ran
+        # before the summary was recorded, which the
+        # interface reports as "not recorded" rather than as
+        # a measurement of zero.
+        "measurement_summary": None,
         "created_at": None,
         "updated_at": None,
     }
@@ -201,6 +245,34 @@ def test_the_response_carries_the_measured_totals(monkeypatch):
     assert response["detected_area_hectares"] == pytest.approx(0.98)
     assert response["mean_confidence_score"] == pytest.approx(94.78)
     assert response["vegetation_change_percentage"] == pytest.approx(86.96)
+    assert response["confirmed_detection_count"] == 0
+    assert response["confirmed_detected_area_hectares"] is None
+    assert response["pending_detection_count"] == 0
+    assert response["rejected_detection_count"] == 0
+
+
+def test_job_response_keeps_confirmed_area_separate_from_generated_detections(monkeypatch):
+    response = job_detail_response(
+        monkeypatch,
+        completed_job(),
+        {
+            "detection_count": 2,
+            "detected_area_hectares": 2.0,
+            "mean_confidence_score": 88.0,
+        },
+        {
+            "confirmed_detection_count": 1,
+            "confirmed_detected_area_hectares": 0.75,
+            "pending_detection_count": 1,
+            "rejected_detection_count": 0,
+        },
+    )
+
+    assert response["detection_count"] == 2
+    assert response["detected_area_hectares"] == 2.0
+    assert response["confirmed_detection_count"] == 1
+    assert response["confirmed_detected_area_hectares"] == 0.75
+    assert response["pending_detection_count"] == 1
 
 
 def test_a_zero_detection_response_sends_null_not_zero(monkeypatch):
@@ -227,6 +299,67 @@ def test_a_zero_detection_response_sends_null_not_zero(monkeypatch):
     # The measured vegetation change of zero is still a real
     # reading and is reported as one.
     assert response["vegetation_change_percentage"] == 0.0
+
+
+def test_the_response_carries_what_the_run_measured(monkeypatch):
+    """
+    The bug this pins.
+
+    measurement_summary was added to the model, the
+    migration and AnalysisJobResponse, and the panel that
+    displays it was written and tested. None of that
+    mattered: this endpoint builds its payload as a dict by
+    hand rather than through the schema, so the field was
+    never sent and the panel could never have shown
+    anything.
+
+    A field added to AnalysisJobResponse does not reach the
+    Analysis page unless it is also added here. This test
+    says so in the only way that holds.
+    """
+
+    summary = {
+        "measured": True,
+        "measured_pixels": 227836,
+        "largest_decline": 0.2863,
+        "candidate_pixels": 0,
+        "ndvi_threshold": 0.3,
+        "minimum_area_hectares": 0.5,
+        "outcome": "No pixel declined by the 0.30 NDVI required.",
+    }
+
+    response = job_detail_response(
+        monkeypatch,
+        completed_job(measurement_summary=summary),
+        {
+            "detection_count": 0,
+            "detected_area_hectares": None,
+            "mean_confidence_score": None,
+        },
+    )
+
+    assert response["measurement_summary"] == summary
+
+
+def test_a_run_with_no_summary_sends_null_not_an_empty_object(monkeypatch):
+    """
+    A job that ran before the summary was recorded has none.
+    Null is reported so the page can say "not recorded"
+    rather than render an empty measurement, which would read
+    as a run that measured nothing.
+    """
+
+    response = job_detail_response(
+        monkeypatch,
+        completed_job(measurement_summary=None),
+        {
+            "detection_count": 0,
+            "detected_area_hectares": None,
+            "mean_confidence_score": None,
+        },
+    )
+
+    assert response["measurement_summary"] is None
 
 
 def test_the_response_does_not_carry_the_fields_the_page_used_to_read(monkeypatch):

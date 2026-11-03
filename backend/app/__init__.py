@@ -56,3 +56,14 @@ Project:
 from app.core import geospatial_env as _geospatial_env
 
 _geospatial_env.configure()
+
+# ---------------------------------------------------------
+# Raster read performance
+#
+# Set here for the same reason and at the same moment: GDAL
+# reads these once, as it initialises. They affect how long a
+# band takes to decode, not what it contains, so no result in
+# the dissertation depends on them.
+# ---------------------------------------------------------
+
+_geospatial_env.configure_raster_performance()

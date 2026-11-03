@@ -176,6 +176,9 @@ def test_failed_transfer_does_not_leave_a_completed_file_or_report_validation(tm
 def test_saved_product_must_be_a_readable_l2a_archive_with_analysis_bands(tmp_path):
     valid_archive = tmp_path / "valid-product.zip"
     with zipfile.ZipFile(valid_archive, "w") as archive:
+        archive.writestr("MTD_MSIL2A.xml", b"metadata")
+        archive.writestr("GRANULE/G1/IMG_DATA/R10m/PRODUCT_B02_10m.jp2", b"blu")
+        archive.writestr("GRANULE/G1/IMG_DATA/R10m/PRODUCT_B03_10m.jp2", b"grn")
         archive.writestr("GRANULE/G1/IMG_DATA/R10m/PRODUCT_B04_10m.jp2", b"red")
         archive.writestr("GRANULE/G1/IMG_DATA/R10m/PRODUCT_B08_10m.jp2", b"nir")
         archive.writestr("GRANULE/G1/IMG_DATA/R20m/PRODUCT_SCL_20m.jp2", b"scl")
@@ -188,6 +191,19 @@ def test_saved_product_must_be_a_readable_l2a_archive_with_analysis_bands(tmp_pa
 
     with pytest.raises(RuntimeError, match="missing bands"):
         SentinelService._validate_downloaded_product(invalid_archive)
+
+    # The preview bands are required too. A product carrying only
+    # the NDVI inputs is rejected here, where it can be fetched
+    # again, rather than after an analysis has unpacked it.
+    without_preview_bands = tmp_path / "ndvi-bands-only.zip"
+    with zipfile.ZipFile(without_preview_bands, "w") as archive:
+        archive.writestr("MTD_MSIL2A.xml", b"metadata")
+        archive.writestr("GRANULE/G1/IMG_DATA/R10m/PRODUCT_B04_10m.jp2", b"red")
+        archive.writestr("GRANULE/G1/IMG_DATA/R10m/PRODUCT_B08_10m.jp2", b"nir")
+        archive.writestr("GRANULE/G1/IMG_DATA/R20m/PRODUCT_SCL_20m.jp2", b"scl")
+
+    with pytest.raises(RuntimeError, match="missing bands"):
+        SentinelService._validate_downloaded_product(without_preview_bands)
 
     corrupted_archive = tmp_path / "corrupted-product.zip"
     corrupted_bytes = bytearray(valid_archive.read_bytes())
@@ -618,3 +634,111 @@ def test_downloads_path_is_not_shadowed_by_the_numeric_image_route(monkeypatch):
     assert [item["job_id"] for item in payload] == ["job-for-forest-4"]
     assert payload[0]["progress_percentage"] == 25.0
     assert payload[0]["total_bytes"] == 8192
+
+
+# =========================================================
+# PROGRESS FROM CONCURRENT TRANSFERS
+# =========================================================
+
+
+def test_progress_is_recorded_without_touching_the_download_session(tmp_path):
+    """Concurrent band transfers must not write through one Session.
+
+    Members are transferred in parallel, so progress is reported
+    from several threads while the main thread is still inside
+    the download holding its own session. Putting those writes
+    through that session made SQLAlchemy refuse:
+
+        IllegalStateChangeError
+        ResourceClosedError
+
+    Both were observed, and both failed an acquisition whose
+    bytes had already arrived. Progress now goes through a short
+    session of its own, keyed by job id.
+    """
+
+    import threading
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'progress.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(engine, tables=[SatelliteDownloadJob.__table__])
+
+    def session_factory():
+        return Session(engine)
+
+    # The session the download itself would hold, kept open and
+    # in use for the whole run, exactly as the real task does.
+    with Session(engine) as download_session:
+        service = SatelliteDownloadJobService(download_session)
+        job, _created = service.create_or_get_active(
+            forest_area_id=7,
+            product_id="concurrent-product",
+            product_name="Concurrent Product",
+            started_by=4,
+        )
+        job_id = job.job_id
+
+        failures: list[BaseException] = []
+
+        def report(thread_index):
+            try:
+                for step in range(5):
+                    SatelliteDownloadJobService.record_progress(
+                        job_id,
+                        status="DOWNLOADING",
+                        downloaded_bytes=thread_index * 100 + step,
+                        total_bytes=1000,
+                        session_factory=session_factory,
+                    )
+            except BaseException as exc:
+                failures.append(exc)
+
+        threads = [
+            threading.Thread(target=report, args=(index,))
+            for index in range(4)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert failures == []
+
+        # The download's own session is still usable afterwards,
+        # which is what the shared-session version broke.
+        download_session.rollback()
+        refreshed = download_session.get(SatelliteDownloadJob, job_id)
+        assert refreshed.status == "DOWNLOADING"
+        assert refreshed.total_bytes == 1000
+
+        service.complete(refreshed, satellite_image_id=99)
+        assert refreshed.status == "COMPLETED"
+        assert refreshed.progress_percentage == 100.0
+
+    engine.dispose()
+
+
+def test_a_progress_write_failure_never_fails_the_download(tmp_path):
+    """A stale percentage is not a reason to lose a transfer."""
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'closed.db'}")
+    Base.metadata.create_all(engine, tables=[SatelliteDownloadJob.__table__])
+    engine.dispose()
+
+    def broken_session_factory():
+        # A session over a disposed engine pointing nowhere.
+        return Session(create_engine("sqlite:///file:missing?mode=ro&uri=true"))
+
+    # Returns, does not raise.
+    assert (
+        SatelliteDownloadJobService.record_progress(
+            "no-such-job",
+            status="DOWNLOADING",
+            downloaded_bytes=10,
+            total_bytes=100,
+            session_factory=broken_session_factory,
+        )
+        is None
+    )

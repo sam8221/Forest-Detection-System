@@ -45,6 +45,7 @@ from sqlalchemy import (
     Text,
 )
 
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import (
     Mapped,
     mapped_column,
@@ -246,7 +247,10 @@ class AnalysisJob(AuditMixin, Base):
     vegetation_change_percentage: Mapped[float | None] = mapped_column(
         Float,
         nullable=True,
-        comment="Estimated vegetation change.",
+        comment=(
+            "Percentage of comparable paired-NDVI pixels whose absolute "
+            "change meets the analysis job's NDVI threshold."
+        ),
     )
 
     # =========================================================
@@ -262,6 +266,36 @@ class AnalysisJob(AuditMixin, Base):
         Text,
         nullable=True,
         comment="Detailed analysis execution log.",
+    )
+
+    # What the run measured, as opposed to what it concluded.
+    #
+    # Pixels compared, how much of the scene was usable, the
+    # NDVI change observed, how many pixels passed the
+    # threshold and how large the biggest candidate patch
+    # was, together with the threshold and minimum area that
+    # were applied.
+    #
+    # Added because a run reporting no deforestation carried
+    # no evidence of having measured anything, so a correct
+    # negative result was indistinguishable from a fault.
+    # See app.services.change_statistics for the figures and
+    # why each is kept.
+    #
+    # Stored as JSON rather than as a dozen columns: these
+    # are a descriptive record for an officer and for the
+    # accuracy evaluation, not values any query filters on,
+    # and PostgreSQL can still index into them if Chapter
+    # Five needs it.
+    measurement_summary: Mapped[dict | None] = mapped_column(
+        JSONB,
+        nullable=True,
+        comment=(
+            "What the analysis measured: pixels compared, "
+            "NDVI change observed, candidates found and the "
+            "thresholds applied. Null for a job that ran "
+            "before this was recorded."
+        ),
     )
 
     # =========================================================
@@ -315,7 +349,13 @@ class AnalysisJob(AuditMixin, Base):
         "Detection",
         back_populates="analysis_job",
         cascade="all, delete-orphan",
-        lazy="selectin",
+        # Loaded on access rather than with the parent.
+        # Eager loading here cascaded: one satellite image
+        # pulled its jobs, their detections, those alerts
+        # and every queued message, which is why a list of
+        # fifteen images cost 278 queries. Same reasoning
+        # as the note in forest_area.py.
+        lazy="select",
     )
 
     # =========================================================

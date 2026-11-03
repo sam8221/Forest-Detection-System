@@ -221,7 +221,13 @@ class SatelliteImage(AuditMixin, Base):
         "AnalysisJob",
         back_populates="satellite_image",
         foreign_keys="AnalysisJob.satellite_image_id",
-        lazy="selectin",
+        # Loaded on access rather than with the parent.
+        # Eager loading here cascaded: one satellite image
+        # pulled its jobs, their detections, those alerts
+        # and every queued message, which is why a list of
+        # fifteen images cost 278 queries. Same reasoning
+        # as the note in forest_area.py.
+        lazy="select",
     )
 
     # =========================================================
@@ -242,7 +248,13 @@ class SatelliteImage(AuditMixin, Base):
         "AnalysisJob",
         back_populates="previous_satellite_image",
         foreign_keys="AnalysisJob.previous_satellite_image_id",
-        lazy="selectin",
+        # Loaded on access rather than with the parent.
+        # Eager loading here cascaded: one satellite image
+        # pulled its jobs, their detections, those alerts
+        # and every queued message, which is why a list of
+        # fifteen images cost 278 queries. Same reasoning
+        # as the note in forest_area.py.
+        lazy="select",
     )
 
     # =========================================================
@@ -253,7 +265,13 @@ class SatelliteImage(AuditMixin, Base):
         "Detection",
         back_populates="satellite_image",
         cascade="all, delete-orphan",
-        lazy="selectin",
+        # Loaded on access rather than with the parent.
+        # Eager loading here cascaded: one satellite image
+        # pulled its jobs, their detections, those alerts
+        # and every queued message, which is why a list of
+        # fifteen images cost 278 queries. Same reasoning
+        # as the note in forest_area.py.
+        lazy="select",
     )
 
     # =========================================================

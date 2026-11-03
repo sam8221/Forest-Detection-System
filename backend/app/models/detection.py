@@ -215,7 +215,13 @@ class Detection(AuditMixin, Base):
         "Alert",
         back_populates="detection",
         cascade="all, delete-orphan",
-        lazy="selectin",
+        # Loaded on access rather than with the parent.
+        # Eager loading here cascaded: one satellite image
+        # pulled its jobs, their detections, those alerts
+        # and every queued message, which is why a list of
+        # fifteen images cost 278 queries. Same reasoning
+        # as the note in forest_area.py.
+        lazy="select",
     )
 
     # ---------------------------------------------------------

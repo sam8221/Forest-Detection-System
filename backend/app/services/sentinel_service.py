@@ -40,6 +40,8 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Callable
+import logging
+import os
 import zipfile
 
 from sqlalchemy.orm import Session
@@ -56,6 +58,13 @@ from app.repositories.satellite_image_repository import (
 from app.services.copernicus_service import (
     CopernicusService,
 )
+from app.services.sentinel_processor_service import (
+    SentinelProcessorService,
+)
+from app.services.storage_paths import shared_extract_root
+
+
+logger = logging.getLogger(__name__)
 
 
 class SentinelService:
@@ -109,7 +118,11 @@ class SentinelService:
             )
 
         with zipfile.ZipFile(downloaded_file, "r") as archive:
-            member_names = [name.upper() for name in archive.namelist()]
+            members = [
+                member
+                for member in archive.infolist()
+                if not member.is_dir()
+            ]
             corrupt_member = archive.testzip()
 
         if corrupt_member is not None:
@@ -117,19 +130,34 @@ class SentinelService:
                 "The downloaded Sentinel-2 product failed archive integrity validation."
             )
 
-        required_bands = (
+        # The full set the pipeline opens, not only the NDVI
+        # bands. A product that passes here and is then rejected
+        # as incomplete by the analysis has been downloaded for
+        # nothing, which is what used to happen: acquisition
+        # fetched three members while the pipeline required six.
+        required_members = (
+            "MTD_MSIL2A.XML",
+            "_B02_10M.JP2",
+            "_B03_10M.JP2",
             "_B04_10M.JP2",
             "_B08_10M.JP2",
             "_SCL_20M.JP2",
         )
-        missing_bands = [
-            band
-            for band in required_bands
-            if not any(name.endswith(band) for name in member_names)
+        missing = [
+            required
+            for required in required_members
+            if not any(
+                member.filename.upper().endswith(required)
+                and member.file_size > 0
+                for member in members
+            )
         ]
-        if missing_bands:
+        if missing:
             raise RuntimeError(
-                "The downloaded product is missing bands required for analysis."
+                "The downloaded product is missing bands or Level-2A "
+                "metadata required for analysis. The B02, B03, B04 and "
+                "B08 bands at 10 m, the 20 m scene classification layer "
+                "and MTD_MSIL2A.xml must all be present."
             )
 
     # =========================================================
@@ -292,7 +320,15 @@ class SentinelService:
             )
         )
 
-        if existing is not None:
+        # A registered product is reused only when the files it
+        # points at are actually complete. A row marked
+        # downloaded whose archive is missing an input the
+        # pipeline opens is worse than no row at all: it is
+        # accepted here, then rejected by the analysis, and
+        # nothing ever replaces it because this is the only
+        # place that would. Four such rows existed after the
+        # downloaded set and the required set drifted apart.
+        if existing is not None and self.local_product_is_complete(existing):
             return existing
 
         # -----------------------------------------------------
@@ -332,12 +368,19 @@ class SentinelService:
         # product discards every byte; on an unreliable link that
         # product can never finish. See CopernicusService
         # .REQUIRED_BAND_NODES for the reasoning and the measurements.
+        # The staged member files are claimed rather than
+        # discarded, so that once the image row exists they can
+        # be moved into the directory the analysis pipeline
+        # extracts into. See _claim_staged_product below.
+        staged: dict[str, Path] = {}
+
         downloaded_file = (
             self.copernicus.download_product_bands(
                 product_id=product_id,
                 product_name=product_name,
                 destination=destination,
                 progress_callback=progress_callback,
+                staged_band_sink=staged.update,
             )
         )
 
@@ -356,7 +399,23 @@ class SentinelService:
         # Register database record
         # -----------------------------------------------------
 
-        return self.register_satellite_image(
+        if existing is not None:
+
+            # The row stays, so detections and jobs that cite
+            # this product keep citing it. Only what describes
+            # the file on disk is refreshed.
+            existing.file_name = file_name
+            existing.storage_path = str(downloaded_file)
+            existing.file_size_mb = file_size_mb
+            existing.is_downloaded = True
+            self.db.commit()
+            self.db.refresh(existing)
+
+            self._claim_staged_product(existing, staged)
+
+            return existing
+
+        image = self.register_satellite_image(
             forest_area=forest_area,
 
             product_id=product_id,
@@ -377,6 +436,129 @@ class SentinelService:
 
             processing_level=processing_level,
         )
+
+        # The extraction directory is named after the image row,
+        # so it can only be populated once that row exists.
+        self._claim_staged_product(image, staged)
+
+        return image
+
+    def local_product_is_complete(
+        self,
+        image: SatelliteImage,
+    ) -> bool:
+        """
+        Return whether this product's local files hold every
+        input the analysis pipeline opens.
+
+        The extracted tree is checked first because that is what
+        the pipeline reads. The archive is checked from its
+        central directory only, so this costs no more than
+        opening the file however large the product is.
+        """
+
+        extract_root = shared_extract_root(
+            forest_area_id=image.forest_area_id,
+            satellite_image_id=image.id,
+            storage_root=self.storage_root,
+        )
+
+        if SentinelProcessorService.has_complete_extracted_product(extract_root):
+            return True
+
+        file_name = Path(image.file_name or "")
+
+        if not image.file_name or file_name.name != image.file_name:
+            return False
+
+        recorded = Path(image.storage_path).expanduser() if image.storage_path else None
+
+        candidates = [
+            path
+            for path in (
+                recorded,
+                self.storage_root / str(image.forest_area_id) / file_name,
+            )
+            if path is not None and path.is_file()
+        ]
+
+        return any(
+            SentinelProcessorService.archive_has_required_members(path)
+            for path in candidates
+        )
+
+    def _claim_staged_product(
+        self,
+        image: SatelliteImage,
+        staged: dict[str, Path],
+    ) -> None:
+        """
+        Move freshly downloaded members into their extraction
+        directory, so the first analysis need not unpack them.
+
+        Args:
+            image:
+                The registered image the members belong to.
+
+            staged:
+                {path inside the archive: staged file}, as
+                CopernicusService.download_product_bands
+                reports it.
+
+        The files are MOVED, not copied: staging and the
+        extraction root are both under the imagery storage root
+        and therefore on one volume, so each move is a rename
+        and costs nothing. Extracting instead would read and
+        write every one of those bytes again.
+
+        A failure here is not a download failure. The archive is
+        saved and valid, so the pipeline can still extract from
+        it; all that is lost is the saving. It is logged rather
+        than raised for exactly that reason.
+        """
+
+        if not staged:
+            return
+
+        try:
+            extract_root = shared_extract_root(
+                forest_area_id=image.forest_area_id,
+                satellite_image_id=image.id,
+                storage_root=self.storage_root,
+            )
+
+            for archive_path, staged_file in staged.items():
+
+                target = extract_root / archive_path
+
+                if target.is_file() and target.stat().st_size > 0:
+                    staged_file.unlink(missing_ok=True)
+                    continue
+
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(staged_file, target)
+
+            staging_directory = next(
+                (path.parent for path in staged.values()),
+                None,
+            )
+
+            if staging_directory is not None:
+                try:
+                    staging_directory.rmdir()
+                except OSError:
+                    # Another transfer's partly received band is
+                    # still there. Leaving it is what lets that
+                    # transfer resume.
+                    pass
+
+        except OSError:
+            logger.exception(
+                "Could not place the downloaded members of product %s into "
+                "its extraction directory; the analysis will unpack them "
+                "from the archive instead.",
+                image.product_id,
+            )
 
     # =========================================================
     # FIND NEWEST COPERNICUS PRODUCT
@@ -784,7 +966,12 @@ class SentinelService:
             )
         )
 
-        if existing is not None:
+        # Reused only when its local files hold every input the
+        # analysis opens. A row whose product is incomplete must
+        # fall through to the acquisition below, or nothing ever
+        # replaces it: this check and the one in download_product
+        # are the only two places that would.
+        if existing is not None and self.local_product_is_complete(existing):
             return existing
 
         # -----------------------------------------------------

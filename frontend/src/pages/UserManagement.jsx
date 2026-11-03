@@ -38,6 +38,9 @@ import { useCallback, useEffect, useState } from "react";
 import {
   AlertTriangle,
   Check,
+  Copy,
+  KeyRound,
+  Loader2,
   Pencil,
   Plus,
   ShieldCheck,
@@ -159,6 +162,23 @@ function UserManagement() {
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
+
+  // -------------------------------------------------------
+  // Password reset
+  //
+  // resetTarget is the account the confirmation dialog is
+  // asking about. issuedPassword holds the generated
+  // password for as long as its dialog is open, and only
+  // that long: it is never written to localStorage, never
+  // added to the users list, and discarded when the dialog
+  // closes. An administrator who loses it issues another
+  // one, which is the safe direction to fail in.
+  // -------------------------------------------------------
+
+  const [resetTarget, setResetTarget] = useState(null);
+  const [resetting, setResetting] = useState(false);
+  const [issuedPassword, setIssuedPassword] = useState(null);
+  const [copied, setCopied] = useState(false);
 
   // -------------------------------------------------------
   // Load accounts and the jurisdictions they can be given
@@ -412,6 +432,149 @@ function UserManagement() {
             : "The account could not be deactivated.")
       );
     }
+  };
+
+  // -------------------------------------------------------
+  // Password reset
+  // -------------------------------------------------------
+
+  /**
+   * Generate a temporary password for the selected account.
+   *
+   * The administrator supplies nothing: the password is
+   * made on the server from a cryptographic random source.
+   * This only asks for one and shows what came back.
+   */
+  const handleResetPassword = async () => {
+    // A second click while the first request is in flight
+    // would reset the password twice and leave the
+    // administrator holding a password that no longer works.
+    if (!resetTarget || resetting) {
+      return;
+    }
+
+    setResetting(true);
+    setError(null);
+
+    try {
+      const response = await api.post(
+        `/users/${resetTarget.id}/reset-password`
+      );
+
+      setIssuedPassword({
+        fullName:
+          response.data?.full_name || resetTarget.full_name,
+        email: response.data?.email || resetTarget.email,
+        password: response.data?.temporary_password || "",
+      });
+
+      setResetTarget(null);
+      setCopied(false);
+
+      /*
+        The list is deliberately NOT reloaded here. It is
+        reloaded when the dialog closes instead.
+
+        Reloading now would put a request in flight while an
+        unrecoverable password is on screen, and when an
+        administrator resets their own password that request
+        is refused: their token was issued under the password
+        that has just been replaced, so the API client
+        reports the session as ended, this page unmounts and
+        the password goes with it, never having been read.
+      */
+    } catch (requestError) {
+      /*
+        Two different things return 404 here. The endpoint
+        answers "User not found." when the account is gone.
+        A server that does not carry this endpoint at all
+        answers FastAPI's own "Not Found", which told an
+        administrator nothing: the button simply reported two
+        words and the feature looked broken.
+
+        The usual cause is a running server older than the
+        interface talking to it.
+      */
+      const status = requestError?.response?.status;
+
+      const detail =
+        requestError?.response?.data?.detail;
+
+      const routeMissing =
+        status === 404 &&
+        typeof detail === "string" &&
+        !detail.toLowerCase().includes("user");
+
+      setError(
+        routeMissing
+          ? "This server does not provide the password " +
+              "reset endpoint. It is running an older " +
+              "version than this interface and needs to be " +
+              "restarted or updated."
+          : getApiErrorMessage(
+              requestError,
+              "The password could not be reset."
+            )
+      );
+
+      setResetTarget(null);
+    } finally {
+      setResetting(false);
+    }
+  };
+
+  /**
+   * Copy the generated password to the clipboard.
+   *
+   * The Clipboard API needs a secure context and permission,
+   * and has neither when the page is served over plain HTTP
+   * to something other than localhost. A failure is reported
+   * rather than silently doing nothing, because the password
+   * is on screen and can still be read off it.
+   */
+  const handleCopyPassword = async () => {
+    if (!issuedPassword?.password) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(
+        issuedPassword.password
+      );
+
+      setCopied(true);
+    } catch {
+      setCopied(false);
+
+      setError(
+        "The password could not be copied automatically. " +
+          "Select it and copy it manually."
+      );
+    }
+  };
+
+  /**
+   * Dismiss the generated password.
+   *
+   * Once this runs the password is gone from the interface
+   * and cannot be shown again.
+   */
+  const closeIssuedPassword = () => {
+    setIssuedPassword(null);
+    setCopied(false);
+
+    setNotice(
+      "A temporary password was issued. The officer must " +
+        "set a new one at their next sign-in."
+    );
+
+    // Safe to reload now: the password has been read and
+    // discarded, so a refused request can no longer cost
+    // anything that cannot be recovered. An administrator
+    // who reset their own password is signed out at this
+    // point, which is correct — their token was issued
+    // under the password they have just replaced.
+    load();
   };
 
   // -------------------------------------------------------
@@ -782,6 +945,28 @@ function UserManagement() {
                       from leave would need a second
                       account.
                     */}
+                    {/*
+                      Offered for any account, including a
+                      deactivated one: an account is often
+                      restored and reset in the same breath,
+                      and the server refuses nothing here
+                      that it would allow elsewhere.
+                    */}
+                    <button
+                      type="button"
+                      className="icon-button"
+                      onClick={() => {
+                        setError(null);
+                        setResetTarget(user);
+                      }}
+                      title="Reset password"
+                      aria-label={
+                        `Reset password for ${user.full_name}`
+                      }
+                    >
+                      <KeyRound size={16} />
+                    </button>
+
                     {user.is_active ? (
                       <button
                         type="button"
@@ -814,6 +999,203 @@ function UserManagement() {
           </table>
         )}
       </div>
+
+      {/* =====================================================
+          CONFIRM A RESET
+
+          Names the officer and their email address. An
+          administrator working down a list of accounts
+          should not have to trust that the dialog refers to
+          the row they meant to click.
+          ===================================================== */}
+      {resetTarget && (
+        <div
+          className="dialog-backdrop"
+          role="presentation"
+          onClick={() => {
+            if (!resetting) {
+              setResetTarget(null);
+            }
+          }}
+        >
+          <div
+            className="dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="reset-confirm-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="dialog-header">
+              <KeyRound size={18} aria-hidden="true" />
+
+              <h2 id="reset-confirm-title">
+                Reset password
+              </h2>
+            </div>
+
+            <div className="dialog-body">
+              <p>
+                A new temporary password will be generated
+                for:
+              </p>
+
+              <div className="dialog-subject">
+                <strong>{resetTarget.full_name}</strong>
+                <span>{resetTarget.email}</span>
+              </div>
+
+              <p className="dialog-note">
+                Their current password will stop working
+                immediately, and any session they have open
+                will end. They will be required to set a new
+                password when they next sign in.
+              </p>
+            </div>
+
+            <div className="dialog-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => setResetTarget(null)}
+                disabled={resetting}
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                className="primary-button"
+                onClick={handleResetPassword}
+                disabled={resetting}
+              >
+                {resetting ? (
+                  <>
+                    <Loader2
+                      size={16}
+                      className="refresh-spin"
+                      aria-hidden="true"
+                    />
+                    Generating...
+                  </>
+                ) : (
+                  <>
+                    <KeyRound size={16} aria-hidden="true" />
+                    Generate Temporary Password
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================
+          THE GENERATED PASSWORD
+
+          Shown once. Closing this dialog discards it, and
+          nothing in the interface can retrieve it again: the
+          server keeps only the hash. An administrator who
+          loses it issues another, which is the safe
+          direction to fail in.
+
+          The backdrop does not close this one. A stray click
+          beside the dialog would throw away a password that
+          cannot be recovered.
+          ===================================================== */}
+      {issuedPassword && (
+        <div className="dialog-backdrop" role="presentation">
+          <div
+            className="dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="issued-password-title"
+          >
+            <div className="dialog-header">
+              <Check size={18} aria-hidden="true" />
+
+              <h2 id="issued-password-title">
+                Temporary password issued
+              </h2>
+            </div>
+
+            <div className="dialog-body">
+              <div className="dialog-subject">
+                <strong>{issuedPassword.fullName}</strong>
+                <span>{issuedPassword.email}</span>
+              </div>
+
+              <label
+                className="dialog-field-label"
+                htmlFor="issued-password"
+              >
+                Temporary password
+              </label>
+
+              <div className="password-reveal">
+                <input
+                  id="issued-password"
+                  type="text"
+                  value={issuedPassword.password}
+                  readOnly
+                  // Selecting on focus gives a manual copy
+                  // when the clipboard is unavailable, which
+                  // it is over plain HTTP.
+                  onFocus={(event) =>
+                    event.target.select()
+                  }
+                />
+
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={handleCopyPassword}
+                >
+                  {copied ? (
+                    <>
+                      <Check size={15} aria-hidden="true" />
+                      Copied
+                    </>
+                  ) : (
+                    <>
+                      <Copy size={15} aria-hidden="true" />
+                      Copy
+                    </>
+                  )}
+                </button>
+              </div>
+
+              <div className="dialog-warning" role="note">
+                <AlertTriangle size={16} aria-hidden="true" />
+
+                <div>
+                  <strong>
+                    This password is shown once.
+                  </strong>
+
+                  <span>
+                    Give it to the officer in person or by
+                    telephone. Do not send it by email or
+                    text message, and do not write it down
+                    where it will outlive the sign-in. It
+                    cannot be displayed again once this
+                    dialog is closed.
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="dialog-actions">
+              <button
+                type="button"
+                className="primary-button"
+                onClick={closeIssuedPassword}
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

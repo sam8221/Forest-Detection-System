@@ -29,10 +29,15 @@ Version:
 
 from __future__ import annotations
 
+import logging
+
 from pathlib import Path
 
 import numpy as np
 import rasterio
+
+
+logger = logging.getLogger(__name__)
 
 
 class DeforestationSeverityService:
@@ -398,64 +403,22 @@ class DeforestationSeverityService:
         # STATISTICS
         # =====================================================
 
-        print(
-            "DEFORESTATION SEVERITY ANALYSIS"
-        )
-
-        print(
-            "Low pixels:",
+        logger.info(
+            "Deforestation severity: %s low, %s moderate, "
+            "%s severe, %s confirmed pixels in total.",
             low_count,
-        )
-
-        print(
-            "Moderate pixels:",
             moderate_count,
-        )
-
-        print(
-            "Severe pixels:",
             severe_count,
-        )
-
-        print(
-            "Total confirmed pixels:",
             total_count,
         )
 
-        print(
-            "Low area:",
-            round(
-                low_area,
-                4,
-            ),
-            "hectares",
-        )
-
-        print(
-            "Moderate area:",
-            round(
-                moderate_area,
-                4,
-            ),
-            "hectares",
-        )
-
-        print(
-            "Severe area:",
-            round(
-                severe_area,
-                4,
-            ),
-            "hectares",
-        )
-
-        print(
-            "Total affected area:",
-            round(
-                total_area,
-                4,
-            ),
-            "hectares",
+        logger.info(
+            "Affected area: %.4f ha low, %.4f ha moderate, "
+            "%.4f ha severe, %.4f ha in total.",
+            low_area,
+            moderate_area,
+            severe_area,
+            total_area,
         )
 
         # =====================================================

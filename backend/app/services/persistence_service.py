@@ -30,6 +30,8 @@ Version:
 
 from __future__ import annotations
 
+import logging
+
 from pathlib import Path
 
 import numpy as np
@@ -38,6 +40,9 @@ import rasterio
 from app.core.config import get_settings
 from app.core.constants import NDVI_NODATA
 from app.services.ndvi_service import NDVIService
+
+
+logger = logging.getLogger(__name__)
 
 
 class PersistenceService:
@@ -468,45 +473,22 @@ class PersistenceService:
             previous.size
         )
 
-        print(
-            "PERSISTENCE ANALYSIS"
-        )
-
-        print(
-            "Total pixels:",
+        logger.info(
+            "Persistence analysis: %s pixels, %s valid on "
+            "both dates, %s confirmed as deforestation at "
+            "threshold %s.",
             total_pixels,
-        )
-
-        print(
-            "Valid on both dates:",
             valid_pixels,
-        )
-
-        print(
-            "Confirmed deforestation pixels:",
             confirmed_pixels,
-        )
-
-        print(
-            "Threshold:",
             threshold,
         )
 
-        print(
-            "Pixel size:",
+        logger.info(
+            "Confirmed affected area: %.4f ha "
+            "(pixel size %s x %s metres).",
+            confirmed_area_hectares,
             pixel_width,
-            "x",
             pixel_height,
-            "metres",
-        )
-
-        print(
-            "Confirmed affected area:",
-            round(
-                confirmed_area_hectares,
-                4,
-            ),
-            "hectares",
         )
 
         # =====================================================

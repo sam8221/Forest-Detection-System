@@ -66,6 +66,7 @@
  */
 
 import {
+  Activity,
   AlertTriangle,
   Calendar,
   CheckCircle2,
@@ -97,6 +98,7 @@ import {
   analysisMetricDisplays,
   formatMeasurement,
 } from "../services/analysisMetrics";
+import { describeMeasurement } from "../services/measurementSummary";
 
 const formatDate = (value) => {
   if (!value) return "Not available";
@@ -152,6 +154,133 @@ const statusClass = (status) => {
   return "status-badge";
 };
 
+const formatElapsed = (totalSeconds) => {
+  const seconds = Math.max(0, Math.round(totalSeconds));
+
+  if (seconds < 60) return `${seconds}s`;
+
+  const minutes = Math.floor(seconds / 60);
+
+  return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
+};
+
+/**
+ * What a run-analysis button says while its work is going on.
+ *
+ * A seasonal analysis acquires two Sentinel-2 products and
+ * processes both, which takes minutes. The button used to keep
+ * its idle label throughout and merely go dim, so the officer
+ * had no way to tell a run in progress from a page that had
+ * stopped responding - and pressed it again.
+ *
+ * Three states are distinguished because the officer's response
+ * to each differs: the request is still being submitted, the job
+ * is queued and no worker has claimed it yet, or the imagery is
+ * being processed. The elapsed count is there so that a stage
+ * which reports nothing new for two minutes still shows the page
+ * is alive.
+ */
+/**
+ * What the run measured, beneath what it concluded.
+ *
+ * @param {object} props
+ * @param {object|null} props.summary job.measurement_summary
+ *
+ * Exists because "Vegetation Change 0.00%" and "None
+ * detected" were correct results that carried no evidence of
+ * a measurement, and were therefore read as a fault. The
+ * rows say how much ground was compared, what the NDVI
+ * change was, and which rule produced the outcome.
+ */
+function MeasurementPanel({ summary }) {
+  const { status, detail, rows } = describeMeasurement(summary);
+
+  return (
+    <section
+      className={`measurement-panel is-${status}`}
+      aria-label="What this analysis measured"
+    >
+      <header>
+        <Activity size={15} aria-hidden="true" />
+
+        <strong>What this analysis measured</strong>
+      </header>
+
+      {detail && <p className="measurement-outcome">{detail}</p>}
+
+      {rows.length > 0 && (
+        <dl className="measurement-rows">
+          {rows.map((row) => (
+            <div key={row.label}>
+              <dt>{row.label}</dt>
+
+              <dd>
+                {row.value}
+
+                {row.note && <small>{row.note}</small>}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
+    </section>
+  );
+}
+
+function AnalysisButtonContent({
+  working,
+  submitting,
+  status,
+  elapsedSeconds,
+  idleIcon,
+  idleLabel,
+}) {
+  if (submitting) {
+    return (
+      <>
+        <Loader2 size={17} className="analysis-spin" />
+        Submitting...
+      </>
+    );
+  }
+
+  if (working && status === "PENDING") {
+    return (
+      <>
+        {/*
+          Not spinning: nothing is being computed yet. The job
+          is waiting for the worker to claim it, and the clock
+          face says which of the two is happening.
+        */}
+        <Clock3 size={17} />
+        Queued
+        <span className="analysis-elapsed">
+          {formatElapsed(elapsedSeconds)}
+        </span>
+      </>
+    );
+  }
+
+  if (working) {
+    return (
+      <>
+        <Loader2 size={17} className="analysis-spin" />
+        Analysing
+        <span className="analysis-elapsed">
+          {formatElapsed(elapsedSeconds)}
+        </span>
+      </>
+    );
+  }
+
+  return (
+    <>
+      {idleIcon}
+      {idleLabel}
+    </>
+  );
+}
+
 export default function Analysis({ initialSelection, onSelectionConsumed }) {
   const [forestAreas, setForestAreas] = useState([]);
   const [selectedArea, setSelectedArea] = useState(
@@ -171,13 +300,31 @@ export default function Analysis({ initialSelection, onSelectionConsumed }) {
 
   const [loadingAreas, setLoadingAreas] = useState(true);
   const [loadingJob, setLoadingJob] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+
+  // Which button was pressed, not merely that one was. Both
+  // start an analysis, and showing the state on whichever was
+  // not used told the officer nothing about what they did.
+  const [submittingAction, setSubmittingAction] = useState("");
+
+  // Which button started the job now running. A job restored
+  // from the server after a reload has no recorded origin, and
+  // in that case both buttons report the work, because both are
+  // in fact waiting on it. Guessing one would be worse than
+  // saying so.
+  const [startedAction, setStartedAction] = useState("");
+
+  // Seconds the current job has been queued or running. A
+  // single stage of this pipeline can take minutes, during
+  // which nothing else on the page changes, and an unchanging
+  // page is indistinguishable from a hung one.
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
 
   const pollingRef = useRef(null);
   const pollingFailuresRef = useRef(0);
+  const activeSinceRef = useRef(null);
   const restoredPairJobRef = useRef(null);
   const initialSelectionRef = useRef(initialSelection);
   const preselectionAppliedRef = useRef(false);
@@ -223,7 +370,7 @@ export default function Analysis({ initialSelection, onSelectionConsumed }) {
     } finally {
       setLoadingAreas(false);
     }
-  }, []);
+  }, [onSelectionConsumed]);
 
   const fetchAnalysisJob = useCallback(async (jobId) => {
     if (!jobId) return null;
@@ -388,7 +535,12 @@ export default function Analysis({ initialSelection, onSelectionConsumed }) {
         pollingRef.current = setTimeout(poll, 3000);
       };
 
-      pollingRef.current = setTimeout(poll, 3000);
+      // Asked for at once, not after the first interval. The
+      // stage the backend records is the only account of what a
+      // long run is doing, and waiting three seconds to ask for
+      // it left the panel blank at exactly the moment the
+      // officer was looking at it.
+      poll();
     },
     [loadJob, stopPolling]
   );
@@ -501,6 +653,12 @@ export default function Analysis({ initialSelection, onSelectionConsumed }) {
     selectedArea,
   ]);
 
+  // Depends on the job fields it reads rather than on the
+  // job object. Polling replaces that object on every reply,
+  // so depending on it would re-run this on each poll even
+  // when nothing it reads has changed. restoreSelectedPair
+  // reads only the three fields listed below, so the shorter
+  // list is complete, not a shortcut.
   useEffect(() => {
     if (
       !job?.id ||
@@ -536,6 +694,10 @@ export default function Analysis({ initialSelection, onSelectionConsumed }) {
     return stopPolling;
   }, [stopPolling]);
 
+  // Same reason as above: isConfirmedActiveAnalysisJob reads
+  // only id, status and worker_available, all listed here.
+  // Depending on the whole job would restart polling on
+  // every poll reply.
   useEffect(() => {
     if (isConfirmedActiveAnalysisJob(job)) {
       startPolling(job.id);
@@ -545,7 +707,60 @@ export default function Analysis({ initialSelection, onSelectionConsumed }) {
   }, [job?.id, job?.status, job?.worker_available, startPolling, stopPolling]);
 
   const jobActive = isConfirmedActiveAnalysisJob(job);
-  const busy = submitting || jobActive;
+  const busy = Boolean(submittingAction) || jobActive;
+
+  // A finished or abandoned job no longer belongs to either
+  // button, so the record of which one started it is dropped.
+  useEffect(() => {
+    if (!jobActive && !submittingAction) {
+      setStartedAction("");
+    }
+  }, [jobActive, submittingAction]);
+
+  const isWorking = (action) => {
+    if (submittingAction) return submittingAction === action;
+    if (!jobActive) return false;
+
+    // No recorded origin: report on both rather than pick one.
+    return !startedAction || startedAction === action;
+  };
+
+  // The job's own clock where it can be trusted, this page's
+  // otherwise. A browser clock that disagrees with the server
+  // would otherwise report an analysis as having run for hours,
+  // or for a negative length of time.
+  useEffect(() => {
+    if (!jobActive) {
+      activeSinceRef.current = null;
+      setElapsedSeconds(0);
+      return undefined;
+    }
+
+    if (activeSinceRef.current?.jobId !== job.id) {
+      const reported = Date.parse(job.started_at || job.created_at || "");
+      const plausible =
+        Number.isFinite(reported) &&
+        reported <= Date.now() &&
+        Date.now() - reported < 24 * 60 * 60 * 1000;
+
+      activeSinceRef.current = {
+        jobId: job.id,
+        since: plausible ? reported : Date.now(),
+      };
+    }
+
+    const tick = () =>
+      setElapsedSeconds(
+        Math.max(
+          0,
+          Math.round((Date.now() - activeSinceRef.current.since) / 1000)
+        )
+      );
+
+    tick();
+    const handle = setInterval(tick, 1000);
+    return () => clearInterval(handle);
+  }, [jobActive, job?.id, job?.started_at, job?.created_at]);
 
   const runAnalysis = async () => {
     if (!selectedArea) {
@@ -555,7 +770,8 @@ export default function Analysis({ initialSelection, onSelectionConsumed }) {
       return;
     }
 
-    setSubmitting(true);
+    setSubmittingAction("automatic");
+    setStartedAction("automatic");
     setJob(null);
     setPreviousImageId("");
     setRecentImageId("");
@@ -597,7 +813,7 @@ export default function Analysis({ initialSelection, onSelectionConsumed }) {
           "Failed to start deforestation analysis."
       );
     } finally {
-      setSubmitting(false);
+      setSubmittingAction("");
     }
   };
 
@@ -616,7 +832,8 @@ export default function Analysis({ initialSelection, onSelectionConsumed }) {
       return;
     }
 
-    setSubmitting(true);
+    setSubmittingAction("pair");
+    setStartedAction("pair");
     setJob(null);
     restoredPairJobRef.current = null;
     try {
@@ -652,7 +869,7 @@ export default function Analysis({ initialSelection, onSelectionConsumed }) {
           "The selected Sentinel-2 pair could not be analysed."
       );
     } finally {
-      setSubmitting(false);
+      setSubmittingAction("");
     }
   };
 
@@ -690,23 +907,17 @@ export default function Analysis({ initialSelection, onSelectionConsumed }) {
     recentImageId
   );
 
-  // Read from the fields the analysis API actually returns:
-  // vegetation_change_percentage, detected_area_hectares,
-  // mean_confidence_score and detection_count.
-  //
-  // The affected area and the confidence were previously read
-  // from loss_area_hectares, deforestation_area_hectares,
-  // deforested_area_hectares, confidence_percentage and
-  // confidence - none of which this API has ever sent. Each
-  // chain therefore fell through to its "?? 0" default, so
-  // every completed analysis reported 0.00 ha affected at
-  // 0.00% confidence however much clearing it had found.
-  //
-  // The rule now lives in services/analysisMetrics.js, where
-  // it is tested directly.
+  // Pixel-change metrics come from this job's raster summary.
+  // Detection records and officer-confirmed area stay separate
+  // from the potential NDVI decline area.
   const {
     vegetationChangeDisplay,
-    affectedAreaDisplay,
+    vegetationChangeDetail,
+    vegetationChangeTitle,
+    potentialAreaDisplay,
+    potentialAreaDetail,
+    confirmedAreaDisplay,
+    detectionStatusDisplay,
     confidenceDisplay,
   } = analysisMetricDisplays(job);
 
@@ -784,6 +995,78 @@ export default function Analysis({ initialSelection, onSelectionConsumed }) {
         .analysis-button:disabled {
           opacity: 0.6;
           cursor: not-allowed;
+        }
+
+        /*
+          A button that is carrying out the work the officer
+          asked for is not the same thing as a button that
+          cannot be used. Dimming both identically made a run
+          that takes minutes look like a page that had stopped
+          responding, so a working button keeps full contrast,
+          spins its icon, and carries a bar that advances
+          whether or not the stage has changed.
+        */
+        .analysis-button.working,
+        .analysis-button.working:disabled {
+          opacity: 1;
+          cursor: progress;
+          position: relative;
+          overflow: hidden;
+        }
+
+        .analysis-button.working::after {
+          content: "";
+          position: absolute;
+          left: 0;
+          bottom: 0;
+          height: 3px;
+          width: 40%;
+          background: rgba(255, 255, 255, 0.85);
+          animation: analysis-sweep 1.4s ease-in-out infinite;
+        }
+
+        .analysis-button.secondary.working::after {
+          background: #166534;
+        }
+
+        @keyframes analysis-sweep {
+          0% { transform: translateX(-100%); }
+          100% { transform: translateX(250%); }
+        }
+
+        .analysis-spin {
+          animation: analysis-rotate 1s linear infinite;
+        }
+
+        @keyframes analysis-rotate {
+          to { transform: rotate(360deg); }
+        }
+
+        /*
+          Respect a reader who has asked for less motion. The
+          spinner is how this page says it is still working, so
+          it is slowed rather than removed.
+        */
+        @media (prefers-reduced-motion: reduce) {
+          .analysis-spin {
+            animation-duration: 3s;
+          }
+
+          .analysis-button.working::after {
+            animation-duration: 4s;
+          }
+        }
+
+        .analysis-elapsed {
+          font-variant-numeric: tabular-nums;
+          opacity: 0.85;
+        }
+
+        .analysis-elapsed-line {
+          margin: 0 0 12px;
+          color: #475569;
+          font-size: 13px;
+          font-variant-numeric: tabular-nums;
         }
 
         .analysis-card {
@@ -919,6 +1202,7 @@ export default function Analysis({ initialSelection, onSelectionConsumed }) {
           display: flex;
           align-items: flex-start;
           gap: 13px;
+          min-width: 0;
         }
 
         .analysis-stat-icon {
@@ -943,6 +1227,14 @@ export default function Analysis({ initialSelection, onSelectionConsumed }) {
           color: #0f172a;
           font-size: 22px;
           font-weight: 700;
+        }
+
+        .analysis-stat-detail {
+          display: block;
+          color: #64748b;
+          font-size: 12px;
+          line-height: 1.45;
+          margin-top: 5px;
         }
 
         .analysis-two-column {
@@ -991,6 +1283,8 @@ export default function Analysis({ initialSelection, onSelectionConsumed }) {
           color: #475569;
           font-size: 13px;
           font-weight: 600;
+          max-width: 100%;
+          white-space: normal;
         }
 
         .status-badge.completed {
@@ -1284,7 +1578,10 @@ export default function Analysis({ initialSelection, onSelectionConsumed }) {
 
         <div className="analysis-actions">
           <button
-            className="analysis-button primary"
+            className={
+              "analysis-button primary" +
+              (isWorking("pair") ? " working" : "")
+            }
             onClick={runSelectedPairAnalysis}
             disabled={
               !selectedArea ||
@@ -1294,37 +1591,33 @@ export default function Analysis({ initialSelection, onSelectionConsumed }) {
               !pairValidation?.valid
             }
           >
-            {submitting ? (
-              <>
-                <Loader2 size={17} />
-                Submitting analysis...
-              </>
-            ) : jobActive && normalizeStatus(job?.status) === "PENDING" ? (
-              <>
-                <Clock3 size={17} />
-                Analysis queued...
-              </>
-            ) : jobActive && normalizeStatus(job?.status) === "RUNNING" ? (
-              <>
-                <Loader2 size={17} />
-                Analysis Running...
-              </>
-            ) : (
-              <>
-                <Play size={17} />
-                Run selected-pair analysis
-              </>
-            )}
+            <AnalysisButtonContent
+              working={isWorking("pair")}
+              submitting={submittingAction === "pair"}
+              status={jobActive ? normalizeStatus(job?.status) : ""}
+              elapsedSeconds={elapsedSeconds}
+              idleIcon={<Play size={17} />}
+              idleLabel="Run selected-pair analysis"
+            />
           </button>
 
           <button
-            className="analysis-button secondary"
+            className={
+              "analysis-button secondary" +
+              (isWorking("automatic") ? " working" : "")
+            }
             onClick={runAnalysis}
             disabled={!selectedArea || busy || loadingJob}
             title="Runs the existing automatic seasonal analysis workflow."
           >
-            <RefreshCw size={16} />
-            Run automatic seasonal analysis
+            <AnalysisButtonContent
+              working={isWorking("automatic")}
+              submitting={submittingAction === "automatic"}
+              status={jobActive ? normalizeStatus(job?.status) : ""}
+              elapsedSeconds={elapsedSeconds}
+              idleIcon={<RefreshCw size={16} />}
+              idleLabel="Run automatic seasonal analysis"
+            />
           </button>
         </div>
         <p className="analysis-selection-hint">
@@ -1393,9 +1686,14 @@ export default function Analysis({ initialSelection, onSelectionConsumed }) {
       ) : job ? (
         <>
           {!verifiedResults && (
-            <div className="analysis-card" role="status">
+            <div className="analysis-card" role="status" aria-live="polite">
               <h2 className="analysis-card-title">Analysis job #{job.id}</h2>
-              <div className={statusClass(status)}>{statusLabel(status)}</div>
+              <div className={statusClass(status)}>
+                {jobActive && (
+                  <Loader2 size={13} className="analysis-spin" />
+                )}
+                {statusLabel(status)}
+              </div>
               <p>
                 {normalizeStatus(status) === "PENDING"
                   ? "Queued for the backend analysis worker."
@@ -1405,10 +1703,34 @@ export default function Analysis({ initialSelection, onSelectionConsumed }) {
                       ? job.error_message || "The analysis failed. You can retry with a valid pair."
                       : job.results_verification_error || "The completed job's results are not verified. Run a new analysis."}
               </p>
+
+              {/*
+                Acquiring and processing two Sentinel-2 products
+                takes minutes, and the stage below can stay the
+                same for a long part of that. The elapsed count
+                is what shows the page is still watching the job
+                rather than having lost it.
+              */}
+              {jobActive && (
+                <p className="analysis-elapsed-line">
+                  Running for {formatElapsed(elapsedSeconds)}. This page
+                  checks the job every three seconds; the analysis
+                  continues on the server even if you navigate away.
+                </p>
+              )}
+
               {job.execution_log && (
                 <div className="analysis-progress-log">{job.execution_log}</div>
               )}
             </div>
+          )}
+
+          {/* Pixel measurements are reported separately from detection
+              records and officer verification below. */}
+          {verifiedResults && (
+            <MeasurementPanel
+              summary={job?.measurement_summary}
+            />
           )}
 
           {verifiedResults && <div className="analysis-stat-grid">
@@ -1423,9 +1745,15 @@ export default function Analysis({ initialSelection, onSelectionConsumed }) {
                   Vegetation Change
                 </div>
 
-                <div className="analysis-stat-value">
+                <div
+                  className="analysis-stat-value"
+                  title={vegetationChangeTitle}
+                >
                   {vegetationChangeDisplay}
                 </div>
+                <small className="analysis-stat-detail">
+                  {vegetationChangeDetail}
+                </small>
               </div>
             </div>
 
@@ -1436,12 +1764,24 @@ export default function Analysis({ initialSelection, onSelectionConsumed }) {
 
               <div>
                 <div className="analysis-stat-label">
-                  Potential Affected Area
+                  Potential Vegetation Decline
                 </div>
 
-                <div className="analysis-stat-value">
-                  {affectedAreaDisplay}
+                <div
+                  className="analysis-stat-value"
+                  title="Area of comparable pixels where recent NDVI is lower than previous NDVI (ΔNDVI < 0). This is potential vegetation decline, not confirmed deforestation."
+                >
+                  {potentialAreaDisplay}
                 </div>
+                <small className="analysis-stat-detail">
+                  {potentialAreaDetail}
+                </small>
+                <small className="analysis-stat-detail">
+                  Confirmed detected area: {confirmedAreaDisplay}
+                </small>
+                <small className="analysis-stat-detail">
+                  {detectionStatusDisplay}
+                </small>
               </div>
             </div>
 
@@ -1455,7 +1795,10 @@ export default function Analysis({ initialSelection, onSelectionConsumed }) {
                   Mean Detection Confidence
                 </div>
 
-                <div className="analysis-stat-value">
+                <div
+                  className="analysis-stat-value"
+                  title="Mean of the valid confidence indicators recorded by this job's detection process. This is not an NDVI change value or a machine-learning probability."
+                >
                   {confidenceDisplay}
                 </div>
               </div>
@@ -1479,11 +1822,7 @@ export default function Analysis({ initialSelection, onSelectionConsumed }) {
                   Analysis Status
                 </div>
 
-                <div
-                  className={statusClass(
-                    status
-                  )}
-                >
+                <div className={statusClass(status)}>
                   {normalizeStatus(status) ===
                   "COMPLETED" ? (
                     <CheckCircle2 size={16} />
@@ -1494,7 +1833,7 @@ export default function Analysis({ initialSelection, onSelectionConsumed }) {
                     <Clock3 size={16} />
                   )}
 
-                  {statusLabel(status)}
+                  {detectionStatusDisplay}
                 </div>
               </div>
             </div>

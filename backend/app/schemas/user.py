@@ -511,6 +511,51 @@ class UserResponse(UserBase):
 
 
 # =========================================================
+# TEMPORARY PASSWORD SCHEMA
+# =========================================================
+
+class TemporaryPasswordResponse(BaseModel):
+    """
+    The result of an administrator resetting a password.
+
+    The only place in this system where a password is
+    returned in plain text. It is returned once, to the
+    administrator who asked for the reset, because they have
+    to pass it to the officer by some channel outside the
+    system. It is not stored anywhere in this form: what the
+    database holds is the bcrypt hash.
+
+    The account fields are echoed back so the interface can
+    name the officer the password belongs to. An
+    administrator resetting several accounts in a row should
+    not have to trust that the dialog in front of them
+    refers to the row they clicked.
+    """
+
+    user_id: int
+
+    email: EmailStr
+
+    full_name: str
+
+    temporary_password: str = Field(
+        ...,
+        description=(
+            "The generated password, in plain text. Shown "
+            "once and never returned again."
+        ),
+    )
+
+    must_change_password: bool = Field(
+        default=True,
+        description=(
+            "Always true. The officer is required to "
+            "replace this password at their next sign-in."
+        ),
+    )
+
+
+# =========================================================
 # JWT TOKEN SCHEMA
 # =========================================================
 
@@ -555,4 +600,149 @@ class UserSummary(BaseModel):
 
     model_config = ConfigDict(
         from_attributes=True,
+    )
+
+
+# =========================================================
+# SMS NOTIFICATION SETTINGS
+#
+# An officer's own SMS settings, which they may change
+# without an administrator. Registering a number is how an
+# officer asks to be told about clearing in their own
+# district, so making it depend on an administrator would
+# leave the channel unused.
+#
+# Deliberately a small schema of its own rather than a reuse
+# of UserUpdate: UserUpdate can change role, jurisdiction and
+# active state, and must stay administrator-only. An officer
+# editing their own notification settings may change these
+# two fields and nothing else.
+# =========================================================
+
+class SmsSettingsUpdate(BaseModel):
+    """What an officer may change about their own SMS alerts."""
+
+    phone_number: str | None = Field(
+        default=None,
+        max_length=20,
+        description=(
+            "Zambian mobile number. Accepts 0977123456, "
+            "+260977123456, 260977123456 and 00260977123456, "
+            "and is stored in E.164 form. An empty value "
+            "clears the saved number."
+        ),
+    )
+
+    sms_notifications_enabled: bool | None = Field(
+        default=None,
+        description=(
+            "Whether to receive automatic deforestation "
+            "alert SMS. Omitted leaves the setting unchanged."
+        ),
+    )
+
+    @field_validator("phone_number", mode="before")
+    @classmethod
+    def validate_phone_number(cls, value: str | None) -> str | None:
+        """Normalise the number and allow explicit clearing."""
+
+        return normalize_optional_phone_number(value)
+
+
+class SmsSettingsResponse(BaseModel):
+    """The officer's SMS settings as they now stand."""
+
+    phone_number: str | None = Field(
+        default=None,
+        description="Saved number in E.164 form, or null.",
+    )
+
+    sms_notifications_enabled: bool = Field(
+        description=(
+            "Whether automatic alert SMS are enabled. True "
+            "while the preference column is absent, which "
+            "is the behaviour that preceded it."
+        ),
+    )
+
+    preference_supported: bool = Field(
+        description=(
+            "False until migration d9f4a7c1e835 is applied. "
+            "The interface uses this to explain why the "
+            "switch cannot be changed yet, rather than "
+            "offering a control that silently does nothing."
+        ),
+    )
+
+    automatic_sending_enabled: bool = Field(
+        description=(
+            "Whether the system would actually send an "
+            "alert now. True only when SMS is switched on "
+            "and the provider has accepted the configured "
+            "credentials. A key being present in the "
+            "configuration is not enough: an invalid key "
+            "would otherwise show the channel as ready "
+            "while every message was refused."
+        ),
+    )
+
+    system_status: str = Field(
+        description=(
+            "Why the system can or cannot send: ACTIVE, "
+            "DISABLED, MISSING_CREDENTIALS, "
+            "INVALID_CREDENTIALS or PROVIDER_ERROR. The "
+            "interface states these apart because the "
+            "remedy differs: a disabled switch and a "
+            "rejected key are both 'no SMS' but are fixed "
+            "by different people doing different things."
+        ),
+    )
+
+    system_detail: str | None = Field(
+        default=None,
+        description=(
+            "One sentence explaining the status. Built from "
+            "the provider's own words where it gave any, "
+            "and never contains a credential."
+        ),
+    )
+
+    model_config = ConfigDict(
+        from_attributes=True,
+    )
+
+
+class SmsTestResponse(BaseModel):
+    """The outcome of a test message the officer asked for."""
+
+    submitted: bool = Field(
+        description=(
+            "Whether the provider accepted the message. "
+            "Acceptance is not delivery: this system "
+            "receives no delivery reports, so a true value "
+            "must never be presented as 'delivered'."
+        ),
+    )
+
+    status: str = Field(
+        description="Recorded status, SUBMITTED or FAILED.",
+    )
+
+    detail: str | None = Field(
+        default=None,
+        description="Why the message failed, when it did.",
+    )
+
+    recipient_phone: str | None = Field(
+        default=None,
+        description="Number the message was addressed to.",
+    )
+
+    recorded: bool = Field(
+        description=(
+            "Whether the attempt was written to sms_queue. "
+            "False until migration d9f4a7c1e835 makes "
+            "sms_queue.alert_id nullable, because a test "
+            "message belongs to no alert."
+        ),
     )

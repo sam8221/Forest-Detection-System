@@ -56,6 +56,27 @@ WGS84 = CRS.from_proj4("+proj=longlat +datum=WGS84 +no_defs")
 # pixels of slack covers that and the 20 m SCL grid.
 BOUNDARY_WINDOW_BUFFER_PIXELS = 2
 
+# Every member of a Level-2A product this pipeline opens, as
+# the suffix of its path inside the archive or the extracted
+# tree. Defined once because three things depend on agreeing
+# about it: what acquisition downloads, what extraction
+# unpacks, and what the completeness checks require. They had
+# drifted apart once, and the effect was that every freshly
+# downloaded product was unpacked and then rejected.
+#
+#   B04, B08 at 10 m   NDVI
+#   B02, B03 at 10 m   true-colour red/green/blue, with B04
+#   SCL      at 20 m   cloud, shadow, cirrus and snow
+#   MTD_MSIL2A.xml     proof the product is Level-2A
+REQUIRED_PRODUCT_MEMBERS = (
+    "MTD_MSIL2A.xml",
+    "_B02_10m.jp2",
+    "_B03_10m.jp2",
+    "_B04_10m.jp2",
+    "_B08_10m.jp2",
+    "_SCL_20m.jp2",
+)
+
 
 class SentinelProcessorService:
     """
@@ -115,12 +136,31 @@ class SentinelProcessorService:
             exist_ok=True,
         )
 
+        # Only the members analysis opens are unpacked. A whole
+        # Level-2A product holds every band at three
+        # resolutions, the true-colour image, previews and
+        # quality masks: roughly a gigabyte, of which this
+        # pipeline reads about a third. extractall() wrote all
+        # of it and the rest was never opened again.
         with zipfile.ZipFile(
             zip_path,
             "r",
         ) as archive:
+
+            wanted = [
+                member
+                for member in archive.infolist()
+                if not member.is_dir()
+                and self._is_required_member(member.filename)
+            ]
+
+            # An archive holding none of them is incomplete, and
+            # the check below says so. Unpacking the whole
+            # product first would spend a gigabyte of writes on
+            # that conclusion.
             archive.extractall(
-                extract_directory
+                extract_directory,
+                members=wanted,
             )
 
         if not self.has_complete_extracted_product(extract_directory):
@@ -129,6 +169,42 @@ class SentinelProcessorService:
             )
 
         return extract_directory
+
+    @classmethod
+    def archive_has_required_members(
+        cls,
+        zip_path: str | Path,
+    ) -> bool:
+        """Return whether an archive holds every analysis input.
+
+        Read from the central directory only, so this costs no more
+        than opening the file however large the product is.
+        """
+
+        try:
+            with zipfile.ZipFile(Path(zip_path)) as archive:
+                present = [
+                    member.filename.casefold()
+                    for member in archive.infolist()
+                    if not member.is_dir() and member.file_size > 0
+                ]
+        except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile):
+            return False
+
+        return all(
+            any(name.endswith(required.casefold()) for name in present)
+            for required in REQUIRED_PRODUCT_MEMBERS
+        )
+
+    @staticmethod
+    def _is_required_member(member_name: str) -> bool:
+        """Return whether one archive member is an analysis input."""
+
+        name = member_name.casefold()
+        return any(
+            name.endswith(required.casefold())
+            for required in REQUIRED_PRODUCT_MEMBERS
+        )
 
     @staticmethod
     def has_complete_extracted_product(
@@ -148,20 +224,16 @@ class SentinelProcessorService:
         if extract_directory.name.casefold().endswith(".safe"):
             candidates.append(extract_directory)
 
-        required_patterns = (
-            "*_B02_10m.jp2",
-            "*_B03_10m.jp2",
-            "*_B04_10m.jp2",
-            "*_B08_10m.jp2",
-            "*_SCL_20m.jp2",
+        # One definition, shared with extraction and with
+        # acquisition, so the three cannot disagree about what a
+        # usable product contains.
+        required_patterns = tuple(
+            required
+            if required.startswith("MTD")
+            else f"*{required}"
+            for required in REQUIRED_PRODUCT_MEMBERS
         )
         for product_directory in candidates:
-            metadata = list(product_directory.rglob("MTD_MSIL2A.xml"))
-            if not any(
-                path.is_file() and path.stat().st_size > 0
-                for path in metadata
-            ):
-                continue
             if all(
                 any(
                     path.is_file() and path.stat().st_size > 0

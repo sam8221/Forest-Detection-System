@@ -102,13 +102,24 @@ export default function Monitoring() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const token = () =>
-    localStorage.getItem("access_token") ||
-    localStorage.getItem("token");
+  // Both read the stored token when called, not when
+  // defined, so neither depends on a render. Holding one
+  // identity for the life of the page lets the effects below
+  // declare them honestly instead of carrying a dependency
+  // that changed on every render.
+  const token = useCallback(
+    () =>
+      localStorage.getItem("access_token") ||
+      localStorage.getItem("token"),
+    []
+  );
 
-  const headers = () => ({
-    Authorization: `Bearer ${token()}`,
-  });
+  const headers = useCallback(
+    () => ({
+      Authorization: `Bearer ${token()}`,
+    }),
+    [token]
+  );
 
   // =======================================================
   // FOREST AREAS
@@ -132,7 +143,7 @@ export default function Monitoring() {
         }
       })
       .catch(() => setForestAreas([]));
-  }, []);
+  }, [headers]);
 
   // =======================================================
   // LOAD THE SELECTED AREA
@@ -218,7 +229,7 @@ export default function Monitoring() {
     } finally {
       setLoading(false);
     }
-  }, [forestAreaId]);
+  }, [forestAreaId, headers]);
 
   useEffect(() => {
     load();

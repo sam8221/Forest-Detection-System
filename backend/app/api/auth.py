@@ -31,7 +31,10 @@ from fastapi import (
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_active_user
+from app.api.deps import (
+    get_current_active_user,
+    get_user_pending_password_change,
+)
 from app.database.session import get_db
 from app.models.user import User
 from app.schemas.user import (
@@ -154,11 +157,15 @@ def login(
 )
 def get_current_user(
     current_user: User = Depends(
-        get_current_active_user
+        get_user_pending_password_change
     ),
 ):
     """
     Return the currently authenticated active user.
+
+    Reachable while a password change is outstanding. The
+    interface has to be able to say who is signed in before
+    it can ask them to set a new password.
 
     The user's identity comes from the JWT access token.
 
@@ -183,12 +190,17 @@ def get_current_user(
 def change_password(
     request: ChangePasswordRequest,
     current_user: User = Depends(
-        get_current_active_user
+        get_user_pending_password_change
     ),
     db: Session = Depends(get_db),
 ):
     """
     Change the password of the authenticated user.
+
+    Reachable while a password change is outstanding: this
+    is the endpoint that clears it. Requiring compliance
+    here would leave an account holding a temporary password
+    with no way to replace it.
 
     The user's identity comes from the JWT access token.
     """

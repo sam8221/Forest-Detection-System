@@ -33,10 +33,13 @@ Version:
 
 from __future__ import annotations
 
+import logging
 import os
 import re
+import threading
 import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
 
@@ -46,6 +49,8 @@ from app.core.config import get_settings
 
 
 settings = get_settings()
+
+logger = logging.getLogger(__name__)
 
 
 class CopernicusAuthenticationError(RuntimeError):
@@ -123,17 +128,57 @@ class CopernicusService:
     #
     # The individual band nodes DO advertise
     # Accept-Ranges: bytes and answer 206 with a correct
-    # Content-Range, and analysis only reads three of them:
-    # B04 and B08 at 10 m for NDVI, and the 20 m SCL for
-    # cloud masking. Fetching those three is ~257 MB instead
-    # of ~1.1 GB, and each one can resume where it stopped.
+    # Content-Range, and analysis reads only five of them, so
+    # acquisition fetches ~370 MB instead of ~1.1 GB and each
+    # one can resume where it stopped.
+    #
+    # The five are also fetched CONCURRENTLY, so an officer
+    # waits for the largest band rather than for the sum of
+    # all of them. One Copernicus connection does not saturate
+    # the link; several do. That is what makes carrying the
+    # true-colour bands affordable: five parallel transfers of
+    # ~370 MB finish sooner than three sequential ones of
+    # ~257 MB did.
     # =====================================================
 
+    # Every input the analysis pipeline actually opens:
+    #
+    #   B04, B08 at 10 m   NDVI
+    #   B02, B03 at 10 m   the true-colour preview and the
+    #                      scientific comparison figure, which
+    #                      read B04/B03/B02 as red/green/blue
+    #   SCL      at 20 m   cloud, shadow, cirrus and snow
+    #
+    # B02 and B03 are not optional extras. Without them
+    # render_rgb_preview cannot open its green and blue
+    # channels, and a product acquired without them is counted
+    # as incomplete by _usable_local_image and by
+    # has_complete_extracted_product. The effect was measured:
+    # an analysis re-searched Copernicus for imagery it already
+    # held, extracted ~180 MB, then failed with "missing
+    # required Level-2A metadata or bands". What is downloaded
+    # and what the pipeline requires have to be one set.
     REQUIRED_BAND_NODES = (
+        ("R10m", "_B02_10m.jp2"),
+        ("R10m", "_B03_10m.jp2"),
         ("R10m", "_B04_10m.jp2"),
         ("R10m", "_B08_10m.jp2"),
         ("R20m", "_SCL_20m.jp2"),
     )
+
+    # Product-root members, outside IMG_DATA. The Level-2A
+    # metadata document is how every completeness check here
+    # tells a Level-2A product from a Level-1C one, and it is
+    # tens of kilobytes.
+    REQUIRED_PRODUCT_NODES = (
+        "MTD_MSIL2A.xml",
+    )
+
+    # Concurrent band transfers. Copernicus permits a small
+    # number of simultaneous download connections per account;
+    # four stays within that and covers the four 10 m bands,
+    # with the ~2 MB SCL following whichever finishes first.
+    BAND_TRANSFER_WORKERS = 4
 
     # Attempts per band before the transfer is reported as
     # failed. Each attempt resumes rather than restarting, so
@@ -142,6 +187,24 @@ class CopernicusService:
     BAND_ATTEMPT_LIMIT = 8
 
     NODE_LISTING_TIMEOUT = 60
+
+    # =====================================================
+    # CATALOGUE PAGING
+    #
+    # The catalogue answers one page at a time and offers a
+    # link to the next. Asking for a large $top does not
+    # change that; it only makes one page bigger and the
+    # request slower, and the catalogue caps it anyway.
+    # =====================================================
+
+    #: Products requested per catalogue page.
+    SEARCH_PAGE_SIZE = 100
+
+    #: Pages followed before giving up. A guard against a
+    #: catalogue that keeps offering a next link, not a limit
+    #: on results: at the page size above it allows far more
+    #: than max_catalogue_results ever asks for.
+    SEARCH_PAGE_LIMIT = 50
 
     # =====================================================
     # INITIALIZATION
@@ -160,9 +223,30 @@ class CopernicusService:
             }
         )
 
+        # One pooled connection per concurrent band transfer,
+        # plus headroom for the node listings. Without this the
+        # default pool of ten would be fine, but stating it
+        # keeps the parallel transfers from silently dropping
+        # and rebuilding connections if the default changes.
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=self.BAND_TRANSFER_WORKERS + 2,
+            pool_maxsize=self.BAND_TRANSFER_WORKERS + 2,
+        )
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
+
         self._access_token: str | None = None
         self._refresh_token: str | None = None
         self._token_expires_at: float | None = None
+
+        # Band transfers run in parallel and every one of them
+        # may find the token expired. Without this lock several
+        # would request a new token at once, and the last to
+        # store its reply would overwrite a token the others
+        # were already using. Reentrant because
+        # _ensure_authenticated holds it while calling
+        # _refresh_or_authenticate.
+        self._auth_lock = threading.RLock()
 
     # =====================================================
     # AUTHENTICATION
@@ -285,6 +369,11 @@ class CopernicusService:
     def _refresh_or_authenticate(self) -> None:
         """Use the supported refresh grant, falling back to password grant."""
 
+        with self._auth_lock:
+            self._refresh_or_authenticate_locked()
+
+    def _refresh_or_authenticate_locked(self) -> None:
+
         refresh_token = self._refresh_token
         self._clear_tokens()
         if refresh_token:
@@ -314,14 +403,20 @@ class CopernicusService:
         Copernicus access token.
         """
 
-        token_is_near_expiry = (
-            self._token_expires_at is not None
-            and self._token_expires_at <= time.monotonic() + 60
-        )
-        if token_is_near_expiry:
-            self._refresh_or_authenticate()
-        elif not self._access_token:
-            self.authenticate()
+        # Held for the whole check-and-renew, not just the
+        # check: several parallel band transfers reach this at
+        # the same moment, and a token obtained between one
+        # thread's test and its renewal would be discarded.
+        with self._auth_lock:
+
+            token_is_near_expiry = (
+                self._token_expires_at is not None
+                and self._token_expires_at <= time.monotonic() + 60
+            )
+            if token_is_near_expiry:
+                self._refresh_or_authenticate_locked()
+            elif not self._access_token:
+                self.authenticate()
 
     # =====================================================
     # SEARCH SENTINEL-2 PRODUCTS
@@ -339,6 +434,63 @@ class CopernicusService:
         """
         Search the Copernicus catalogue for
         Sentinel-2 Level-2A products.
+
+        Returns the products only. A caller that also needs how
+        many matched altogether uses search_products_with_total,
+        which this delegates to so the two cannot diverge.
+        """
+
+        products, _total = self.search_products_with_total(
+            start_date=start_date,
+            end_date=end_date,
+            cloud_cover=cloud_cover,
+            geometry_wkt=geometry_wkt,
+            tile_id=tile_id,
+            limit=limit,
+        )
+
+        return products
+
+    def search_products_with_total(
+        self,
+        start_date: str,
+        end_date: str,
+        cloud_cover: float = 30.0,
+        geometry_wkt: str | None = None,
+        tile_id: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int | None]:
+        """
+        Search the catalogue, following its pages.
+
+        Args:
+            limit:
+                How many products to return. Pages are requested
+                until this many have been collected or the
+                catalogue runs out, rather than stopping at
+                whatever the first response happened to carry.
+            offset:
+                How many matching products to skip first, which
+                is what lets the page ask for more without
+                fetching again what it already shows.
+
+        Returns:
+            (products, total matching). The total is the size of
+            the whole result set as the catalogue reports it,
+            not the number returned, and is None when the
+            catalogue reports none.
+
+        One request used to be sent, carrying $top, and whatever
+        came back was the answer. With the page asking for 20,
+        exactly 20 arrived however many matched, and nothing
+        said so: a date range holding 20 observations and one
+        holding 200 looked identical to the officer.
+
+        Products are de-duplicated by identifier across pages.
+        An acquisition ingested between two requests shifts every
+        later page by one, which would otherwise repeat a
+        product at the boundary.
         """
 
         # -------------------------------------------------
@@ -364,13 +516,18 @@ class CopernicusService:
         # Validate limit
         # -------------------------------------------------
 
+        # The ceiling is a deliberate application setting
+        # rather than a literal, because it is a real
+        # limitation and the page states it to the officer.
         limit = max(
             1,
             min(
                 int(limit),
-                100,
+                int(settings.max_catalogue_results),
             ),
         )
+
+        offset = max(0, int(offset))
 
         # -------------------------------------------------
         # Validate tile
@@ -506,59 +663,176 @@ class CopernicusService:
             " and ".join(filters)
         )
 
+        url = f"{self.BASE_URL}/Products"
+
         params = {
 
             "$filter":
                 filter_query,
 
+            # A stable order is what makes paging meaningful.
+            # Without one the catalogue may return a product on
+            # two pages and omit another entirely.
             "$orderby":
                 "ContentDate/Start desc",
 
             "$top":
-                limit,
+                min(limit, self.SEARCH_PAGE_SIZE),
+
+            "$skip":
+                offset,
 
             "$expand":
                 "Attributes",
+
+            # Asks how many match in total, not merely how many
+            # this page carries.
+            "$count":
+                "true",
         }
 
-        url = (
-            f"{self.BASE_URL}/Products"
+        logger.info("Copernicus: searching catalogue")
+
+        products: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        total: int | None = None
+        next_url: str | None = None
+        pages = 0
+
+        while True:
+
+            payload = self._catalogue_page(
+                url if next_url is None else next_url,
+                params if next_url is None else None,
+            )
+
+            pages += 1
+
+            if total is None:
+                reported = payload.get("@odata.count")
+                if isinstance(reported, int) and reported >= 0:
+                    total = reported
+
+            page = payload.get("value") or []
+
+            if not isinstance(page, list):
+                raise RuntimeError(
+                    "The Copernicus catalogue returned an "
+                    "unexpected response shape."
+                )
+
+            for product in page:
+
+                if not isinstance(product, dict):
+                    continue
+
+                identifier = str(product.get("Id") or "")
+
+                # The identifier is what de-duplication turns
+                # on, and a product without one could not be
+                # downloaded either.
+                if not identifier or identifier in seen_ids:
+                    continue
+
+                seen_ids.add(identifier)
+                products.append(product)
+
+                if len(products) >= limit:
+                    break
+
+            if len(products) >= limit:
+                break
+
+            # An empty page ends the search whatever it offers
+            # next, so a catalogue that keeps answering with
+            # nothing cannot spin here.
+            if not page:
+                break
+
+            # The catalogue's own next-page link already carries
+            # the filter, the order and the offset, so it is
+            # followed rather than recomputed.
+            link = payload.get("@odata.nextLink")
+            next_url = link if isinstance(link, str) and link else None
+
+            if next_url is None:
+                break
+
+            if pages >= self.SEARCH_PAGE_LIMIT:
+                logger.warning(
+                    "Copernicus catalogue paging stopped after %s pages",
+                    pages,
+                )
+                break
+
+        logger.info(
+            "Copernicus: collected %s product(s) over %s page(s); "
+            "catalogue reports %s matching",
+            len(products),
+            pages,
+            total if total is not None else "no",
         )
 
-        print(
-            "Copernicus: searching catalogue..."
-        )
+        return products, total
 
-        try:
+    # =====================================================
+    # ONE CATALOGUE PAGE
+    # =====================================================
 
-            response = self.session.get(
+    def _catalogue_page(
+        self,
+        url: str,
+        params: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """
+        Fetch and decode one page of catalogue results.
+
+        Args:
+            url:
+                The Products endpoint, or a next-page link the
+                catalogue returned. Such a link already carries
+                every query option.
+            params:
+                Query options, for the first request only. A
+                next-page link is passed None, because adding
+                options to it would override the ones it
+                already encodes.
+
+        Raises:
+            CopernicusAuthenticationError:
+                A renewed access token was still rejected.
+            CopernicusAuthorizationError:
+                The configured account may not read the
+                catalogue.
+            RuntimeError:
+                A timeout, a rate limit, a transport failure, an
+                HTTP error, or a body that could not be read.
+                The message names the condition without quoting
+                the provider back to the officer.
+        """
+
+        self._ensure_authenticated()
+
+        def request():
+            return self.session.get(
                 url,
-
                 params=params,
-
                 timeout=self.SEARCH_TIMEOUT,
             )
 
-            # -------------------------------------------------
-            # Token expired
-            # -------------------------------------------------
+        try:
+
+            response = request()
 
             if response.status_code == 401:
 
-                print(
-                    "Copernicus: token expired, "
-                    "authenticating again..."
+                logger.info(
+                    "Copernicus: access token expired, authenticating again"
                 )
 
                 self._refresh_or_authenticate()
 
-                response = self.session.get(
-                    url,
-
-                    params=params,
-
-                    timeout=self.SEARCH_TIMEOUT,
-                )
+                response = request()
 
             if response.status_code == 401:
                 raise CopernicusAuthenticationError(
@@ -569,6 +843,12 @@ class CopernicusService:
             if response.status_code == 403:
                 raise CopernicusAuthorizationError(
                     "Copernicus denied access to the catalogue request."
+                )
+
+            if response.status_code == 429:
+                raise RuntimeError(
+                    "Copernicus is rate limiting catalogue requests. "
+                    "Narrow the date range or try again shortly."
                 )
 
             response.raise_for_status()
@@ -596,35 +876,23 @@ class CopernicusService:
         except requests.exceptions.RequestException as exc:
 
             raise RuntimeError(
-                "Unable to connect to Copernicus "
-                f"catalogue: {exc}"
+                "Unable to connect to the Copernicus catalogue."
             ) from exc
 
-        # -------------------------------------------------
-        # JSON
-        # -------------------------------------------------
-
         try:
-
-            data = response.json()
-
+            payload = response.json()
         except ValueError as exc:
-
             raise RuntimeError(
                 "Copernicus returned invalid JSON."
             ) from exc
 
-        products = data.get(
-            "value",
-            [],
-        )
+        if not isinstance(payload, dict):
+            raise RuntimeError(
+                "The Copernicus catalogue returned an "
+                "unexpected response shape."
+            )
 
-        print(
-            "Copernicus: products found:",
-            len(products),
-        )
-
-        return products
+        return payload
 
     # =====================================================
     # GET LATEST PRODUCT
@@ -1096,12 +1364,66 @@ class CopernicusService:
         product_id: str,
         product_name: str,
     ) -> list[dict[str, Any]]:
-        """Resolve the three required bands to downloadable node URLs.
+        """Resolve every required product member to a node URL.
 
         The granule directory carries an identifier that cannot be
         derived from the product name, so the tree is walked rather
         than guessed.
         """
+
+        located: list[dict[str, Any]] = []
+
+        # -------------------------------------------------
+        # Product-root members
+        # -------------------------------------------------
+
+        if self.REQUIRED_PRODUCT_NODES:
+
+            root_entries = self._list_nodes(
+                self._node_path(product_id, product_name)
+            )
+
+            for required_name in self.REQUIRED_PRODUCT_NODES:
+
+                match = next(
+                    (
+                        entry
+                        for entry in root_entries
+                        if str(entry.get("Name", "")).casefold()
+                        == required_name.casefold()
+                    ),
+                    None,
+                )
+
+                if match is None:
+                    raise RuntimeError(
+                        "The Sentinel-2 product is missing the Level-2A "
+                        "metadata document required for analysis. A "
+                        "Level-1C product carries MTD_MSIL1C.xml instead."
+                    )
+
+                file_name = str(match["Name"])
+
+                try:
+                    declared_size = int(match.get("ContentLength"))
+                except (TypeError, ValueError):
+                    declared_size = 0
+
+                located.append(
+                    {
+                        "file_name": file_name,
+                        "url": (
+                            self._node_path(
+                                product_id,
+                                product_name,
+                                file_name,
+                            )
+                            + "/$value"
+                        ),
+                        "size": declared_size if declared_size > 0 else None,
+                        "archive_path": f"{product_name}/{file_name}",
+                    }
+                )
 
         granules = self._list_nodes(
             self._node_path(product_id, product_name, "GRANULE")
@@ -1120,7 +1442,6 @@ class CopernicusService:
 
         granule = granule_names[0]
 
-        located: list[dict[str, Any]] = []
         listings: dict[str, list[dict[str, Any]]] = {}
 
         for resolution, suffix in self.REQUIRED_BAND_NODES:
@@ -1327,12 +1648,35 @@ class CopernicusService:
         product_name: str,
         destination: Path,
         progress_callback: Callable[[str, int, int | None], None] | None = None,
+        staged_band_sink: Callable[[dict[str, Path]], None] | None = None,
     ) -> Path:
         """Fetch the bands analysis needs and assemble a .SAFE.zip.
+
+        Args:
+            staged_band_sink:
+                Receives {archive path: staged file} once the
+                archive is written. Given one, the staged
+                files are LEFT on disk for the caller to claim,
+                which is how a freshly acquired product is
+                placed straight into its extraction directory
+                instead of being unpacked out of the archive
+                that was just built from it. Without it they
+                are deleted as before.
 
         The archive carries the same internal paths as a product
         downloaded whole, so extraction, validation and the NDVI
         pipeline behave identically and need no change.
+
+        The members are transferred concurrently. Each one writes its
+        own staged file and resumes independently, so the only shared
+        state is the byte count reported for progress and the access
+        token, both of which are guarded.
+
+        progress_callback is therefore called from several threads,
+        but never from two at once: it is invoked while holding the
+        lock that guards the byte count. A caller may keep using a
+        database session, or any other single-threaded resource,
+        without protecting it itself.
 
         Partly transferred bands are deliberately kept when a transfer
         fails. Copernicus will not resume the whole-product download, so
@@ -1359,21 +1703,38 @@ class CopernicusService:
         staging = destination.parent / f"{destination.name}.bands"
         staging.mkdir(parents=True, exist_ok=True)
 
-        completed_bytes = 0
-
         if progress_callback is not None:
             progress_callback("DOWNLOADING", 0, total_bytes)
 
-        for band in bands:
+        # Bytes received per member, so the figure reported is
+        # the sum across concurrent transfers rather than one
+        # band's own count. Guarded because several threads
+        # update it and read the total.
+        received: dict[str, int] = {band["file_name"]: 0 for band in bands}
+        progress_lock = threading.Lock()
+
+        def transfer(band: dict[str, Any]) -> int:
 
             part_path = staging / f"{band['file_name']}.part"
             band["part_path"] = part_path
+            name = band["file_name"]
 
-            def report(band_bytes: int, base: int = completed_bytes) -> None:
-                if progress_callback is not None:
+            def report(band_bytes: int) -> None:
+                if progress_callback is None:
+                    return
+                # The callback runs INSIDE the lock, not merely
+                # the arithmetic before it. Callers record
+                # progress against a database session, and a
+                # SQLAlchemy Session operated on by two threads
+                # at once raises IllegalStateChangeError and
+                # kills the transfer. Holding the lock across the
+                # call is what lets a caller stay single-threaded
+                # while the transfers are not.
+                with progress_lock:
+                    received[name] = band_bytes
                     progress_callback(
                         "DOWNLOADING",
-                        base + band_bytes,
+                        sum(received.values()),
                         total_bytes,
                     )
 
@@ -1389,7 +1750,32 @@ class CopernicusService:
                     "Copernicus returned an empty Sentinel-2 band."
                 )
 
-            completed_bytes += transferred
+            # The final count for this member, in case its last
+            # progress report preceded the closing chunk.
+            with progress_lock:
+                received[name] = transferred
+
+            return transferred
+
+        workers = max(1, min(self.BAND_TRANSFER_WORKERS, len(bands)))
+
+        if workers == 1 or len(bands) == 1:
+            # One worker is not a degenerate pool, it is the
+            # sequential path, kept so a deployment that must
+            # hold a single connection can set the limit to one.
+            transferred_sizes = [transfer(band) for band in bands]
+        else:
+            with ThreadPoolExecutor(
+                max_workers=workers,
+                thread_name_prefix="forestwatch-band",
+            ) as pool:
+                # list() re-raises the first failure once every
+                # other transfer has stopped, so no thread is
+                # still writing into staging when the partly
+                # received bands are left for a retry.
+                transferred_sizes = list(pool.map(transfer, bands))
+
+        completed_bytes = sum(transferred_sizes)
 
         if progress_callback is not None:
             progress_callback("VALIDATING", completed_bytes, total_bytes)
@@ -1418,7 +1804,23 @@ class CopernicusService:
             archive_part.unlink(missing_ok=True)
             raise
 
-        # Only now are the staged bands redundant.
+        # The staged files are the same bytes the archive now
+        # holds. A caller that can put them where the pipeline
+        # reads them claims them here, which saves unpacking
+        # ~370 MB back out of an archive just assembled from
+        # them: the same bytes would otherwise be read and
+        # written a third time before the first analysis of
+        # every product.
+        if staged_band_sink is not None:
+            staged_band_sink(
+                {
+                    str(band["archive_path"]): band["part_path"]
+                    for band in bands
+                }
+            )
+            return destination
+
+        # Otherwise they are redundant now the archive exists.
         for band in bands:
             band["part_path"].unlink(missing_ok=True)
         try:

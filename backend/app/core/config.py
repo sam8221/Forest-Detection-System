@@ -136,6 +136,19 @@ class Settings(BaseSettings):
         alias="ENVIRONMENT",
     )
 
+    # How much the application writes to the console.
+    #
+    # One standard level name. Anything the logging module
+    # does not recognise falls back to INFO rather than
+    # raising, because a typo here must not stop the
+    # application from starting: a system that refuses to
+    # boot over a log setting is worse than one that logs
+    # at the wrong level.
+    log_level: str = Field(
+        default="INFO",
+        alias="LOG_LEVEL",
+    )
+
     # --------------------------------------------------
     # API
     # --------------------------------------------------
@@ -174,6 +187,17 @@ class Settings(BaseSettings):
     database_echo: bool = Field(
         default=False,
         alias="DATABASE_ECHO",
+    )
+
+    support_attachment_directory: str = Field(
+        default=str(BACKEND_ROOT / "data" / "support-attachments"),
+        alias="SUPPORT_ATTACHMENT_DIRECTORY",
+    )
+
+    support_attachment_max_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        alias="SUPPORT_ATTACHMENT_MAX_BYTES",
+        ge=1,
     )
 
     # --------------------------------------------------
@@ -383,6 +407,20 @@ class Settings(BaseSettings):
         alias="COPERNICUS_PASSWORD",
     )
 
+    # The most products one catalogue search may return.
+    #
+    # Defined here rather than as a literal in the service
+    # because it is a real limitation the interface states
+    # to the officer, and because the API rejects a limit
+    # outside 1 to 100. The two bounds have to agree: a
+    # ceiling lower than the endpoint's would silently
+    # return fewer products than the officer was told they
+    # asked for.
+    max_catalogue_results: int = Field(
+        default=100,
+        alias="MAX_CATALOGUE_RESULTS",
+    )
+
     # --------------------------------------------------
     # Detection thresholds
     #
@@ -398,6 +436,37 @@ class Settings(BaseSettings):
         alias="NDVI_THRESHOLD",
     )
 
+    # The smallest NDVI change worth calling a change at all.
+    #
+    # Distinct from ndvi_threshold above, and the distinction
+    # is the point. ndvi_threshold asks "has this pixel been
+    # cleared": a drop of 0.30 is most of a canopy gone, and
+    # almost no pixel in a healthy scene reaches it. That is
+    # correct for detection and useless for description.
+    #
+    # Used as the significance criterion, it reported a real
+    # scene as 0.00 percent declined and 99.99 percent
+    # unchanged while the difference map plainly showed red
+    # and green across it. Measured against this threshold
+    # the same scene is 1.99 percent declined and 25.59
+    # percent greener, which is what the map shows.
+    #
+    # 0.05 is the conventional noise floor for differencing
+    # Sentinel-2 surface-reflectance NDVI: below it a change
+    # is not reliably distinguishable from atmospheric
+    # correction residue, view-angle effects and sensor
+    # noise, so calling it vegetation change would be
+    # reporting measurement error as a finding.
+    #
+    # This threshold describes. It never detects: no
+    # detection, alert or area in the detection path consults
+    # it, and raising or lowering it cannot create or destroy
+    # a single detection.
+    ndvi_significant_change: float = Field(
+        default=0.05,
+        alias="NDVI_SIGNIFICANT_CHANGE",
+    )
+
     min_detection_area_hectares: float = Field(
         default=0.50,
         alias="MIN_DETECTION_AREA_HECTARES",
@@ -411,6 +480,118 @@ class Settings(BaseSettings):
     image_search_days: int = Field(
         default=30,
         alias="IMAGE_SEARCH_DAYS",
+    )
+
+    # --------------------------------------------------
+    # Cloud condition classification
+    #
+    # Upper bounds, in percent, for the words the interface
+    # puts on a cloud-cover figure.
+    #
+    # Taken from the okta scale, the eighths of sky covered
+    # that meteorological observation has used since the
+    # WMO adopted it, rather than from round numbers chosen
+    # because they look tidy:
+    #
+    #     CLEAR          0 to 1 okta     up to 12.5 %
+    #     PARTLY CLOUDY  2 to 4 oktas    up to 50 %
+    #     CLOUDY         5 to 7 oktas    up to 87.5 %
+    #     VERY CLOUDY    8 oktas         above 87.5 %
+    #
+    # The last band is overcast: sky wholly covered. It is
+    # kept separate from "cloudy" because the difference
+    # decides whether waiting a day is worth doing.
+    #
+    # These words describe the sky. Whether an image can be
+    # analysed is a different question, answered by
+    # max_cloud_cover_percentage above, and the two are not
+    # merged: an officer may reasonably be told that
+    # conditions are "partly cloudy" and that the scene is
+    # still too cloudy to measure NDVI from.
+    # --------------------------------------------------
+
+    cloud_clear_max_percentage: float = Field(
+        default=12.5,
+        alias="CLOUD_CLEAR_MAX_PERCENTAGE",
+    )
+
+    cloud_partly_cloudy_max_percentage: float = Field(
+        default=50.0,
+        alias="CLOUD_PARTLY_CLOUDY_MAX_PERCENTAGE",
+    )
+
+    cloud_cloudy_max_percentage: float = Field(
+        default=87.5,
+        alias="CLOUD_CLOUDY_MAX_PERCENTAGE",
+    )
+
+    # --------------------------------------------------
+    # Current weather provider
+    #
+    # Separate from Copernicus and deliberately so. A
+    # Sentinel-2 product carries the cloud cover measured
+    # when the satellite passed, which may be days old. It
+    # is not the sky now, and the interface must not offer
+    # it as though it were.
+    #
+    # Default provider is Open-Meteo, which needs no
+    # credential. The key field exists for a provider that
+    # does; it is read from the environment, defaults to
+    # empty and is never logged or returned.
+    #
+    # LICENSING, and it matters here:
+    #
+    #     Open-Meteo is free for non-commercial use and
+    #     charges for commercial use. This is the same
+    #     restriction that ruled out Google Earth Engine
+    #     for this project, which is built for a government
+    #     department. The weather reading is a convenience
+    #     and not part of the detection method, so the
+    #     dependency is optional and the system states
+    #     plainly when it is absent; but an operational
+    #     deployment would need either a licence or a
+    #     provider without that restriction, and the
+    #     dissertation should say so rather than leave the
+    #     same objection unanswered twice.
+    # --------------------------------------------------
+
+    weather_api_url: str = Field(
+        default="https://api.open-meteo.com/v1/forecast",
+        alias="WEATHER_API_URL",
+    )
+
+    weather_api_key: str = Field(
+        default="",
+        alias="WEATHER_API_KEY",
+    )
+
+    weather_provider_name: str = Field(
+        default="Open-Meteo",
+        alias="WEATHER_PROVIDER_NAME",
+    )
+
+    # How long a weather reading is reused before the
+    # provider is asked again.
+    #
+    # Matched to the provider's own update interval, which
+    # Open-Meteo reports as 900 seconds. Asking more often
+    # than the data changes returns the same numbers and
+    # spends somebody's rate limit to do it.
+    weather_cache_seconds: int = Field(
+        default=900,
+        alias="WEATHER_CACHE_SECONDS",
+    )
+
+    # Whether the current-weather reading is offered at all.
+    #
+    # On by default because the default provider needs no
+    # credential. An installation that must not make
+    # outbound requests to a third party sets this to false
+    # and keeps the satellite half of the feature, which
+    # uses imagery the system already holds.
+    weather_enabled: bool = Field(
+        default=True,
+        alias="WEATHER_ENABLED",
     )
 
     # --------------------------------------------------
@@ -505,14 +686,22 @@ class Settings(BaseSettings):
         alias="PLANETARY_STAC_URL",
     )
 
-    # Two requests are made in sequence, so this is the
-    # ceiling on each rather than on the pair: the worst
-    # case an officer waits is twice this figure. It is
-    # deliberately short, because a dashboard that hangs on
-    # a panel not essential to it is worse than one that
-    # gives up and says so.
+    # The ceiling on a single attempt, not on the lookup.
+    # Two requests are made in sequence and each may be
+    # attempted up to three times, all of it bounded by
+    # PlanetaryService.TOTAL_BUDGET_SECONDS, which is what
+    # actually limits how long an officer waits.
+    #
+    # Twenty seconds rather than twelve because twelve was
+    # below what the catalogue takes when it is busy:
+    # measured from this system, a search that had returned
+    # in 1.8 seconds was answering in 12 to 16 seconds a
+    # quarter of an hour later. A timeout shorter than the
+    # service's own working latency abandons responses that
+    # were about to arrive, which is a self-inflicted
+    # failure rather than an upstream one.
     planetary_timeout_seconds: float = Field(
-        default=12.0,
+        default=20.0,
         alias="PLANETARY_TIMEOUT_SECONDS",
     )
 

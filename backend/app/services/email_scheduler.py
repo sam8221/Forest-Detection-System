@@ -18,10 +18,14 @@ Project:
 
 from __future__ import annotations
 
+import logging
 import threading
 
 from app.database.session import SessionLocal
 from app.services.email_worker import EmailWorker
+
+
+logger = logging.getLogger(__name__)
 
 
 class EmailScheduler:
@@ -46,9 +50,13 @@ class EmailScheduler:
             try:
                 EmailWorker(db).run_once()
 
-            except Exception as exc:
-                print(
-                    f"[EmailScheduler] Error: {exc}"
+            except Exception:
+                # One bad cycle must not kill the thread.
+                # Logged rather than printed so the entry
+                # carries a timestamp and the traceback,
+                # which a bare message did not.
+                logger.exception(
+                    "The email worker cycle failed."
                 )
 
             finally:
@@ -79,9 +87,9 @@ class EmailScheduler:
 
         self._thread.start()
 
-        print(
-            "[EmailScheduler] Started "
-            f"(interval={self.interval_seconds}s)"
+        logger.info(
+            "Email scheduler started (interval=%ss).",
+            self.interval_seconds,
         )
 
     def stop(self) -> None:
@@ -96,6 +104,6 @@ class EmailScheduler:
                 timeout=5
             )
 
-        print(
-            "[EmailScheduler] Stopped"
+        logger.info(
+            "Email scheduler stopped."
         )

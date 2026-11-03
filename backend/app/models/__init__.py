@@ -29,6 +29,14 @@ from app.models.province import Province
 from app.models.satellite_image import SatelliteImage
 from app.models.satellite_download_job import SatelliteDownloadJob
 from app.models.sms_queue import SmsQueue
+from app.models.support_query import (
+    SupportNotification,
+    SupportQuery,
+    SupportQueryAssignment,
+    SupportQueryAttachment,
+    SupportQueryMessage,
+    SupportQueryStatusHistory,
+)
 from app.models.user import User
 
 __all__ = [
@@ -44,5 +52,11 @@ __all__ = [
     "SatelliteImage",
     "SatelliteDownloadJob",
     "SmsQueue",
+    "SupportNotification",
+    "SupportQuery",
+    "SupportQueryAssignment",
+    "SupportQueryAttachment",
+    "SupportQueryMessage",
+    "SupportQueryStatusHistory",
     "User",
 ]

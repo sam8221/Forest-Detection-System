@@ -28,7 +28,7 @@ from datetime import datetime
 
 from datetime import date
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.enums import (
     AnalysisJobStatus,
@@ -206,6 +206,20 @@ class AnalysisJobResponse(AnalysisJobBase):
     ndvi_threshold: float | None
 
     error_message: str | None
+
+    measurement_summary: dict | None = Field(
+        default=None,
+        description=(
+            "What the run measured, as opposed to what it "
+            "concluded: pixels compared, how much of the "
+            "scene was usable, the NDVI change observed, "
+            "the candidates found and the thresholds "
+            "applied. Null for a job that ran before this "
+            "was recorded, which the interface reports as "
+            "'not recorded' rather than as a measurement of "
+            "zero."
+        ),
+    )
 
     created_at: datetime
 

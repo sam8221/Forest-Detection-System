@@ -68,7 +68,7 @@
  * ===========================================================
  */
 
-import React, { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Download } from "lucide-react";
 
 import api from "../services/api";
@@ -240,13 +240,13 @@ export default function Detections() {
   // CLOSE DETECTION
   // =========================================================
 
-  const closeDetection = () => {
+  const closeDetection = useCallback(() => {
     if (actionLoading) return;
 
     setSelectedDetection(null);
     setVerificationNotes("");
     setActionError("");
-  };
+  }, [actionLoading]);
 
   // =========================================================
   // DISMISS ON ESCAPE
@@ -281,7 +281,7 @@ export default function Detections() {
         handleKeyDown
       );
     };
-  }, [selectedDetection, actionLoading]);
+  }, [selectedDetection, closeDetection]);
 
   // =========================================================
   // VERIFY / REJECT

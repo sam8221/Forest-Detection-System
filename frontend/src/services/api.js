@@ -79,6 +79,53 @@ export function notifySessionExpired() {
   });
 }
 
+/**
+ * Report an ended session seen by a fetch() caller.
+ *
+ * The response interceptor below covers everything sent
+ * through this client, but several pages call fetch()
+ * directly and never reach it. Without this, an expired
+ * token on one of those pages surfaces as the server's own
+ * sentence about credentials, on a page that can no longer
+ * load anything, and the officer is given nothing to act
+ * on.
+ *
+ * Call it with the response, before checking response.ok.
+ * It leaves anything other than 401 alone, so a 403 still
+ * reaches the page as a refusal rather than signing the
+ * officer out of a session that is perfectly valid.
+ *
+ * The body is read from a clone, so the caller can still
+ * read the response itself afterwards.
+ *
+ * @param {Response} response
+ * @returns {Promise<void>} resolves unless the session ended
+ * @throws {Error} when the session has ended
+ */
+export async function assertSessionAlive(response) {
+  if (!response || response.status !== 401) {
+    return;
+  }
+
+  let detail = "";
+
+  try {
+    const body = await response.clone().json();
+
+    detail =
+      typeof body?.detail === "string" ? body.detail : "";
+  } catch {
+    // A 401 without a readable body is still a 401.
+  }
+
+  notifySessionExpired();
+
+  throw new Error(
+    detail ||
+      "Your session has expired. Please sign in again."
+  );
+}
+
 // ---------------------------------------------------------
 // Attach JWT token automatically
 // ---------------------------------------------------------
